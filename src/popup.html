@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>동영상 다운로더</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="header">
+    <div class="brand">
+      <span class="logo">▶</span>
+      <div>
+        <h1>동영상 다운로더</h1>
+        <p class="sub" id="pageHost">—</p>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" id="btnScan" class="btn ghost" title="다시 찾기">↻</button>
+      <button type="button" id="btnClear" class="btn ghost" title="목록 비우기">✕</button>
+    </div>
+  </header>
+
+  <div id="progress" class="progress hidden">
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <p class="progress-text" id="progressText">받는 중…</p>
+  </div>
+
+  <main id="list" class="list">
+    <div class="empty" id="empty">
+      <div class="empty-icon">🎬</div>
+      <p>받을 영상이 없습니다.</p>
+      <p class="hint">페이지를 연 뒤 ↻ 를 눌러 보세요.</p>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <p class="note">저장 위치: 다운로드/VideoDownloader</p>
+  </footer>
+
+  <script src="popup.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,727 @@
+/**
+ * Content script — scan media, friendly titles, thumbnails
+ */
+
+(function () {
+  "use strict";
+
+  /** @type {Map<string, { hasThumb: boolean, title: string }>} */
+  const REPORTED = new Map();
+  let scanTimer = null;
+
+  function absUrl(src) {
+    if (!src) return null;
+    try {
+      return new URL(src, location.href).href;
+    } catch {
+      return src;
+    }
+  }
+
+  function qualityFromHeight(h) {
+    if (!h) return undefined;
+    if (h >= 2160) return "4K";
+    if (h >= 1440) return "1440p";
+    if (h >= 1080) return "1080p";
+    if (h >= 720) return "720p";
+    if (h >= 480) return "480p";
+    if (h >= 360) return "360p";
+    if (h >= 240) return "240p";
+    return `${h}p`;
+  }
+
+  function cleanPageTitle(title) {
+    if (!title) return "";
+    let t = String(title).trim();
+    t = t
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, " ");
+    // Drop player/CDN host titles (useless as names)
+    if (/^(javplayer|surrit|cloudflare|cdn|player)(\.|$)/i.test(t.replace(/^www\./, ""))) {
+      return "";
+    }
+    if (/\.(com|cc|net|tv|io|me|app|xyz)(\s|$)/i.test(t) && t.length < 28) {
+      return "";
+    }
+    t = t.replace(
+      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|MissAV|Jable|Avgle|JavLibrary|JavDB|ThisAV|Netflav|javplayer).*$/i,
+      ""
+    );
+    t = t.replace(/\s*[\-|–—|·•]\s*Watch\s*(Free|Online|Full).*$/i, "");
+    t = t.replace(/\s*[\-|–—|·•]\s*[^|\-–—·•]{1,36}$/u, (m, _o, s) =>
+      s.length > 20 && m.length < 30 ? "" : m
+    );
+    // SSIS-001 / ABC-123 at start → uppercase code + space
+    t = t.replace(/^\[?([A-Za-z]{2,12}-\d{2,5})\]?\s*/i, (_, code) => code.toUpperCase() + " ");
+    return t
+      .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 100);
+  }
+
+  function titleFromLocation() {
+    try {
+      const segs = (location.pathname || "").split("/").filter(Boolean);
+      for (let i = segs.length - 1; i >= 0; i--) {
+        const s = decodeURIComponent(segs[i]);
+        // SSIS-001, START-123, abc-123
+        if (/^[a-z]{2,12}-\d{2,5}$/i.test(s)) return s.toUpperCase();
+        if (/^[a-z]{2,10}\d{2,5}[a-z]?$/i.test(s) && s.length >= 5 && s.length <= 16) {
+          return s.toUpperCase();
+        }
+      }
+      const u = new URL(location.href);
+      for (const k of ["v", "id", "code", "video", "no"]) {
+        const val = u.searchParams.get(k);
+        if (val && /^[a-z]{2,12}-\d{2,5}$/i.test(val)) return val.toUpperCase();
+      }
+    } catch {
+      /* ignore */
+    }
+    return "";
+  }
+
+  function isPlayerFrame() {
+    try {
+      if (window !== window.top) {
+        const h = location.hostname.replace(/^www\./, "");
+        if (/javplayer|player|embed|surrit|cloudfront|cdn/i.test(h)) return true;
+      }
+    } catch {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Human-readable video name for list + save.
+   * Prefer real page title / h1 / product code — never player domain.
+   */
+  function pageTitle() {
+    // In embed/player iframes, don't invent names from javplayer.cc
+    if (isPlayerFrame()) {
+      return ""; // background will use tab title from main page
+    }
+
+    const og =
+      document.querySelector('meta[property="og:title"]')?.content ||
+      document.querySelector('meta[name="twitter:title"]')?.content;
+    const h1 =
+      document.querySelector("h1")?.textContent?.trim() ||
+      document.querySelector(".title, [class*='video-title'], [class*='detail-title']")?.textContent?.trim();
+    const code = titleFromLocation();
+
+    const raw = [h1, og, document.title]
+      .map((t) => cleanPageTitle(t || ""))
+      .filter((t) => t && t.length >= 2 && !/^(home|index|video|watch)$/i.test(t));
+
+    if (!raw.length && code) return code;
+    if (!raw.length) return "";
+
+    // Prefer longest descriptive title
+    let best = raw.sort((a, b) => b.length - a.length)[0];
+
+    // Ensure product code is at the front when available (easy to identify)
+    if (code && !best.toUpperCase().includes(code.toUpperCase())) {
+      best = `${code} ${best}`;
+    } else if (code) {
+      // Normalize: CODE + rest
+      const rest = best.replace(new RegExp(code, "i"), "").trim();
+      best = rest ? `${code} ${rest}` : code;
+    }
+
+    return cleanPageTitle(best);
+  }
+
+  function pageThumbnail() {
+    const candidates = [
+      document.querySelector('meta[property="og:image"]')?.content,
+      document.querySelector('meta[property="og:image:url"]')?.content,
+      document.querySelector('meta[property="og:image:secure_url"]')?.content,
+      document.querySelector('meta[name="twitter:image"]')?.content,
+      document.querySelector('meta[property="og:video:poster"]')?.content,
+      document.querySelector('link[rel="image_src"]')?.href,
+      document.querySelector("video[poster]")?.getAttribute("poster"),
+      document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")?.src,
+      document.querySelector("img[class*='cover' i], img[class*='thumb' i], img[class*='poster' i]")?.src,
+      // largest content image heuristic
+      ...[...document.querySelectorAll("img[src]")]
+        .filter((img) => (img.naturalWidth || img.width || 0) >= 200)
+        .sort(
+          (a, b) =>
+            (b.naturalWidth || b.width || 0) * (b.naturalHeight || b.height || 0) -
+            (a.naturalWidth || a.width || 0) * (a.naturalHeight || a.height || 0)
+        )
+        .slice(0, 3)
+        .map((img) => img.currentSrc || img.src)
+    ];
+    for (const c of candidates) {
+      const u = absUrl(c);
+      if (!u || u.startsWith("data:")) continue;
+      if (/\.svg(\?|$)/i.test(u)) continue;
+      if (/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(u)) continue;
+      return u;
+    }
+    return null;
+  }
+
+  /** poster / og:image first — no play required */
+  function captureVideoThumb(video) {
+    if (!(video instanceof HTMLVideoElement)) return pageThumbnail();
+
+    if (video.poster) {
+      const p = absUrl(video.poster);
+      if (p) return p;
+    }
+    const wrap = video.closest("[class*='player'], [class*='video'], figure, .video");
+    const img = wrap?.querySelector("img[src]");
+    if (img?.src && (!img.naturalWidth || img.naturalWidth > 40)) {
+      const u = absUrl(img.src);
+      if (u) return u;
+    }
+
+    try {
+      if (video.videoWidth && video.readyState >= 2) {
+        const maxW = 240;
+        const scale = Math.min(1, maxW / video.videoWidth);
+        const w = Math.max(1, Math.round(video.videoWidth * scale));
+        const h = Math.max(1, Math.round(video.videoHeight * scale));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(video, 0, 0, w, h);
+          return canvas.toDataURL("image/jpeg", 0.62);
+        }
+      }
+    } catch {
+      /* tainted */
+    }
+    return pageThumbnail();
+  }
+
+  function mediaLabel(el) {
+    // Always prefer page-level title (what the video is about)
+    const page = pageTitle();
+    if (page && page.length >= 2) return page;
+
+    if (!el) return "";
+    const aria = el.getAttribute("aria-label") || el.getAttribute("title");
+    if (aria && aria.length > 2 && aria.length < 160) {
+      const c = cleanPageTitle(aria);
+      if (c.length > 2) return c;
+    }
+    const root =
+      el.closest("article, section, [class*='player'], [class*='video'], figure") ||
+      el.parentElement;
+    const near = root?.querySelector("h1, h2, h3, [class*='title']");
+    const t = near?.textContent?.trim();
+    if (t && t.length > 2 && t.length < 160) {
+      const c = cleanPageTitle(t);
+      if (c.length > 2) return c;
+    }
+    return "";
+  }
+
+  function buildFilename(title, quality, ext) {
+    let base = cleanPageTitle(title) || "동영상";
+    const q = quality && !base.includes(quality) ? ` (${quality})` : "";
+    return `${base}${q}.${ext || "mp4"}`
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 120);
+  }
+
+  function sendItems(items) {
+    if (!items.length) return;
+    const fresh = [];
+    for (const i of items) {
+      if (!i.url) continue;
+      const prev = REPORTED.get(i.url);
+      const hasThumb = !!(i.thumbnail && String(i.thumbnail).length > 8);
+      if (
+        !prev ||
+        (hasThumb && !prev.hasThumb) ||
+        (i.title && i.title !== prev.title)
+      ) {
+        REPORTED.set(i.url, { hasThumb, title: i.title || prev?.title || "" });
+        fresh.push(i);
+      }
+    }
+    if (!fresh.length) return;
+    chrome.runtime
+      .sendMessage({
+        type: "PAGE_MEDIA",
+        items: fresh,
+        pageMeta: {
+          title: pageTitle(),
+          thumbnail: pageThumbnail(),
+          host: location.hostname
+        }
+      })
+      .catch(() => {});
+  }
+
+  function isLikelyAdEl(el, url) {
+    const w = el.videoWidth || el.clientWidth || 0;
+    const h = el.videoHeight || el.clientHeight || 0;
+    if (w > 0 && h > 0 && w * h <= 480 * 280) return true;
+    if (h > 0 && h <= 272 && w <= 500) return true;
+    if (url && /\d+_\d{2,4}x\d{2,4}/i.test(url)) return true;
+    // Nested in ad containers
+    if (el.closest?.('[class*="ad" i], [id*="ad" i], [class*="ads" i], [class*="banner" i], ins.adsbygoogle')) {
+      return true;
+    }
+    const dur = el.duration;
+    if (Number.isFinite(dur) && dur > 0 && dur < 5) return true;
+    return false;
+  }
+
+  function extractFromMediaEl(el) {
+    const items = [];
+    const urls = new Set();
+    const title = mediaLabel(el);
+    const thumb = captureVideoThumb(el) || pageThumbnail();
+    const host = location.hostname;
+
+    const push = (url, extra = {}) => {
+      const u = absUrl(url);
+      if (!u || urls.has(u)) return;
+      if (isLikelyAdEl(el, u)) return;
+      urls.add(u);
+      const w = el.videoWidth || undefined;
+      const h = el.videoHeight || undefined;
+      const quality = qualityFromHeight(h);
+      const isStream = /\.m3u8(\?|$|#)/i.test(u) || /\.mpd(\?|$|#)/i.test(u);
+      const isAudio = el.tagName === "AUDIO";
+      const ext = isAudio ? "mp3" : "mp4";
+      // Always use page title for filename, never CDN path
+      const niceTitle = title || pageTitle();
+      items.push({
+        url: u,
+        title: niceTitle,
+        pageTitle: pageTitle(),
+        host,
+        filename: buildFilename(niceTitle, quality, ext),
+        type: isAudio ? "audio" : isStream ? "stream" : "video",
+        source: "page",
+        width: w,
+        height: h,
+        quality,
+        isHls: /\.m3u8(\?|$|#)/i.test(u),
+        duration: Number.isFinite(el.duration) ? el.duration : undefined,
+        thumbnail: thumb || undefined,
+        ...extra
+      });
+    };
+
+    if (el.currentSrc) push(el.currentSrc);
+    if (el.src) push(el.src);
+    el.querySelectorAll("source").forEach((s) => {
+      if (s.src) push(s.src, { mime: s.type || undefined });
+    });
+
+    return items;
+  }
+
+  /**
+   * Max-style: sniff m3u8/mp4 URLs from inline scripts & HTML (123av / missav / javplayer).
+   */
+  function sniffUrlsFromPageText() {
+    const found = new Set();
+    const add = (u) => {
+      try {
+        const abs = absUrl(u);
+        if (!abs || abs.startsWith("blob:")) return;
+        if (!/\.m3u8(\?|$|#)|playlist\.m3u8|master\.m3u8|\.mp4(\?|$|#)/i.test(abs)) return;
+        // skip tiny ad-looking names
+        if (/\d+_\d{2,4}x\d{2,4}/i.test(abs)) return;
+        found.add(abs);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    // 1) All script tags (inline)
+    document.querySelectorAll("script").forEach((sc) => {
+      const t = sc.textContent || "";
+      if (t.length < 20 || t.length > 2_000_000) return;
+      // absolute urls
+      const reAbs =
+        /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?/gi;
+      let m;
+      while ((m = reAbs.exec(t))) add(m[0].replace(/\\u002F/g, "/").replace(/\\\//g, "/"));
+      // escaped JSON urls
+      const reEsc = /https?:\\\/\\\/[^"'\\]+?\.(?:m3u8|mp4)/gi;
+      while ((m = reEsc.exec(t))) {
+        add(m[0].replace(/\\u002F/g, "/").replace(/\\\//g, "/"));
+      }
+      // relative playlist paths
+      const reRel = /["']([^"']*?(?:playlist|master|index)[^"']*\.m3u8[^"']*)["']/gi;
+      while ((m = reRel.exec(t))) add(m[1]);
+      // uuid + playlist pattern (missav/surrit style)
+      // e.g. surrit.com/xxxxxxxx-xxxx.../playlist.m3u8 or /uuid/720p/video.m3u8
+      const reUuid =
+        /["'](https?:\/\/[^"']+\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[^"']*\.m3u8[^"']*)["']/gi;
+      while ((m = reUuid.exec(t))) add(m[1]);
+      // source: '...' patterns
+      const reSrc = /(?:src|source|file|url|hls|playlist)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']/gi;
+      while ((m = reSrc.exec(t))) add(m[1]);
+    });
+
+    // 2) HTML attributes
+    const html = document.documentElement?.innerHTML || "";
+    if (html.length < 3_000_000) {
+      const reAbs =
+        /https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>]*)?/gi;
+      let m;
+      while ((m = reAbs.exec(html))) {
+        if (m[0].length < 500) add(m[0]);
+      }
+    }
+
+    // 3) performance resources already loaded
+    try {
+      performance.getEntriesByType("resource").forEach((e) => {
+        if (/\.m3u8|\.mp4/i.test(e.name)) add(e.name);
+      });
+    } catch {
+      /* ignore */
+    }
+
+    return [...found];
+  }
+
+  function scanPage() {
+    const items = [];
+    const title = pageTitle();
+    const thumb = pageThumbnail();
+    const host = location.hostname;
+
+    document.querySelectorAll("video, audio").forEach((el) => {
+      items.push(...extractFromMediaEl(el));
+    });
+
+    document
+      .querySelectorAll("[data-video-url], [data-src*='.mp4'], [data-src*='.m3u8']")
+      .forEach((el) => {
+        const u = el.getAttribute("data-video-url") || el.getAttribute("data-src");
+        if (!u) return;
+        const url = absUrl(u);
+        const isStream = /\.m3u8/i.test(u);
+        let localThumb =
+          absUrl(el.getAttribute("data-poster") || el.getAttribute("poster")) ||
+          (el.querySelector?.("img") && absUrl(el.querySelector("img").src)) ||
+          thumb;
+        items.push({
+          url,
+          title,
+          pageTitle: title,
+          host,
+          filename: buildFilename(title, null, "mp4"),
+          type: isStream ? "stream" : "video",
+          source: "page",
+          isHls: isStream,
+          thumbnail: localThumb || undefined
+        });
+      });
+
+    const og = document.querySelector(
+      'meta[property="og:video"], meta[property="og:video:url"], meta[property="og:video:secure_url"]'
+    );
+    if (og?.content) {
+      items.push({
+        url: absUrl(og.content),
+        title,
+        pageTitle: title,
+        host,
+        filename: buildFilename(title, null, "mp4"),
+        type: "video",
+        source: "page",
+        thumbnail: thumb || undefined
+      });
+    }
+
+    // Script sniff — critical for 123av / missav-style players
+    for (const u of sniffUrlsFromPageText()) {
+      const isHls = /\.m3u8/i.test(u);
+      items.push({
+        url: u,
+        title,
+        pageTitle: title,
+        host,
+        filename: buildFilename(title, null, "mp4"),
+        type: isHls ? "stream" : "video",
+        source: "script-sniff",
+        isHls,
+        thumbnail: thumb || undefined
+      });
+    }
+
+    chrome.runtime
+      .sendMessage({
+        type: "PAGE_META",
+        pageMeta: { title, thumbnail: thumb, host }
+      })
+      .catch(() => {});
+
+    sendItems(items.filter((i) => i.url));
+  }
+
+  function scheduleScan() {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(scanPage, 400);
+  }
+
+  const mo = new MutationObserver(() => scheduleScan());
+  mo.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["src", "href", "poster"]
+  });
+
+  document.addEventListener(
+    "loadedmetadata",
+    (e) => {
+      if (e.target instanceof HTMLMediaElement) {
+        if (e.target.currentSrc) REPORTED.delete(e.target.currentSrc);
+        if (e.target.src) REPORTED.delete(e.target.src);
+        scheduleScan();
+      }
+    },
+    true
+  );
+  document.addEventListener(
+    "loadeddata",
+    (e) => {
+      if (e.target instanceof HTMLVideoElement) {
+        if (e.target.currentSrc) REPORTED.delete(e.target.currentSrc);
+        scheduleScan();
+      }
+    },
+    true
+  );
+  document.addEventListener(
+    "play",
+    (e) => {
+      if (e.target instanceof HTMLMediaElement) {
+        if (e.target.currentSrc) REPORTED.delete(e.target.currentSrc);
+        scheduleScan();
+      }
+    },
+    true
+  );
+  // After seek/play, frame may be ready for canvas thumb
+  document.addEventListener(
+    "seeked",
+    (e) => {
+      if (e.target instanceof HTMLVideoElement) {
+        if (e.target.currentSrc) REPORTED.delete(e.target.currentSrc);
+        scheduleScan();
+      }
+    },
+    true
+  );
+
+  function injectPageScript() {
+    try {
+      const s = document.createElement("script");
+      s.src = chrome.runtime.getURL("src/injected.js");
+      s.onload = () => s.remove();
+      (document.documentElement || document.head).appendChild(s);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== "universal-video-downloader") return;
+    if (data.type === "FOUND_MEDIA" && Array.isArray(data.items)) {
+      const title = pageTitle();
+      const thumb = pageThumbnail();
+      // Prefer real URLs over blob noise in listing later; still report both
+      sendItems(
+        data.items
+          .filter((i) => {
+            const url = i.url || "";
+            // skip pure tiny segment noise from inject
+            if (i.type === "segment") return false;
+            return !!url;
+          })
+          .map((i) => {
+            const url = absUrl(i.url) || i.url;
+            const isHls = /\.m3u8/i.test(url || "");
+            return {
+              ...i,
+              url,
+              title,
+              pageTitle: title,
+              host: location.hostname,
+              filename: buildFilename(title, i.quality, isHls ? "mp4" : "mp4"),
+              source: "injected",
+              thumbnail: thumb || undefined,
+              isHls: isHls || i.isHls
+            };
+          })
+      );
+    }
+  });
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (msg.type === "SCAN_NOW") {
+      REPORTED.clear();
+      scanPage();
+      sendResponse({
+        ok: true,
+        pageMeta: {
+          title: pageTitle(),
+          thumbnail: pageThumbnail(),
+          host: location.hostname
+        }
+      });
+      return false;
+    }
+
+    if (msg.type === "PING_CONTENT") {
+      sendResponse({
+        ok: true,
+        hasDownload: !!(window.__UVD_PAGE_DOWNLOAD__ && window.__UVD_PAGE_DOWNLOAD__.smartDownload)
+      });
+      return false;
+    }
+
+    if (msg.type === "SMART_DOWNLOAD") {
+      const api = window.__UVD_PAGE_DOWNLOAD__;
+      if (!api?.smartDownload) {
+        sendResponse({ ok: false, error: "다운로드 모듈 로드 실패 — 페이지를 새로고침 하세요" });
+        return false;
+      }
+      api
+        .smartDownload(
+          {
+            url: msg.url,
+            filename: msg.filename,
+            preferQuality: msg.preferQuality || "best",
+            type: msg.mediaType || msg.type
+          },
+          (p) => {
+            chrome.runtime
+              .sendMessage({
+                type: "HLS_PROGRESS",
+                tabId: msg.tabId,
+                progress: p
+              })
+              .catch(() => {});
+          }
+        )
+        .then((result) => sendResponse(result))
+        .catch((err) =>
+          sendResponse({ ok: false, error: String(err?.message || err) })
+        );
+      return true;
+    }
+
+    if (msg.type === "CAPTURE_BLOB") {
+      captureBlobFromPage(msg.url)
+        .then((result) => sendResponse(result))
+        .catch((err) => sendResponse({ ok: false, error: String(err.message || err) }));
+      return true;
+    }
+
+    if (msg.type === "GET_PAGE_META") {
+      sendResponse({
+        title: pageTitle(),
+        thumbnail: pageThumbnail(),
+        host: location.hostname
+      });
+      return false;
+    }
+
+    return false;
+  });
+
+  async function captureBlobFromPage(blobUrl) {
+    const videos = [...document.querySelectorAll("video, audio")];
+    let el = videos.find((v) => v.currentSrc === blobUrl || v.src === blobUrl);
+    if (!el && videos.length === 1) el = videos[0];
+
+    const title = mediaLabel(el) || pageTitle();
+    const q =
+      el instanceof HTMLVideoElement ? qualityFromHeight(el.videoHeight) : undefined;
+
+    const tryBlob = async (url) => {
+      const res = await fetch(url);
+      const blob = await res.blob();
+      if (!blob.size) throw new Error("empty");
+      const dataUrl = await blobToDataUrl(blob);
+      const ext = mimeToExt(blob.type);
+      return {
+        ok: true,
+        dataUrl,
+        filename: buildFilename(title, q, ext),
+        size: blob.size,
+        mime: blob.type
+      };
+    };
+
+    if (el) {
+      try {
+        return await tryBlob(blobUrl || el.currentSrc);
+      } catch {
+        /* fallthrough */
+      }
+    }
+    if (blobUrl?.startsWith("blob:")) {
+      try {
+        return await tryBlob(blobUrl);
+      } catch (e) {
+        return { ok: false, error: "Cannot read blob: " + e.message };
+      }
+    }
+    return { ok: false, error: "No capturable blob video found on page" };
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function mimeToExt(mime) {
+    if (!mime) return "mp4";
+    if (mime.includes("webm")) return "webm";
+    if (mime.includes("mp4")) return "mp4";
+    if (mime.includes("ogg")) return "ogv";
+    if (mime.includes("audio/mpeg")) return "mp3";
+    return "mp4";
+  }
+
+  injectPageScript();
+  // Thumbnail/title ASAP so popup list is not empty of covers
+  chrome.runtime
+    .sendMessage({
+      type: "PAGE_META",
+      pageMeta: {
+        title: pageTitle(),
+        thumbnail: pageThumbnail(),
+        host: location.hostname
+      }
+    })
+    .catch(() => {});
+  scanPage();
+  setTimeout(scanPage, 800);
+  setTimeout(scanPage, 2000);
+  setTimeout(scanPage, 5000);
+})();
