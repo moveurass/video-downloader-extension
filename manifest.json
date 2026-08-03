@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.8.9",
-  "description": "페이지 영상 감지 및 HLS 병합 다운로드",
+  "version": "1.9.5",
+  "description": "페이지 영상·HLS 다운로드 + YouTube/TikTok(로컬 도우미)",
   "permissions": [
     "downloads",
     "storage",

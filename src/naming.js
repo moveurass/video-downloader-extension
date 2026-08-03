@@ -20,6 +20,10 @@ const Naming = (() => {
     let t = String(title).trim();
     // HTML entities
     t = t.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+    // Browser / site notification counts: "(2) Video title", "(12) Inbox"
+    t = t.replace(/^\(\d{1,4}\)\s*/, "");
+    // Leading episode-style junk only when alone: "2. " at start of very short prefixes
+    t = t.replace(/^[\(\[]?\d{1,3}[\)\]]\s+/, "");
     // Remove site brand suffixes (adult tubes included)
     t = t.replace(
       /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|nico(?:nico)?|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|JavLibrary|JavDB|MissAV|Jable|Avgle|ThisAV|Netflav|Supjav).*$/i,
@@ -34,6 +38,8 @@ const Naming = (() => {
     });
     // Normalize product code spacing: "ssis-001title" → keep as-is if already fine
     t = t.replace(/^\[?([A-Za-z]{2,12}-\d{2,5})\]?\s*/i, (_, code) => code.toUpperCase() + " ");
+    // Again after brand strip (e.g. "(2) Title - YouTube")
+    t = t.replace(/^\(\d{1,4}\)\s*/, "");
     return sanitize(t, 80);
   }
 
@@ -155,8 +161,13 @@ const Naming = (() => {
       base = base.slice(0, 53).replace(/\s+\S*$/, "") || base.slice(0, 53);
     }
 
-    let q = quality && quality !== "unknown" ? String(quality).replace(/[()]/g, "") : "";
+    // Only keep real resolution labels — not "best" / "all"
+    let q = quality && quality !== "unknown" ? String(quality).replace(/[()]/g, "").trim() : "";
+    if (/^(best|all|unknown|highest|default)$/i.test(q)) q = "";
     if (q && base.includes(q)) q = "";
+
+    // Strip leftover notification prefixes from base
+    base = base.replace(/^\(\d{1,4}\)\s*/, "").trim() || base;
 
     let body = q ? `${base}_${q}` : base;
     if (index > 0) body = `${body}_${index + 1}`;

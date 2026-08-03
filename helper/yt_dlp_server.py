@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -137,111 +138,275 @@ def run_download(job_id: str, payload: dict) -> None:
         else:
             target = url
 
-    # output template
+    # output template — clean human names (no "(2) " notification prefix, no "_best")
+    def clean_name(raw: str) -> str:
+        s = (raw or "").strip()
+        # strip extension
+        for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a", ".mp3"):
+            if s.lower().endswith(ext):
+                s = s[: -len(ext)]
+        # notification / tab counters: "(2) title"
+        s = re.sub(r"^\(\d{1,4}\)\s*", "", s)
+        s = re.sub(r"^\[\d{1,4}\]\s*", "", s)
+        # useless quality tags we sometimes pass from the extension
+        s = re.sub(r"[_\s-]*(best|all|unknown)$", "", s, flags=re.I)
+        s = re.sub(r"[_\s-]*(best|all)[_\s-]*", " ", s, flags=re.I)
+        s = "".join(c if c not in '<>:"/\\|?*' else " " for c in s)
+        s = " ".join(s.split()).strip(" ._-" )[:80]
+        return s or "video"
+
     if title_hint:
-        safe = "".join(c if c not in '<>:"/\\|?*' else " " for c in title_hint)
-        safe = " ".join(safe.split())[:80] or "video"
-        # strip extension from hint
-        for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a"):
-            if safe.lower().endswith(ext):
-                safe = safe[: -len(ext)]
+        safe = clean_name(title_hint)
         outtmpl = str(OUT_DIR / f"{safe}.%(ext)s")
     else:
-        outtmpl = str(OUT_DIR / "%(title).80B [%(id)s].%(ext)s")
+        # yt-dlp title; still strip leading (N) via output template filter is limited,
+        # so use plain title and rely on post-rename if needed
+        outtmpl = str(OUT_DIR / "%(title).80B.%(ext)s")
 
-    # format selection
-    if quality in ("best", "all", ""):
-        fmt = "bv*+ba/b"
-    elif quality == "4K":
-        fmt = "bv*[height<=2160]+ba/b[height<=2160]/b"
-    elif quality.endswith("p") and quality[:-1].isdigit():
-        h = quality[:-1]
-        fmt = f"bv*[height<=?{h}]+ba/b[height<=?{h}]/b"
+    site = (payload.get("site") or "").lower()
+    host = ""
+    try:
+        host = urlparse(target).hostname or ""
+    except Exception:
+        host = ""
+
+    is_youtube = site == "youtube" or "youtube" in host or "youtu.be" in target
+    is_tiktok = site == "tiktok" or "tiktok" in host
+
+    # ── format selection (maximize quality; never re-encode) ──
+    # YouTube serves separate video/audio streams. Must pick best of each + merge.
+    # Avoid forcing android client — it often caps at 360p/720p.
+    merge_fmt = "mp4"
+    sort_args: list[str] = []
+
+    if is_tiktok:
+        if quality in ("best", "all", ""):
+            fmt = "b"
+        elif quality.endswith("p") and quality[:-1].isdigit():
+            h = quality[:-1]
+            fmt = f"b[height<=?{h}]/b"
+        else:
+            fmt = "b"
+    elif is_youtube:
+        # Max resolution + best audio, with broad fallbacks so "format not available" is rare.
+        # (Do not force player_client=web/tv/ios — some sessions mark those DRM-only.)
+        if quality in ("best", "all", "", "4K", "2160p", "max", "highest"):
+            fmt = "bv*+ba/b"
+        elif quality == "1440p":
+            fmt = "bv*[height<=1440]+ba/b[height<=1440]/bv*+ba/b"
+        elif quality == "1080p":
+            fmt = "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b"
+        elif quality == "720p":
+            fmt = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"
+        elif quality.endswith("p") and quality[:-1].isdigit():
+            h = quality[:-1]
+            fmt = f"bv*[height<=?{h}]+ba/b[height<=?{h}]/bv*+ba/b"
+        else:
+            fmt = "bv*+ba/b"
+        # Highest resolution first (4K > 1080)
+        sort_args = ["-S", "res,fps,hdr:12,vbr,tbr,abr,asr"]
+        # mkv accepts VP9/AV1+Opus without re-encode; mp4 fallback after merge if needed
+        merge_fmt = "mkv"
     else:
-        fmt = "bv*+ba/b"
+        if quality in ("best", "all", ""):
+            fmt = "bv*+ba/b"
+        elif quality.endswith("p") and quality[:-1].isdigit():
+            h = quality[:-1]
+            fmt = f"bv*[height<=?{h}]+ba/b[height<=?{h}]/b"
+        else:
+            fmt = "bv*+ba/b"
 
-    cmd = [
-        bin_path,
-        "--no-playlist",
-        "--newline",
-        "-f",
-        fmt,
-        "--merge-output-format",
-        "mp4",
-        "-o",
-        outtmpl,
-        "--restrict-filenames",
-        "--no-overwrites",
-        "--ignore-config",
-    ]
-
+    # Concurrent DASH/HLS fragments (4K has many fragments — parallel is essential)
+    concurrent = "16" if is_youtube else "4"
     referer = page_url or payload.get("referer") or ""
-    if referer:
-        cmd.extend(["--add-header", f"Referer:{referer}"])
-        try:
-            origin = f"{urlparse(referer).scheme}://{urlparse(referer).netloc}"
-            cmd.extend(["--add-header", f"Origin:{origin}"])
-        except Exception:
-            pass
 
-    cookies = payload.get("cookies")  # optional Netscape string path later
-    if cookies and Path(cookies).is_file():
-        cmd.extend(["--cookies", cookies])
+    def build_cmd(format_str: str, merge: str, extra: list[str] | None = None) -> list[str]:
+        c = [
+            bin_path,
+            "--no-playlist",
+            "--newline",
+            "-f",
+            format_str,
+            "--merge-output-format",
+            merge,
+            "-o",
+            outtmpl,
+            "--no-overwrites",
+            "--ignore-config",
+            "--no-mtime",
+            "--retries",
+            "5",
+            "--fragment-retries",
+            "5",
+            "-N",
+            concurrent,
+            "--http-chunk-size",
+            "10M",
+            "--socket-timeout",
+            "20",
+        ]
+        c.extend(sort_args)
+        if not title_hint:
+            c.append("--restrict-filenames")
+        if referer:
+            c.extend(["--add-header", f"Referer:{referer}"])
+            try:
+                origin = f"{urlparse(referer).scheme}://{urlparse(referer).netloc}"
+                c.extend(["--add-header", f"Origin:{origin}"])
+            except Exception:
+                pass
+        cookies = payload.get("cookies")
+        if cookies and Path(cookies).is_file():
+            c.extend(["--cookies", cookies])
+        if payload.get("cookiesFromBrowser"):
+            c.extend(["--cookies-from-browser", str(payload["cookiesFromBrowser"])])
+        # Do NOT force youtube player_client — default clients get 4K and avoid DRM traps
+        if extra:
+            c.extend(extra)
+        c.append(target)
+        return c
 
-    cmd.append(target)
+    # Attempt chain: best quality → progressive best → any video
+    attempts: list[tuple[str, str, list[str]]] = [
+        (fmt, merge_fmt if is_youtube else "mp4", []),
+        ("bv*+ba/b", "mkv", []),
+        ("bestvideo+bestaudio/best", "mkv", []),
+        ("best", "mp4", []),
+    ]
+    # de-dupe identical format strings
+    seen_fmt = set()
+    uniq_attempts = []
+    for a in attempts:
+        if a[0] in seen_fmt:
+            continue
+        seen_fmt.add(a[0])
+        uniq_attempts.append(a)
+    attempts = uniq_attempts
 
     with jobs_lock:
-        jobs[job_id]["cmd"] = " ".join(cmd[:6]) + " …"
         jobs[job_id]["target"] = target
         jobs[job_id]["outDir"] = str(OUT_DIR)
+        jobs[job_id]["message"] = "포맷 선택 중…"
+
+    started_at = time.time()
+    printed_paths: list[str] = []
+    last_line = ""
+    code = 1
 
     try:
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-        )
-        assert proc.stdout is not None
-        last_line = ""
-        for line in proc.stdout:
-            line = line.rstrip()
-            last_line = line
-            percent = None
-            # [download]  45.2% of ...
-            if "[download]" in line and "%" in line:
-                try:
-                    part = line.split("%")[0].split()[-1]
-                    percent = float(part)
-                except Exception:
-                    percent = None
+        for attempt_i, (fmt_try, merge_try, extra) in enumerate(attempts):
+            cmd = build_cmd(fmt_try, merge_try, extra)
             with jobs_lock:
-                jobs[job_id]["message"] = line[-200:]
-                if percent is not None:
-                    jobs[job_id]["percent"] = max(2, min(99, percent))
-                elif "Destination" in line or "Merging" in line:
-                    jobs[job_id]["percent"] = max(jobs[job_id].get("percent", 50), 90)
-                    jobs[job_id]["message"] = "파일 합치는 중…"
+                jobs[job_id]["cmd"] = " ".join(cmd[:8]) + " …"
+                if attempt_i:
+                    jobs[job_id]["message"] = f"다른 화질로 재시도 ({attempt_i + 1}/{len(attempts)})…"
+                    jobs[job_id]["percent"] = max(2, jobs[job_id].get("percent", 2))
 
-        code = proc.wait(timeout=3600)
-        with jobs_lock:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert proc.stdout is not None
+            last_line = ""
+            printed_paths = []
+            for line in proc.stdout:
+                line = line.rstrip()
+                last_line = line
+                if line.startswith("/") or (len(line) > 3 and line[1:3] == ":\\"):
+                    if any(
+                        line.lower().endswith(ext)
+                        for ext in (".mp4", ".webm", ".mkv", ".m4a", ".mp3")
+                    ):
+                        printed_paths.append(line)
+                percent = None
+                if "[download]" in line and "%" in line:
+                    try:
+                        part = line.split("%")[0].split()[-1]
+                        percent = float(part)
+                    except Exception:
+                        percent = None
+                with jobs_lock:
+                    jobs[job_id]["message"] = line[-200:]
+                    if percent is not None:
+                        jobs[job_id]["percent"] = max(2, min(99, percent))
+                    elif "Destination" in line or "Merging" in line or "Merger" in line:
+                        jobs[job_id]["percent"] = max(jobs[job_id].get("percent", 50), 90)
+                        jobs[job_id]["message"] = "파일 합치는 중…"
+
+            code = proc.wait(timeout=3600)
             if code == 0:
+                break
+            # Retry only on format / DRM style failures
+            err_l = (last_line or "").lower()
+            if "format is not available" in err_l or "only images are available" in err_l or "drm" in err_l:
+                continue
+            # Other errors: don't keep retrying forever
+            if attempt_i + 1 < len(attempts) and "http error 403" in err_l:
+                continue
+            break
+
+        # Resolve output file
+        final_path = None
+        final_size = 0
+        if printed_paths:
+            final_path = printed_paths[-1]
+        else:
+            # Newest video file written after we started
+            candidates = []
+            for pat in ("*.mp4", "*.webm", "*.mkv", "*.m4a"):
+                candidates.extend(OUT_DIR.glob(pat))
+            candidates = [p for p in candidates if p.is_file() and p.stat().st_mtime >= started_at - 2]
+            candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            if candidates:
+                final_path = str(candidates[0])
+
+        if final_path and Path(final_path).is_file():
+            final_size = Path(final_path).stat().st_size
+
+        with jobs_lock:
+            if code == 0 and final_path and final_size > 50_000:
+                jobs[job_id].update(
+                    {
+                        "status": "done",
+                        "percent": 100,
+                        "message": f"저장 완료 → {final_path}",
+                        "path": final_path,
+                        "filename": Path(final_path).name,
+                        "size": final_size,
+                        "finishedAt": time.time(),
+                    }
+                )
+            elif code == 0:
                 jobs[job_id].update(
                     {
                         "status": "done",
                         "percent": 100,
                         "message": f"저장 완료 → {OUT_DIR}",
+                        "path": final_path or str(OUT_DIR),
+                        "size": final_size,
                         "finishedAt": time.time(),
                     }
                 )
             else:
+                err = last_line or f"yt-dlp 종료 코드 {code}"
+                # Friendly common errors
+                if "Sign in to confirm" in err or "login required" in err.lower():
+                    err = "로그인이 필요한 영상입니다. 브라우저에서 로그인한 뒤 다시 시도해 주세요"
+                elif "Private video" in err or "private" in err.lower():
+                    err = "비공개 영상이라 받을 수 없습니다"
+                elif "Video unavailable" in err:
+                    err = "영상을 사용할 수 없습니다"
+                elif "format is not available" in err.lower() or "only images are available" in err.lower():
+                    err = "이 영상의 재생 포맷을 받지 못했습니다. 잠시 후 다시 시도해 주세요"
                 jobs[job_id].update(
                     {
                         "status": "error",
                         "percent": 0,
-                        "message": last_line or f"yt-dlp 종료 코드 {code}",
-                        "error": last_line or f"exit {code}",
+                        "message": err,
+                        "error": err,
                         "finishedAt": time.time(),
                     }
                 )
@@ -298,6 +463,135 @@ class Handler(BaseHTTPRequestHandler):
         send_json(self, 404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
+        # List available video heights / quality labels (no download)
+        if self.path == "/formats" or self.path.startswith("/formats?"):
+            payload = read_json(self)
+            bin_path = find_ytdlp()
+            if not bin_path:
+                send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "error": "yt-dlp not installed",
+                        "hint": "pip install -U yt-dlp",
+                    },
+                )
+                return
+            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
+            if not url:
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            try:
+                out = subprocess.check_output(
+                    [
+                        bin_path,
+                        "--skip-download",
+                        "--no-playlist",
+                        "--ignore-config",
+                        "-J",
+                        url,
+                    ],
+                    text=True,
+                    timeout=90,
+                    stderr=subprocess.DEVNULL,
+                )
+                info = json.loads(out)
+            except subprocess.TimeoutExpired:
+                send_json(self, 504, {"ok": False, "error": "포맷 조회 시간 초과"})
+                return
+            except Exception as e:
+                send_json(
+                    self,
+                    500,
+                    {"ok": False, "error": f"포맷 조회 실패: {e}"},
+                )
+                return
+
+            # Collect video heights from formats (and nested entries for playlists)
+            entries = info.get("entries") or [info]
+            heights: set[int] = set()
+            for ent in entries:
+                if not ent:
+                    continue
+                for f in ent.get("formats") or []:
+                    if not f:
+                        continue
+                    # video-only or combined with video
+                    h = f.get("height")
+                    vcodec = (f.get("vcodec") or "none").lower()
+                    if h and vcodec != "none":
+                        try:
+                            heights.add(int(h))
+                        except (TypeError, ValueError):
+                            pass
+                # top-level height
+                if ent.get("height"):
+                    try:
+                        heights.add(int(ent["height"]))
+                    except (TypeError, ValueError):
+                        pass
+
+            # Map to UI labels (only buckets that exist). Skip tiny storyboard-like sizes.
+            def label_for(h: int) -> str | None:
+                if h < 240:
+                    return None
+                if h >= 2160:
+                    return "4K"
+                if h >= 1440:
+                    return "1440p"
+                if h >= 1080:
+                    return "1080p"
+                if h >= 720:
+                    return "720p"
+                if h >= 480:
+                    return "480p"
+                if h >= 360:
+                    return "360p"
+                return "240p"
+
+            # Prefer one chip per bucket (highest height in that bucket kept for sorting)
+            bucket_max: dict[str, int] = {}
+            for h in heights:
+                lab = label_for(h)
+                if not lab:
+                    continue
+                bucket_max[lab] = max(bucket_max.get(lab, 0), h)
+
+            order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"]
+            qualities = []
+            # "best" always first — means max available
+            if bucket_max:
+                qualities.append(
+                    {
+                        "id": "best",
+                        "label": "최고",
+                        "height": max(bucket_max.values()),
+                    }
+                )
+            for lab in order:
+                if lab in bucket_max:
+                    qualities.append(
+                        {"id": lab, "label": lab, "height": bucket_max[lab]}
+                    )
+            # any odd heights not in buckets
+            for lab, h in sorted(bucket_max.items(), key=lambda x: -x[1]):
+                if lab not in order and lab != "best":
+                    qualities.append({"id": lab, "label": lab, "height": h})
+
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "url": url,
+                    "title": info.get("title") or "",
+                    "heights": sorted(heights, reverse=True),
+                    "qualities": qualities,
+                },
+            )
+            return
+
         if self.path == "/download" or self.path.startswith("/download?"):
             payload = read_json(self)
             bin_path = find_ytdlp()

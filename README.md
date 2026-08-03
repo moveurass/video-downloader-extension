@@ -1,8 +1,8 @@
 # Universal Video Downloader
 
-Chrome(Chromium) 확장 프로그램 — 페이지 미디어 감지 + (선택) **로컬 yt-dlp** 로 훨씬 많은 사이트 지원.
+Chrome(Chromium) 확장 프로그램 — 페이지 미디어 감지 + HLS 병합 + **YouTube / TikTok** (로컬 yt-dlp 도우미).
 
-**v1.6.0** — yt-dlp 헬퍼 연동, 페이지 통째로 받기
+**v1.9.0** — YouTube·TikTok 페이지 다운로드, 도우미 상태 표시
 
 ## 기능
 

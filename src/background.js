@@ -64,6 +64,85 @@ function isRealHls(url, mediaType) {
   return false;
 }
 
+function hostOf(url) {
+  try {
+    return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isYoutubeUrl(url) {
+  const h = hostOf(url);
+  if (!h) return false;
+  return (
+    h === "youtu.be" ||
+    h === "youtube.com" ||
+    h === "m.youtube.com" ||
+    h === "music.youtube.com" ||
+    h.endsWith(".youtube.com") ||
+    h === "youtube-nocookie.com" ||
+    h.endsWith(".youtube-nocookie.com")
+  );
+}
+
+function isTiktokUrl(url) {
+  const h = hostOf(url);
+  if (!h) return false;
+  return (
+    h === "tiktok.com" ||
+    h.endsWith(".tiktok.com") ||
+    h === "vm.tiktok.com" ||
+    h === "vt.tiktok.com" ||
+    h === "m.tiktok.com" ||
+    h.includes("tiktokv.com") ||
+    h.includes("tiktokcdn")
+  );
+}
+
+/** Sites that need local yt-dlp helper for reliable full-quality download */
+function needsYtDlpHelper(url, pageUrl) {
+  return (
+    isYoutubeUrl(url) ||
+    isYoutubeUrl(pageUrl) ||
+    isTiktokUrl(url) ||
+    isTiktokUrl(pageUrl)
+  );
+}
+
+function siteKind(url, pageUrl) {
+  if (isYoutubeUrl(url) || isYoutubeUrl(pageUrl)) return "youtube";
+  if (isTiktokUrl(url) || isTiktokUrl(pageUrl)) return "tiktok";
+  return null;
+}
+
+function makeSitePlaceholder(tab) {
+  const pageUrl = tab?.url || "";
+  const kind = siteKind(pageUrl, pageUrl);
+  if (!kind) return null;
+  const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
+  const title =
+    meta?.title ||
+    Naming.cleanPageTitle(tab?.title || "") ||
+    (kind === "youtube" ? "YouTube 영상" : "TikTok 영상");
+  const item = enrichItem(tab.id, {
+    url: pageUrl,
+    type: "stream",
+    isHls: false,
+    isSiteDownload: true,
+    site: kind,
+    source: kind,
+    title,
+    pageTitle: title,
+    pageUrl,
+    thumbnail: meta?.thumbnail,
+    host: hostOf(pageUrl),
+    quality: "best",
+    format: "MP4"
+  });
+  return item;
+}
+
 function classifyMedia(url, mime = "") {
   const ext = extFromUrl(url);
   const m = (mime || "").toLowerCase();
@@ -78,6 +157,11 @@ function isLikelyMedia(url, mime = "", size = 0) {
   if (!url || url.startsWith("chrome") || url.startsWith("data:")) return false;
   if (url.startsWith("blob:")) return false;
   if (/\.m3u8(\?|$|#)/i.test(url) || /mpegurl|m3u8/i.test(mime || "")) return true;
+  // YouTube / TikTok CDN (often no file extension)
+  if (/googlevideo\.com\/videoplayback/i.test(url) && !/[&?]oad=/i.test(url)) return true;
+  if (/tiktokcdn|musical\.ly|byteicdn|ibyteimg|tiktokv\.com/i.test(url) && /video|play|media|mime_type=video/i.test(url)) {
+    return true;
+  }
   if (Naming.isJunkMedia({ url, size, type: "video" })) return false;
   if (/\d+_\d{2,4}x\d{2,4}/i.test(url)) return false;
   if (/doubleclick|googlesyndication|exoclick|trafficjunky/i.test(url)) return false;
@@ -429,29 +513,149 @@ function filterDisplayable(map) {
 }
 
 function updateBadge(tabId) {
-  const map = tabMedia.get(tabId);
-  const count = map ? filterDisplayable(map).length : 0;
-  chrome.action.setBadgeText({
-    tabId,
-    text: count > 0 ? String(count) : ""
-  });
+  // Async badge so YT/TT still show "1"
+  getMediaForTabAsync(tabId)
+    .then((items) => {
+      const count = items?.length || 0;
+      chrome.action.setBadgeText({
+        tabId,
+        text: count > 0 ? String(count) : ""
+      });
+    })
+    .catch(() => {
+      const map = tabMedia.get(tabId);
+      const count = map ? filterDisplayable(map).length : 0;
+      chrome.action.setBadgeText({
+        tabId,
+        text: count > 0 ? String(count) : ""
+      });
+    });
   chrome.action.setBadgeBackgroundColor({ color: "#e11d48" });
 }
 
 function broadcastUpdate(tabId) {
-  chrome.runtime
-    .sendMessage({
-      type: "MEDIA_UPDATED",
-      tabId,
-      items: getMediaForTab(tabId)
+  // Must include YT/TT placeholders — sync getMediaForTab() is empty on those sites
+  getMediaForTabAsync(tabId)
+    .then((items) => {
+      chrome.runtime
+        .sendMessage({
+          type: "MEDIA_UPDATED",
+          tabId,
+          items: items || []
+        })
+        .catch(() => {});
     })
-    .catch(() => {});
+    .catch(() => {
+      chrome.runtime
+        .sendMessage({
+          type: "MEDIA_UPDATED",
+          tabId,
+          items: getMediaForTab(tabId)
+        })
+        .catch(() => {});
+    });
 }
 
 function getMediaForTab(tabId) {
   const map = tabMedia.get(tabId);
   if (!map) return [];
   return filterDisplayable(map);
+}
+
+/**
+ * For YouTube/TikTok: if no stream captured yet, still expose a page-level download item.
+ */
+async function getMediaForTabAsync(tabId, hint = {}) {
+  let items = getMediaForTab(tabId);
+  const pageUrl = hint.pageUrl || "";
+  const titleHint = hint.title || "";
+
+  // Prefer explicit pageUrl from popup (more reliable than tabs.get alone)
+  if (pageUrl && /^https?:/i.test(pageUrl) && needsYtDlpHelper(pageUrl, pageUrl)) {
+    const placeholder = makeSitePlaceholder({
+      id: tabId,
+      url: pageUrl,
+      title: titleHint
+    });
+    if (placeholder) return [placeholder];
+  }
+
+  if (tabId == null) return items;
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = tab?.url || tab?.pendingUrl || pageUrl;
+    if (!url || !/^https?:/i.test(url)) return items;
+    // YouTube / TikTok: always expose page-level item (yt-dlp)
+    if (needsYtDlpHelper(url, url)) {
+      const placeholder = makeSitePlaceholder({
+        id: tab.id,
+        url,
+        title: tab.title || titleHint
+      });
+      return placeholder ? [placeholder] : items;
+    }
+  } catch (e) {
+    console.warn("[UVD] getMediaForTabAsync", e);
+    if (pageUrl && needsYtDlpHelper(pageUrl, pageUrl)) {
+      const placeholder = makeSitePlaceholder({
+        id: tabId,
+        url: pageUrl,
+        title: titleHint
+      });
+      if (placeholder) return [placeholder];
+    }
+  }
+  return items;
+}
+
+async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
+  const available = await YtDlp.available();
+  if (!available) {
+    throw new Error(
+      "YouTube·TikTok은 로컬 도우미가 필요합니다. helper/start.command 를 실행한 뒤 다시 시도해 주세요"
+    );
+  }
+
+  const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : url;
+  const kind = siteKind(url, targetPage);
+  const label =
+    kind === "youtube" ? "YouTube" : kind === "tiktok" ? "TikTok" : "영상";
+
+  emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start");
+
+  const result = await YtDlp.downloadAndWait(
+    {
+      url: targetPage,
+      pageUrl: targetPage,
+      filename: filename || undefined,
+      title: filename || undefined,
+      quality: preferQuality || "best",
+      site: kind || undefined
+    },
+    (p) => {
+      let message = p.message || "받는 중…";
+      // Soften raw yt-dlp lines
+      if (/\[download\]/i.test(message)) message = `받는 중… ${Math.round(p.percent || 0)}%`;
+      if (/Merging|Merger/i.test(message)) message = "파일 합치는 중…";
+      if (/Destination|Writing/i.test(message)) message = "저장 중…";
+      if (/ERROR/i.test(message)) message = message.slice(0, 120);
+      emitDownloadProgress(tabId, p.percent || 10, message, p.status || "download");
+    },
+    40 * 60 * 1000
+  );
+
+  emitDownloadProgress(tabId, 100, "저장 완료", "done");
+  return {
+    ok: true,
+    method: "yt-dlp",
+    // No chrome.downloads id — file written by helper to Downloads/VideoDownloader
+    downloadId: null,
+    ytdlp: true,
+    path: result.path || result.outDir || "",
+    outDir: result.outDir || "",
+    filename: result.filename || filename,
+    size: result.size || 0
+  };
 }
 
 function bestNonBlobAlternative(tabId, excludeUrl) {
@@ -1265,6 +1469,33 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
 
   emitDownloadProgress(tabId, 3, "시작…", "start");
 
+  // YouTube / TikTok → local yt-dlp helper (primary)
+  const forceHelper =
+    options.preferYtDlp === true ||
+    itemHint?.isSiteDownload ||
+    itemHint?.site === "youtube" ||
+    itemHint?.site === "tiktok" ||
+    needsYtDlpHelper(url, pageUrl);
+
+  if (forceHelper) {
+    try {
+      return await downloadViaYtDlp(
+        tabId,
+        url,
+        pageUrl || url,
+        filename,
+        preferQuality
+      );
+    } catch (e) {
+      // For YT/TT do not fall through to broken browser paths unless helper said optional
+      const msg = String(e?.message || e);
+      if (needsYtDlpHelper(url, pageUrl) || itemHint?.isSiteDownload) {
+        throw e instanceof Error ? e : new Error(msg);
+      }
+      errors.push(msg);
+    }
+  }
+
   let workUrl = url;
   let workType = mediaType;
   let workItem = itemHint;
@@ -1415,8 +1646,132 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "GET_MEDIA": {
-      sendResponse({ items: getMediaForTab(msg.tabId) });
-      break;
+      getMediaForTabAsync(msg.tabId, {
+        pageUrl: msg.pageUrl || "",
+        title: msg.title || ""
+      })
+        .then((items) => sendResponse({ items: items || [] }))
+        .catch((e) => {
+          console.warn("[UVD] GET_MEDIA", e);
+          // Last-resort placeholder from message fields
+          if (msg.pageUrl && needsYtDlpHelper(msg.pageUrl, msg.pageUrl)) {
+            const ph = makeSitePlaceholder({
+              id: msg.tabId,
+              url: msg.pageUrl,
+              title: msg.title || ""
+            });
+            sendResponse({ items: ph ? [ph] : [] });
+          } else {
+            sendResponse({ items: getMediaForTab(msg.tabId) });
+          }
+        });
+      return true;
+    }
+    case "YTDLP_HEALTH": {
+      YtDlp.health(!!msg.force)
+        .then((h) => sendResponse({ ok: true, ...h }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "LIST_QUALITIES": {
+      // Available qualities for current page / stream (YouTube via yt-dlp, HLS via probe)
+      const url = msg.url || msg.pageUrl || "";
+      const tid = msg.tabId ?? tabId;
+      (async () => {
+        try {
+          if (!url) {
+            sendResponse({ ok: false, error: "url 없음", qualities: [] });
+            return;
+          }
+          // HLS master playlist — variants from HLS module
+          if (/\.m3u8(\?|$|#)/i.test(url) || msg.mediaType === "stream") {
+            try {
+              const info = await withTabReferer(tid, () => HLS.probe(url));
+              if (info?.kind === "master" && info.variants?.length) {
+                const seen = new Set();
+                const qualities = [{ id: "best", label: "최고" }];
+                const order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"];
+                const byLabel = new Map();
+                for (const v of info.variants) {
+                  const lab =
+                    v.quality && v.quality !== "unknown"
+                      ? v.quality
+                      : qualityLabel(v.height) || (v.height ? `${v.height}p` : null);
+                  if (!lab || lab === "unknown") continue;
+                  const h = v.height || 0;
+                  if (!byLabel.has(lab) || (byLabel.get(lab).height || 0) < h) {
+                    byLabel.set(lab, { id: lab, label: lab, height: h });
+                  }
+                }
+                for (const lab of order) {
+                  if (byLabel.has(lab) && !seen.has(lab)) {
+                    qualities.push(byLabel.get(lab));
+                    seen.add(lab);
+                  }
+                }
+                for (const [lab, q] of byLabel) {
+                  if (!seen.has(lab)) qualities.push(q);
+                }
+                sendResponse({ ok: true, qualities, source: "hls" });
+                return;
+              }
+            } catch {
+              /* fall through to ytdlp / empty */
+            }
+          }
+
+          // YouTube / TikTok / hard sites
+          if (needsYtDlpHelper(url, url) || msg.forceYtDlp) {
+            const data = await YtDlp.listFormats(url);
+            sendResponse({
+              ok: true,
+              qualities: data.qualities || [],
+              heights: data.heights || [],
+              title: data.title || "",
+              source: "yt-dlp"
+            });
+            return;
+          }
+
+          // Unknown — only "best"
+          sendResponse({
+            ok: true,
+            qualities: [{ id: "best", label: "최고" }],
+            source: "default"
+          });
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            error: String(e?.message || e),
+            qualities: [{ id: "best", label: "최고" }]
+          });
+        }
+      })();
+      return true;
+    }
+    case "DOWNLOAD_PAGE": {
+      // Download current page URL via yt-dlp (YouTube/TikTok/etc.)
+      const tid = msg.tabId ?? tabId;
+      const pageUrl = msg.pageUrl || msg.url;
+      if (!pageUrl) {
+        sendResponse({ ok: false, error: "페이지 주소가 없습니다" });
+        break;
+      }
+      const keep = startKeepAlive();
+      const fname = safeDownloadName(
+        msg.filename || resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
+        "video/mp4"
+      );
+      downloadViaYtDlp(tid, pageUrl, pageUrl, fname, msg.preferQuality || "best")
+        .then((r) => {
+          stopKeepAlive(keep);
+          sendResponse({ ok: true, ...r, filename: r.filename || fname });
+        })
+        .catch((err) => {
+          stopKeepAlive(keep);
+          sendResponse({ ok: false, error: String(err.message || err) });
+        });
+      return true;
     }
     case "CLEAR_MEDIA": {
       if (msg.tabId != null) {
@@ -1427,7 +1782,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.8.8" });
+      sendResponse({ ok: true, version: "1.9.5" });
       break;
     case "PROBE_HLS": {
       const tid = msg.tabId ?? tabId;
@@ -1469,13 +1824,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
       }, 4000);
 
+      const preferYtDlp =
+        msg.preferYtDlp === true ||
+        item?.isSiteDownload ||
+        needsYtDlpHelper(url, msg.pageUrl || item?.pageUrl);
+
       downloadSmart(tid, url, fname, msg.preferQuality || "best", mediaType, item, {
         pageUrl: msg.pageUrl || item?.pageUrl,
-        preferYtDlp: false
+        preferYtDlp
       })
         .then((r) => {
           clearInterval(keep);
-          // Require a real chrome.downloads id — size alone is not a saved file
+          // yt-dlp writes files itself — no chrome.downloads id
+          if (r?.method === "yt-dlp" || r?.ytdlp) {
+            sendResponse({
+              ok: true,
+              ...r,
+              filename: r.filename || fname
+            });
+            return;
+          }
+          // Browser path requires a real chrome.downloads id
           if (r == null || r.downloadId == null) {
             sendResponse({
               ok: false,
@@ -1578,4 +1947,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("keepalive", { periodInMinutes: 4.5 });
 chrome.alarms.onAlarm.addListener(() => {});
 
-console.log("[VideoDownloader] ready v1.8.8");
+console.log("[VideoDownloader] ready v1.9.5");
