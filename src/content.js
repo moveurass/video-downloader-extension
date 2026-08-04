@@ -464,6 +464,25 @@
       });
     }
 
+    // TikTok: pull play URLs from embedded page JSON (works while watching)
+    if (/tiktok\.com$/i.test(host.replace(/^www\./, "")) || host.includes("tiktok")) {
+      for (const u of extractTikTokPlayUrls()) {
+        items.push({
+          url: u,
+          title,
+          pageTitle: title,
+          host,
+          filename: buildFilename(title, null, "mp4"),
+          type: "video",
+          source: "tiktok-page",
+          isHls: false,
+          isSiteDownload: false,
+          site: "tiktok",
+          thumbnail: thumb || undefined
+        });
+      }
+    }
+
     chrome.runtime
       .sendMessage({
         type: "PAGE_META",
@@ -474,18 +493,208 @@
     sendItems(items.filter((i) => i.url));
   }
 
+  /**
+   * TikTok — same strategy as SnapTik-class tools:
+   * walk __UNIVERSAL_DATA_FOR_REHYDRATION__ / SIGI_STATE for playAddr/downloadAddr/url_list.
+   */
+  function extractTikTokPlayUrls() {
+    const found = new Set();
+
+    function normalizeUrl(raw) {
+      if (!raw) return null;
+      let u = String(raw)
+        .replace(/\\u002F/g, "/")
+        .replace(/\\\//g, "/")
+        .replace(/\\u0026/g, "&")
+        .replace(/&amp;/g, "&");
+      try {
+        u = decodeURIComponent(u);
+      } catch {
+        /* keep */
+      }
+      if (!/^https?:\/\//i.test(u)) return null;
+      // Never treat scripts / APIs as video
+      if (/\.(js|css|json|map|woff2?)(\?|$)/i.test(u)) return null;
+      if (/\/webmssdk|\/webapp-desktop|runtime|chunk|webpack|sentry|analytics/i.test(u)) {
+        return null;
+      }
+      if (!/tiktokcdn|byteicdn|tiktokv|byteoversea|musical\.ly|tiktok\.com\/aweme|\/video\/tos\//i.test(u)) {
+        return null;
+      }
+      if (/\.(jpe?g|png|webp|gif)(\?|$)/i.test(u) && !/video|play|media|mime_type=video/i.test(u)) {
+        return null;
+      }
+      // Prefer media-looking paths
+      if (
+        !/\.mp4(\?|$)/i.test(u) &&
+        !/mime_type=video|\/video\/tos\/|play_addr|download_addr|\/play\//i.test(u) &&
+        !/media-video|aweme\/v1/i.test(u)
+      ) {
+        // still allow tiktokcdn hosts without clear path if not js
+        if (!/tiktokcdn|byteicdn/i.test(u)) return null;
+      }
+      return u.split("#")[0];
+    }
+
+    function addUrl(raw) {
+      const u = normalizeUrl(raw);
+      if (u) found.add(u);
+    }
+
+    function walk(obj, depth) {
+      if (!obj || depth > 35) return;
+      if (typeof obj === "string") {
+        addUrl(obj);
+        return;
+      }
+      if (Array.isArray(obj)) {
+        for (const x of obj.slice(0, 300)) walk(x, depth + 1);
+        return;
+      }
+      if (typeof obj !== "object") return;
+      for (const [k, v] of Object.entries(obj)) {
+        const kl = String(k).toLowerCase();
+        if (
+          [
+            "playaddr",
+            "downloadaddr",
+            "play_addr",
+            "download_addr",
+            "play",
+            "hdplay",
+            "wmplay"
+          ].includes(kl) &&
+          typeof v === "string"
+        ) {
+          addUrl(v);
+        } else if ((kl === "url_list" || kl === "urllist") && Array.isArray(v)) {
+          for (const x of v) addUrl(x);
+        } else {
+          walk(v, depth + 1);
+        }
+      }
+    }
+
+    // Primary: structured page JSON (SnapTik / scrapers do this)
+    const scripts = document.querySelectorAll(
+      'script#__UNIVERSAL_DATA_FOR_REHYDRATION__, script#SIGI_STATE, script[id*="SIGI"], script[type="application/json"]'
+    );
+    scripts.forEach((s) => {
+      const t = (s.textContent || "").trim();
+      if (t.length < 80) return;
+      try {
+        walk(JSON.parse(t), 0);
+      } catch {
+        // regex fallback on raw text
+        const re =
+          /https?:\\\/\\\/[^"'\\\s]+|https?:\/\/[^"'\s]{30,}/g;
+        let m;
+        while ((m = re.exec(t)) !== null) addUrl(m[0]);
+      }
+    });
+
+    // video element (non-blob)
+    document.querySelectorAll("video").forEach((v) => {
+      const src = v.currentSrc || v.src;
+      if (src && !src.startsWith("blob:")) addUrl(src);
+      // source children
+      v.querySelectorAll("source").forEach((s) => addUrl(s.src));
+    });
+
+    return [...found].slice(0, 12);
+  }
+
+  /**
+   * Instagram: og:video + page JSON video_url / video_versions (when present).
+   */
+  function extractInstagramPlayUrls() {
+    const found = new Set();
+    function add(raw) {
+      if (!raw || typeof raw !== "string") return;
+      let u = raw.replace(/\\u0026/g, "&").replace(/\\\//g, "/");
+      try {
+        u = decodeURIComponent(u);
+      } catch {
+        /* keep */
+      }
+      if (!/^https?:\/\//i.test(u)) return;
+      if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(u)) return;
+      if (!/\.mp4(\?|$)/i.test(u) && !/cdninstagram|fbcdn\.net/i.test(u)) return;
+      if (/\.mp4(\?|$)/i.test(u) || /video/i.test(u)) found.add(u.split("#")[0]);
+    }
+
+    document
+      .querySelectorAll(
+        'meta[property="og:video"], meta[property="og:video:secure_url"], meta[property="og:video:url"]'
+      )
+      .forEach((m) => add(m.content));
+
+    document.querySelectorAll("video").forEach((v) => {
+      if (v.currentSrc && !v.currentSrc.startsWith("blob:")) add(v.currentSrc);
+      if (v.src && !v.src.startsWith("blob:")) add(v.src);
+      v.querySelectorAll("source").forEach((s) => add(s.src));
+    });
+
+    // Walk JSON blobs in scripts
+    function walk(obj, depth) {
+      if (!obj || depth > 30) return;
+      if (typeof obj === "string") {
+        if (/\.mp4/i.test(obj) || /cdninstagram|fbcdn\.net.*video/i.test(obj)) add(obj);
+        return;
+      }
+      if (Array.isArray(obj)) {
+        for (const x of obj.slice(0, 200)) walk(x, depth + 1);
+        return;
+      }
+      if (typeof obj !== "object") return;
+      for (const [k, v] of Object.entries(obj)) {
+        const kl = String(k).toLowerCase();
+        if (
+          ["video_url", "video_src", "playback_url", "content_url", "src"].includes(kl) &&
+          typeof v === "string"
+        ) {
+          add(v);
+        } else if (kl === "video_versions" && Array.isArray(v)) {
+          for (const x of v) {
+            if (x && typeof x.url === "string") add(x.url);
+          }
+        } else {
+          walk(v, depth + 1);
+        }
+      }
+    }
+
+    document.querySelectorAll('script[type="application/ld+json"], script').forEach((s) => {
+      const t = (s.textContent || "").trim();
+      if (t.length < 80 || t.length > 2_000_000) return;
+      if (!/video|cdninstagram|fbcdn|\.mp4/i.test(t)) return;
+      try {
+        if (t.startsWith("{") || t.startsWith("[")) walk(JSON.parse(t), 0);
+      } catch {
+        const re = /https?:\/\/[^"'\\\s]+\.mp4[^"'\\\s]*/gi;
+        let m;
+        while ((m = re.exec(t)) !== null) add(m[0]);
+      }
+    });
+
+    return [...found].slice(0, 10);
+  }
+
   function scheduleScan() {
     clearTimeout(scanTimer);
     scanTimer = setTimeout(scanPage, 400);
   }
 
-  const mo = new MutationObserver(() => scheduleScan());
-  mo.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    attributes: true,
-    attributeFilter: ["src", "href", "poster"]
-  });
+  // Skip MutationObserver on TikTok/Instagram — DOM churn lags players
+  if (!isTikTokHost() && !isInstagramHost()) {
+    const mo = new MutationObserver(() => scheduleScan());
+    mo.observe(document.documentElement, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["src", "href", "poster"]
+    });
+  }
 
   document.addEventListener(
     "loadedmetadata",
@@ -530,7 +739,24 @@
     true
   );
 
+  function isTikTokHost() {
+    const h = (location.hostname || "").toLowerCase();
+    return h.includes("tiktok.com") || h.includes("tiktokv.com");
+  }
+
+  function isYouTubeHost() {
+    const h = (location.hostname || "").toLowerCase();
+    return h.includes("youtube.com") || h === "youtu.be" || h.includes("youtube-nocookie.com");
+  }
+
+  function isInstagramHost() {
+    const h = (location.hostname || "").toLowerCase();
+    return h.includes("instagram.com") || h.includes("instagr.am");
+  }
+
   function injectPageScript() {
+    // Never inject MSE/fetch hooks on major social sites — breaks playback
+    if (isTikTokHost() || isYouTubeHost() || isInstagramHost()) return;
     try {
       const s = document.createElement("script");
       s.src = chrome.runtime.getURL("src/injected.js");
@@ -587,6 +813,59 @@
           thumbnail: pageThumbnail(),
           host: location.hostname
         }
+      });
+      return false;
+    }
+
+    if (msg.type === "EXTRACT_TIKTOK") {
+      const urls = extractTikTokPlayUrls();
+      // Also re-scan so background store gets them
+      if (urls.length) {
+        const title = pageTitle();
+        sendItems(
+          urls.map((url) => ({
+            url,
+            title,
+            pageTitle: title,
+            host: location.hostname,
+            filename: buildFilename(title, null, "mp4"),
+            type: "video",
+            source: "tiktok-page",
+            site: "tiktok"
+          }))
+        );
+      }
+      sendResponse({
+        ok: urls.length > 0,
+        urls,
+        title: pageTitle(),
+        pageUrl: location.href
+      });
+      return false;
+    }
+
+    if (msg.type === "EXTRACT_INSTAGRAM") {
+      const urls = extractInstagramPlayUrls();
+      if (urls.length) {
+        const title = pageTitle();
+        sendItems(
+          urls.map((url) => ({
+            url,
+            title,
+            pageTitle: title,
+            host: location.hostname,
+            filename: buildFilename(title, null, "mp4"),
+            type: "video",
+            source: "instagram-page",
+            site: "instagram"
+          }))
+        );
+      }
+      sendResponse({
+        ok: urls.length > 0,
+        urls,
+        title: pageTitle(),
+        pageUrl: location.href
       });
       return false;
     }
@@ -720,6 +999,20 @@
       }
     })
     .catch(() => {});
+
+  // TikTok: minimal presence — do NOT run aggressive scan loops (player breaks)
+  if (isTikTokHost()) {
+    // Light meta only; downloads use pasted link + helper
+    return;
+  }
+
+  // Instagram: light scan only (og:video / <video>) — no aggressive hooks
+  if (isInstagramHost()) {
+    scanPage();
+    setTimeout(scanPage, 1500);
+    return;
+  }
+
   scanPage();
   setTimeout(scanPage, 800);
   setTimeout(scanPage, 2000);

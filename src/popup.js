@@ -45,17 +45,38 @@ function isYoutubeUrl(url) {
 
 function isTiktokUrl(url) {
   if (!url || typeof url !== "string") return false;
-  if (/tiktok\.com/i.test(url) || /tiktokv\.com/i.test(url)) return true;
+  // Page / share links only — not CDN image hosts
+  if (/tiktokcdn|byteicdn|ibyteimg/i.test(url)) return false;
+  if (/vm\.tiktok\.com|vt\.tiktok\.com/i.test(url)) return true;
+  if (/tiktok\.com\/@[\w.-]+\/video\/\d+/i.test(url)) return true;
+  if (/tiktok\.com\/t\//i.test(url)) return true;
   try {
     const h = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
-    return h.includes("tiktok");
+    return (
+      h === "tiktok.com" ||
+      h.endsWith(".tiktok.com") ||
+      h === "m.tiktok.com"
+    );
   } catch {
-    return false;
+    return /tiktok\.com/i.test(url);
+  }
+}
+
+function isInstagramUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  if (/cdninstagram|fbcdn\.net/i.test(url) && !/instagram\.com\//i.test(url)) return false;
+  if (/instagram\.com\/(p|reel|reels|tv)\//i.test(url)) return true;
+  if (/instagr\.am\//i.test(url)) return true;
+  try {
+    const h = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+    return h === "instagram.com" || h.endsWith(".instagram.com") || h === "instagr.am";
+  } catch {
+    return /instagram\.com/i.test(url);
   }
 }
 
 function isSitePage(url) {
-  return isYoutubeUrl(url) || isTiktokUrl(url);
+  return isYoutubeUrl(url) || isTiktokUrl(url) || isInstagramUrl(url);
 }
 
 /** watch / shorts / youtu.be / tiktok video pages */
@@ -89,37 +110,56 @@ function isDownloadableSiteVideo(url) {
       true
     );
   }
+  if (isInstagramUrl(url)) {
+    return /\/(p|reel|reels|tv)\//i.test(url) || true;
+  }
   return false;
 }
 
 function siteLabel(url, item) {
   if (item?.site === "youtube" || isYoutubeUrl(url || item?.url || item?.pageUrl)) return "YouTube";
   if (item?.site === "tiktok" || isTiktokUrl(url || item?.url || item?.pageUrl)) return "TikTok";
+  if (item?.site === "instagram" || isInstagramUrl(url || item?.url || item?.pageUrl)) {
+    return "Instagram";
+  }
   return null;
 }
 
-/** Always-available card for YT/TT when background has no media */
+function siteKindFromUrl(pageUrl) {
+  if (isYoutubeUrl(pageUrl)) return "youtube";
+  if (isTiktokUrl(pageUrl)) return "tiktok";
+  if (isInstagramUrl(pageUrl)) return "instagram";
+  return null;
+}
+
+/** Always-available card for YT/TT/IG when background has no media */
 function buildLocalSiteItem(tab) {
   const pageUrl = tab?.url || currentTabUrl || "";
   if (!pageUrl || !isSitePage(pageUrl)) return null;
-  // Still show card on video-ish URLs; for pure home show card too with generic name
-  // (user can click; helper returns clear error if not a video)
-  const kind = isYoutubeUrl(pageUrl) ? "youtube" : "tiktok";
+  const kind = siteKindFromUrl(pageUrl);
+  if (!kind) return null;
   let title = String(tab?.title || "")
-    .replace(/^\(\d{1,4}\)\s*/, "") // tab/notification count e.g. "(2) Title"
+    .replace(/^\(\d{1,4}\)\s*/, "")
     .replace(/\s*[-–—|]\s*YouTube\s*$/i, "")
     .replace(/\s*[-–—|]\s*TikTok\s*$/i, "")
+    .replace(/\s*[-–—|]\s*Instagram\s*$/i, "")
     .replace(/\s*[-–—|].*$/, "")
     .replace(/^\(\d{1,4}\)\s*/, "")
     .trim();
-  if (!title || (/^(youtube|tiktok)$/i.test(title) && title.length < 12)) {
-    title = kind === "youtube" ? "YouTube 영상" : "TikTok 영상";
+  const defaults = {
+    youtube: "YouTube 영상",
+    tiktok: "TikTok 영상",
+    instagram: "Instagram 영상"
+  };
+  if (!title || /^(youtube|tiktok|instagram)$/i.test(title)) {
+    title = defaults[kind] || "영상";
   }
   const safeBase = title
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
+  const label = kind === "youtube" ? "YouTube" : kind === "tiktok" ? "TikTok" : "Instagram";
   return {
     url: pageUrl,
     pageUrl,
@@ -131,8 +171,7 @@ function buildLocalSiteItem(tab) {
     title,
     pageTitle: title,
     displayName: title,
-    filename: `${safeBase || (kind === "youtube" ? "YouTube" : "TikTok")}.mp4`,
-    // real resolution is unknown until download — don't put "best" in the filename
+    filename: `${safeBase || label}.mp4`,
     quality: "",
     format: "MP4",
     host: (() => {
@@ -160,17 +199,19 @@ async function refreshHelperStatus(force = false) {
     helperOk = !!(h?.ok && h?.ytdlp);
     if (helperOk) {
       helperBar.classList.add("ok");
-      helperText.textContent = `YouTube·TikTok 준비됨${h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""}`;
+      helperText.textContent = `YT·TikTok·Instagram 준비됨${
+        h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""
+      }`;
     } else {
       helperBar.classList.add("warn");
       helperText.textContent =
-        "도우미 꺼짐 — helper/start.command 실행 후 다시 열어 주세요";
+        "도우미 꺼짐 — helper/install_autostart.command 실행 후 다시 열어 주세요";
     }
   } catch {
     helperOk = false;
     helperBar.classList.add("warn");
     helperText.textContent =
-      "도우미 꺼짐 — helper/start.command 실행 후 다시 열어 주세요";
+      "도우미 꺼짐 — helper/install_autostart.command 실행 후 다시 열어 주세요";
   }
 }
 
@@ -500,6 +541,12 @@ function userError(err) {
   ) {
     return "받을 주소가 없습니다. 페이지를 새로고침한 뒤 재생해 주세요";
   }
+  // Prefer clear Korean TikTok/YouTube messages as-is
+  if (/TikTok|틱톡|재생 주소|페이지에서 재생/i.test(s)) {
+    let clean = s.replace(/^Error:\s*/i, "").trim();
+    if (clean.length > 120) clean = clean.slice(0, 117) + "…";
+    return clean;
+  }
   if (/Failed to fetch|NetworkError|네트워크 접근|CORS|Load failed/i.test(s)) {
     return "네트워크 접근이 막혔습니다. 영상을 재생한 뒤 다시 눌러 주세요";
   }
@@ -509,12 +556,17 @@ function userError(err) {
   if (/Blob URL|blob/i.test(s) && /Capture|캡처|받을 수/i.test(s)) {
     return "이 영상 형식을 바로 받을 수 없습니다. 재생 후 다시 시도해 주세요";
   }
-  if (/도우미|start\.command|yt-dlp not|ytdlp|8787/i.test(s)) {
-    return "YouTube·TikTok은 로컬 도우미가 필요합니다. helper/start.command 를 실행해 주세요";
+  if (/도우미|install_autostart|start\.command|yt-dlp not|ytdlp|8787/i.test(s)) {
+    return "로컬 도우미가 필요합니다. helper/install_autostart.command 를 실행해 주세요";
+  }
+  if (/Instagram|인스타/i.test(s)) {
+    let clean = s.replace(/^Error:\s*/i, "").trim();
+    if (clean.length > 120) clean = clean.slice(0, 117) + "…";
+    return clean;
   }
   if (/DRM|SAMPLE-AES|Widevine/i.test(s)) return "보호된 영상이라 받을 수 없습니다";
   if (/HTTP 403|HTTP 401|접근 거부/i.test(s)) {
-    return "접근이 거부되었습니다. 재생 후 다시 시도해 주세요";
+    return "접근이 거부되었습니다. 로그인·재생 후 다시 시도해 주세요";
   }
   if (/HTTP \d{3}/i.test(s)) {
     return "서버에서 영상을 주지 않았습니다. 재생 후 다시 시도해 주세요";
@@ -538,14 +590,17 @@ function userError(err) {
     return "다운로드가 중단되었습니다. 다시 시도해 주세요";
   }
 
-  // Strip technical prefixes; never show raw English "url ..." dumps
+  // Strip technical prefixes; keep Korean; soften pure English dumps
   let clean = s.replace(/^Error:\s*/i, "").trim();
-  if (/^https?:\/\//i.test(clean) || /url/i.test(clean) && clean.length < 40) {
+  if (/[가-힣]/.test(clean)) {
+    if (clean.length > 120) return clean.slice(0, 117) + "…";
+    return clean;
+  }
+  if (/^https?:\/\//i.test(clean) || (/url/i.test(clean) && clean.length < 40)) {
     return "받을 수 없는 주소입니다. 페이지를 새로고침한 뒤 재생해 주세요";
   }
-  // If mostly English technical, soften
   if (/^[A-Za-z0-9\s:./_-]+$/.test(clean) && /url|fetch|http|blob|null|undefined/i.test(clean)) {
-    return "다운로드에 실패했습니다. 재생 후 다시 시도해 주세요";
+    return "다운로드에 실패했습니다. 영상 페이지를 새로고침하고 재생한 뒤 다시 시도해 주세요";
   }
   if (clean.length > 90) return clean.slice(0, 87) + "…";
   return clean || "다운로드에 실패했습니다";
@@ -687,12 +742,21 @@ async function downloadItem(item) {
   }, 120_000);
 
   const pageUrl = currentTabUrl || item.pageUrl || item.url;
+  // Use yt-dlp helper for YT always; for TikTok only when we don't have a direct CDN URL
+  const hasTiktokCdn =
+    item.url &&
+    /tiktokcdn|byteicdn|tiktokv\.com|byteoversea|musical\.ly/i.test(item.url) &&
+    !/tiktok\.com\/@|tiktok\.com\/t\//i.test(item.url);
   const useHelper =
     item.isSiteDownload ||
     item.site === "youtube" ||
-    item.site === "tiktok" ||
-    isSitePage(pageUrl) ||
-    isSitePage(item.url);
+    item.site === "instagram" ||
+    isYoutubeUrl(pageUrl) ||
+    isYoutubeUrl(item.url) ||
+    isInstagramUrl(pageUrl) ||
+    isInstagramUrl(item.url) ||
+    ((item.site === "tiktok" || isTiktokUrl(pageUrl) || isTiktokUrl(item.url)) &&
+      !hasTiktokCdn);
 
   try {
     if (useHelper) {
@@ -846,6 +910,19 @@ async function loadMedia() {
     /* restricted / not injected */
   }
 
+  // TikTok: SnapTik-style page JSON extract (playAddr / downloadAddr)
+  if (isTiktokUrl(currentTabUrl)) {
+    try {
+      const ext = await chrome.tabs.sendMessage(tab.id, { type: "EXTRACT_TIKTOK" });
+      if (ext?.urls?.length) {
+        // Store on window for this session — merged via GET_MEDIA after PAGE_MEDIA
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   let res = null;
   try {
     res = await chrome.runtime.sendMessage({
@@ -938,6 +1015,176 @@ $("#btnClear").addEventListener("click", async () => {
   allItems = [];
   render();
 });
+
+function normalizePastedUrl(raw) {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+  // allow bare tiktok/youtube without scheme
+  if (
+    !/^https?:\/\//i.test(s) &&
+    /^(www\.)?(tiktok|youtube|youtu\.be|vm\.tiktok|instagram|instagr\.am)/i.test(s)
+  ) {
+    s = "https://" + s;
+  }
+  try {
+    const u = new URL(s);
+    if (!/^https?:$/i.test(u.protocol)) return "";
+    return u.href;
+  } catch {
+    return "";
+  }
+}
+
+async function downloadByPastedLink() {
+  if (downloading) return;
+  const input = $("#linkInput");
+  const btn = $("#btnLinkDl");
+  const link = normalizePastedUrl(input?.value || "");
+  if (!link) {
+    toast("유효한 링크를 붙여 넣어 주세요 (YouTube / TikTok)", "error");
+    input?.focus();
+    return;
+  }
+  if (
+    !isYoutubeUrl(link) &&
+    !isTiktokUrl(link) &&
+    !isInstagramUrl(link) &&
+    !looksLikeDirectMedia(link)
+  ) {
+    toast("YouTube, TikTok, Instagram 또는 직접 영상 링크만 지원합니다", "error");
+    return;
+  }
+
+  downloading = true;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "받는 중…";
+  }
+  showProgress(true, 5, "링크로 받는 중…");
+
+  try {
+    // Prefer helper for YT/TT/IG page links; direct for raw mp4
+    const isPage = isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link);
+    const fnameBase = (() => {
+      try {
+        if (isTiktokUrl(link)) {
+          const m = link.match(/video\/(\d+)/);
+          return m ? `TikTok_${m[1]}` : "TikTok";
+        }
+        if (isYoutubeUrl(link)) {
+          const u = new URL(link);
+          const id = u.searchParams.get("v") || u.pathname.split("/").pop();
+          return id ? `YouTube_${id}` : "YouTube";
+        }
+        if (isInstagramUrl(link)) {
+          const m = link.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+          return m ? `Instagram_${m[2]}` : "Instagram";
+        }
+      } catch {
+        /* ignore */
+      }
+      return "영상";
+    })();
+    const q =
+      selectedQuality && !/^(best|all)$/i.test(selectedQuality)
+        ? `_${selectedQuality}`
+        : "";
+    const filename = `${fnameBase}${q}.mp4`;
+
+    if (isPage) {
+      await refreshHelperStatus(true);
+      const res = await chrome.runtime.sendMessage({
+        type: "DOWNLOAD_PAGE",
+        url: link,
+        pageUrl: link,
+        filename,
+        tabId: currentTabId,
+        preferQuality: selectedQuality || "best",
+        title: fnameBase
+      });
+      if (res?.ok && (res.downloadId != null || res.ytdlp || res.method)) {
+        showProgress(true, 100, "저장 완료");
+        setTimeout(() => showProgress(false), 1200);
+        const where = res.path
+          ? res.path.split(/[/\\]/).slice(-2).join("/")
+          : "다운로드/VideoDownloader";
+        toast(`저장 완료 · ${where}`, "ok");
+        try {
+          if (res.downloadId != null) chrome.downloads.show(res.downloadId);
+        } catch {
+          /* ignore */
+        }
+      } else {
+        showProgress(false);
+        toast(userError(res?.error) || "링크 다운로드 실패", "error");
+      }
+    } else {
+      // Direct media URL
+      const res = await chrome.runtime.sendMessage({
+        type: "DOWNLOAD",
+        url: link,
+        pageUrl: currentTabUrl || link,
+        filename,
+        tabId: currentTabId,
+        preferQuality: selectedQuality || "best",
+        mediaType: "video",
+        preferYtDlp: false
+      });
+      if (res?.ok && res.downloadId != null) {
+        showProgress(true, 100, "저장 완료");
+        setTimeout(() => showProgress(false), 1200);
+        toast("저장 완료", "ok");
+        try {
+          chrome.downloads.show(res.downloadId);
+        } catch {
+          /* ignore */
+        }
+      } else {
+        showProgress(false);
+        toast(userError(res?.error) || "링크 다운로드 실패", "error");
+      }
+    }
+  } catch (e) {
+    showProgress(false);
+    toast(userError(e?.message) || "링크 다운로드 실패", "error");
+  } finally {
+    downloading = false;
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "받기";
+    }
+  }
+}
+
+function looksLikeDirectMedia(url) {
+  return /\.(mp4|webm|mov|m4v|mkv)(\?|$)/i.test(url || "") || /mime_type=video/i.test(url || "");
+}
+
+$("#btnLinkDl")?.addEventListener("click", () => downloadByPastedLink());
+$("#linkInput")?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    downloadByPastedLink();
+  }
+});
+
+// Pre-fill from clipboard when popup opens (optional, non-blocking)
+(async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+    const link = normalizePastedUrl(text);
+    if (
+      link &&
+      (isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link)) &&
+      $("#linkInput") &&
+      !$("#linkInput").value
+    ) {
+      $("#linkInput").value = link;
+    }
+  } catch {
+    /* clipboard permission may be denied */
+  }
+})();
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "MEDIA_UPDATED" && msg.tabId === currentTabId) {

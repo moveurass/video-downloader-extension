@@ -62,11 +62,11 @@ const YtDlp = (() => {
    * List available quality labels for a page/media URL (yt-dlp -J).
    * @returns {Promise<{qualities: Array<{id:string,label:string,height?:number}>, heights: number[]}>}
    */
-  async function listFormats(url) {
+  async function listFormats(url, extra = {}) {
     const res = await fetch(`${BASE}/formats`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, pageUrl: url })
+      body: JSON.stringify({ url, pageUrl: url, ...extra })
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.9.5",
-  "description": "페이지 영상·HLS 다운로드 + YouTube/TikTok(로컬 도우미)",
+  "version": "1.11.1",
+  "description": "페이지 영상·HLS + YouTube/TikTok/Instagram 다운로드",
   "permissions": [
     "downloads",
     "storage",
@@ -12,6 +12,7 @@
     "activeTab",
     "alarms",
     "contextMenus",
+    "cookies",
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess"
   ],

@@ -86,34 +86,139 @@ function isYoutubeUrl(url) {
   );
 }
 
+/** TikTok *page* (watch URL) — not CDN media hosts */
 function isTiktokUrl(url) {
   const h = hostOf(url);
   if (!h) return false;
+  // Exclude CDN hosts — those are direct media, not yt-dlp page extractors
+  if (/tiktokcdn|byteicdn|byteoversea|ibyteimg/i.test(h)) return false;
   return (
     h === "tiktok.com" ||
     h.endsWith(".tiktok.com") ||
     h === "vm.tiktok.com" ||
     h === "vt.tiktok.com" ||
     h === "m.tiktok.com" ||
-    h.includes("tiktokv.com") ||
-    h.includes("tiktokcdn")
+    h === "tiktokv.com" ||
+    h.endsWith(".tiktokv.com")
   );
+}
+
+/** Instagram post / reel / TV pages */
+function isInstagramUrl(url) {
+  const h = hostOf(url);
+  if (!h) return false;
+  // CDN hosts are direct media, not page extractors
+  if (/cdninstagram|fbcdn\.net|instagram\.fs/i.test(h)) return false;
+  return (
+    h === "instagram.com" ||
+    h.endsWith(".instagram.com") ||
+    h === "instagr.am" ||
+    h.endsWith(".instagr.am")
+  );
+}
+
+function isInstagramCdnUrl(url) {
+  const u = url || "";
+  if (!/^https?:/i.test(u)) return false;
+  if (/\.(jpe?g|png|gif|webp|bmp|svg|js|css)(\?|$)/i.test(u)) return false;
+  return (
+    (/cdninstagram\.com|fbcdn\.net/i.test(u) &&
+      (/\.mp4(\?|$)/i.test(u) || /video|\/v\/t/i.test(u))) ||
+    (/\.mp4(\?|$)/i.test(u) && /instagram/i.test(u))
+  );
+}
+
+function isTiktokCdnUrl(url) {
+  const u = url || "";
+  if (!u || !/^https?:/i.test(u)) return false;
+  // Never treat images / covers / scripts as video CDN
+  if (/\.(js|css|json|map|html?|woff2?|jpe?g|png|gif|webp|bmp|svg|ico)(\?|$)/i.test(u)) {
+    return false;
+  }
+  if (/\/webmssdk|webpack|chunk|runtime|analytics|sentry|cover|avatar|photo/i.test(u)) {
+    return false;
+  }
+  // Real TikTok media almost always has video/tos or mime_type=video
+  if (/mime_type=video/i.test(u)) return true;
+  if (/\/video\/tos\//i.test(u)) return true;
+  if (/\.mp4(\?|$)/i.test(u) && /tiktokcdn|byteicdn|byteoversea|tiktokv/i.test(u)) return true;
+  return false;
+}
+
+function looksLikeVideoFileUrl(url) {
+  if (!url || !/^https?:/i.test(url)) return false;
+  if (/\.(js|css|json|map|html?|woff2?|jpe?g|png|gif|webp|bmp|svg)(\?|$)/i.test(url)) {
+    return false;
+  }
+  if (/\.(mp4|webm|mov|m4v|mkv)(\?|$)/i.test(url)) return true;
+  if (/mime_type=video|\/video\/tos\//i.test(url)) return true;
+  return isTiktokCdnUrl(url) || isInstagramCdnUrl(url);
+}
+
+/** Sniff first bytes — reject images (BMP/JPEG/PNG/…) */
+function sniffIsVideo(uint8) {
+  if (!uint8 || uint8.length < 12) return false;
+  // BMP
+  if (uint8[0] === 0x42 && uint8[1] === 0x4d) return false;
+  // JPEG
+  if (uint8[0] === 0xff && uint8[1] === 0xd8) return false;
+  // PNG
+  if (uint8[0] === 0x89 && uint8[1] === 0x50 && uint8[2] === 0x4e && uint8[3] === 0x47) {
+    return false;
+  }
+  // GIF
+  if (uint8[0] === 0x47 && uint8[1] === 0x49 && uint8[2] === 0x46) return false;
+  // WEBP (RIFF....WEBP)
+  if (
+    uint8[0] === 0x52 &&
+    uint8[1] === 0x49 &&
+    uint8[2] === 0x46 &&
+    uint8[3] === 0x46 &&
+    uint8[8] === 0x57 &&
+    uint8[9] === 0x45
+  ) {
+    return false;
+  }
+  // MP4 ftyp
+  if (uint8[4] === 0x66 && uint8[5] === 0x74 && uint8[6] === 0x79 && uint8[7] === 0x70) {
+    return true;
+  }
+  // WebM/MKV EBML
+  if (uint8[0] === 0x1a && uint8[1] === 0x45 && uint8[2] === 0xdf && uint8[3] === 0xa3) {
+    return true;
+  }
+  // MPEG-TS
+  if (uint8[0] === 0x47) return true;
+  return false;
 }
 
 /** Sites that need local yt-dlp helper for reliable full-quality download */
 function needsYtDlpHelper(url, pageUrl) {
+  // Direct CDN files never need the page extractor
+  if (isTiktokCdnUrl(url) && !isTiktokUrl(url)) return false;
+  if (isInstagramCdnUrl(url) && !isInstagramUrl(url)) return false;
   return (
     isYoutubeUrl(url) ||
     isYoutubeUrl(pageUrl) ||
     isTiktokUrl(url) ||
-    isTiktokUrl(pageUrl)
+    isTiktokUrl(pageUrl) ||
+    isInstagramUrl(url) ||
+    isInstagramUrl(pageUrl)
   );
 }
 
 function siteKind(url, pageUrl) {
   if (isYoutubeUrl(url) || isYoutubeUrl(pageUrl)) return "youtube";
   if (isTiktokUrl(url) || isTiktokUrl(pageUrl)) return "tiktok";
+  if (isInstagramUrl(url) || isInstagramUrl(pageUrl)) return "instagram";
   return null;
+}
+
+function siteDefaultTitle(kind) {
+  if (kind === "youtube") return "YouTube 영상";
+  if (kind === "tiktok") return "TikTok 영상";
+  if (kind === "instagram") return "Instagram 영상";
+  return "영상";
 }
 
 function makeSitePlaceholder(tab) {
@@ -124,7 +229,7 @@ function makeSitePlaceholder(tab) {
   const title =
     meta?.title ||
     Naming.cleanPageTitle(tab?.title || "") ||
-    (kind === "youtube" ? "YouTube 영상" : "TikTok 영상");
+    siteDefaultTitle(kind);
   const item = enrichItem(tab.id, {
     url: pageUrl,
     type: "stream",
@@ -159,9 +264,19 @@ function isLikelyMedia(url, mime = "", size = 0) {
   if (/\.m3u8(\?|$|#)/i.test(url) || /mpegurl|m3u8/i.test(mime || "")) return true;
   // YouTube / TikTok CDN (often no file extension)
   if (/googlevideo\.com\/videoplayback/i.test(url) && !/[&?]oad=/i.test(url)) return true;
-  if (/tiktokcdn|musical\.ly|byteicdn|ibyteimg|tiktokv\.com/i.test(url) && /video|play|media|mime_type=video/i.test(url)) {
+  // TikTok CDN progressive files (often no classic extension)
+  if (
+    /tiktokcdn|musical\.ly|byteicdn|ibyteimg|tiktokv\.com|byteoversea|tiktok\.com\/aweme/i.test(
+      url
+    ) &&
+    (/video|play|media|mime_type=video|\.mp4|\/play\//i.test(url) ||
+      (mime || "").startsWith("video/"))
+  ) {
     return true;
   }
+  // Instagram CDN video
+  if (isInstagramCdnUrl(url)) return true;
+  if ((mime || "").startsWith("video/") && /cdninstagram|fbcdn\.net/i.test(url)) return true;
   if (Naming.isJunkMedia({ url, size, type: "video" })) return false;
   if (/\d+_\d{2,4}x\d{2,4}/i.test(url)) return false;
   if (/doubleclick|googlesyndication|exoclick|trafficjunky/i.test(url)) return false;
@@ -571,7 +686,26 @@ async function getMediaForTabAsync(tabId, hint = {}) {
   const titleHint = hint.title || "";
 
   // Prefer explicit pageUrl from popup (more reliable than tabs.get alone)
-  if (pageUrl && /^https?:/i.test(pageUrl) && needsYtDlpHelper(pageUrl, pageUrl)) {
+  if (
+    pageUrl &&
+    /^https?:/i.test(pageUrl) &&
+    (isYoutubeUrl(pageUrl) || isInstagramUrl(pageUrl))
+  ) {
+    const placeholder = makeSitePlaceholder({
+      id: tabId,
+      url: pageUrl,
+      title: titleHint
+    });
+    if (placeholder) return [placeholder];
+  }
+  // TikTok with pageUrl: keep CDN items if any, else placeholder
+  if (pageUrl && /^https?:/i.test(pageUrl) && isTiktokUrl(pageUrl)) {
+    const cdn = (items || []).find(
+      (i) =>
+        i?.url &&
+        /tiktokcdn|byteicdn|tiktokv\.com|byteoversea|musical\.ly/i.test(i.url)
+    );
+    if (cdn) return [cdn];
     const placeholder = makeSitePlaceholder({
       id: tabId,
       url: pageUrl,
@@ -585,8 +719,34 @@ async function getMediaForTabAsync(tabId, hint = {}) {
     const tab = await chrome.tabs.get(tabId);
     const url = tab?.url || tab?.pendingUrl || pageUrl;
     if (!url || !/^https?:/i.test(url)) return items;
-    // YouTube / TikTok: always expose page-level item (yt-dlp)
-    if (needsYtDlpHelper(url, url)) {
+    // YouTube / Instagram: always page-level yt-dlp item
+    // TikTok: prefer captured CDN/page play URL when present (yt-dlp often IP-blocked)
+    if (isYoutubeUrl(url) || isInstagramUrl(url)) {
+      const placeholder = makeSitePlaceholder({
+        id: tab.id,
+        url,
+        title: tab.title || titleHint
+      });
+      return placeholder ? [placeholder] : items;
+    }
+    if (isTiktokUrl(url)) {
+      const cdn = (items || []).find(
+        (i) =>
+          i?.url &&
+          /tiktokcdn|byteicdn|tiktokv\.com|byteoversea|musical\.ly/i.test(i.url) &&
+          !/tiktok\.com\/@|tiktok\.com\/t\//i.test(i.url)
+      );
+      if (cdn) {
+        return [
+          enrichItem(tab.id, {
+            ...cdn,
+            site: "tiktok",
+            isSiteDownload: false,
+            pageUrl: url,
+            title: cdn.title || tab.title || titleHint
+          })
+        ];
+      }
       const placeholder = makeSitePlaceholder({
         id: tab.id,
         url,
@@ -608,20 +768,296 @@ async function getMediaForTabAsync(tabId, hint = {}) {
   return items;
 }
 
-async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
-  const available = await YtDlp.available();
-  if (!available) {
+/**
+ * Collect browser cookies for a site so yt-dlp can use the logged-in session.
+ * Critical for TikTok / Instagram (login walls).
+ */
+async function collectCookiesForUrl(pageUrl) {
+  if (!pageUrl || !chrome.cookies?.getAll) return [];
+  try {
+    const u = new URL(pageUrl);
+    const hosts = new Set([u.hostname, u.hostname.replace(/^www\./, "")]);
+    const base = u.hostname.replace(/^www\./, "");
+    hosts.add(base);
+    hosts.add(`.${base}`);
+    if (/tiktok/i.test(base)) {
+      [
+        "tiktok.com",
+        ".tiktok.com",
+        "www.tiktok.com",
+        "m.tiktok.com",
+        "www.tiktokv.com",
+        ".tiktokv.com"
+      ].forEach((h) => hosts.add(h));
+    }
+    if (/youtube|youtu\.be/i.test(base)) {
+      ["youtube.com", ".youtube.com", "www.youtube.com", ".youtube.co.kr"].forEach((h) =>
+        hosts.add(h)
+      );
+    }
+    if (/instagram|instagr\.am/i.test(base)) {
+      [
+        "instagram.com",
+        ".instagram.com",
+        "www.instagram.com",
+        "cdninstagram.com",
+        ".cdninstagram.com"
+      ].forEach((h) => hosts.add(h));
+    }
+    const byKey = new Map();
+    for (const host of hosts) {
+      try {
+        const list = await chrome.cookies.getAll({ domain: host });
+        for (const c of list || []) {
+          if (!c?.name) continue;
+          byKey.set(`${c.domain}|${c.path}|${c.name}`, c);
+        }
+      } catch {
+        /* ignore per-domain */
+      }
+    }
+    try {
+      const list = await chrome.cookies.getAll({ url: pageUrl });
+      for (const c of list || []) {
+        if (!c?.name) continue;
+        byKey.set(`${c.domain}|${c.path}|${c.name}`, c);
+      }
+    } catch {
+      /* ignore */
+    }
+    return [...byKey.values()].map((c) => ({
+      name: c.name,
+      value: c.value,
+      domain: c.domain || "",
+      path: c.path || "/",
+      secure: !!c.secure,
+      httpOnly: !!c.httpOnly,
+      expirationDate: c.expirationDate || 0
+    }));
+  } catch {
+    return [];
+  }
+}
+
+async function getCookieHeaderForUrl(pageUrl) {
+  const list = await collectCookiesForUrl(pageUrl);
+  if (!list.length) return "";
+  // Prefer unique by name (last wins)
+  const map = new Map();
+  for (const c of list) map.set(c.name, c.value);
+  return [...map.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
+}
+
+/** Normalize Instagram share URLs for yt-dlp */
+function normalizeInstagramUrl(raw) {
+  try {
+    const u = new URL(String(raw || "").trim());
+    // instagr.am → instagram.com
+    if (/instagr\.am$/i.test(u.hostname)) {
+      u.hostname = "www.instagram.com";
+    }
+    // /reels/ → /reel/
+    u.pathname = u.pathname.replace(/\/reels\//i, "/reel/");
+    // drop tracking query/hash
+    u.search = "";
+    u.hash = "";
+    // ensure trailing slash (yt-dlp happier)
+    if (!u.pathname.endsWith("/")) u.pathname += "/";
+    return u.href;
+  } catch {
+    return String(raw || "").trim();
+  }
+}
+
+/**
+ * Collect candidate TikTok media URLs (page JSON + network capture).
+ */
+async function collectTikTokMediaUrls(tabId, pageUrl) {
+  const urls = [];
+  const seen = new Set();
+  const push = (u) => {
+    if (!u || typeof u !== "string" || !u.startsWith("http")) return;
+    if (/tiktok\.com\/@|tiktok\.com\/t\//i.test(u) && !isTiktokCdnUrl(u)) return;
+    if (!isTiktokCdnUrl(u) && !/mime_type=video|\/video\/tos\//i.test(u)) return;
+    const key = u.split("?")[0];
+    if (seen.has(key)) return;
+    seen.add(key);
+    urls.push(u);
+  };
+
+  if (tabId != null) {
+    try {
+      await ensureContentScripts(tabId);
+      const ext = await withTimeout(
+        chrome.tabs.sendMessage(tabId, { type: "EXTRACT_TIKTOK" }),
+        5000,
+        "extract"
+      );
+      for (const u of ext?.urls || []) push(u);
+    } catch {
+      /* ignore */
+    }
+    const map = tabMedia.get(tabId);
+    if (map) {
+      for (const item of map.values()) push(item.url);
+    }
+  }
+  return urls;
+}
+
+/**
+ * Download one media URL using extension privileges (cookies + referer).
+ * SnapTik-class tools ultimately need a direct CDN link — we fetch it here.
+ */
+async function downloadDirectMediaUrl(tabId, mediaUrl, pageUrl, filename) {
+  if (!looksLikeVideoFileUrl(mediaUrl)) {
+    throw new Error("영상 파일이 아닌 주소입니다");
+  }
+  const name = safeDownloadName(filename || `tiktok_${Date.now()}.mp4`, "video/mp4");
+
+  // ONLY save after verifying real video bytes — never chrome.downloads raw URL
+  // (that path was saving .js / .bmp "unusable files")
+  const blob = await withTabReferer(tabId, async () => {
+    const res = await fetch(mediaUrl, {
+      credentials: "include",
+      cache: "no-store",
+      headers: {
+        Accept: "video/mp4,video/*,*/*;q=0.8",
+        Referer: pageUrl || "https://www.tiktok.com/"
+      }
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const ctype = (res.headers.get("content-type") || "").toLowerCase();
+    if (
+      ctype.includes("javascript") ||
+      ctype.includes("text/html") ||
+      ctype.includes("text/css") ||
+      ctype.includes("application/json") ||
+      ctype.includes("image/")
+    ) {
+      throw new Error(`영상이 아닌 응답 (${ctype || "unknown"})`);
+    }
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength < 100_000) {
+      throw new Error(`파일이 너무 작음 (${Math.round(buf.byteLength / 1024)}KB)`);
+    }
+    const head = new Uint8Array(buf.slice(0, 16));
+    if (!sniffIsVideo(head)) {
+      throw new Error("영상 바이너리가 아닙니다 (이미지/기타 파일 제외)");
+    }
+    return new Blob([buf], { type: ctype.startsWith("video/") ? ctype : "video/mp4" });
+  });
+
+  if (!blob || blob.size < 100_000) return null;
+  const saved = await downloadBlob(blob, name);
+  return { ok: true, ...saved, method: "tiktok-fetch-blob" };
+}
+
+/**
+ * TikTok: prefer link-based helper (SnapTik style). Avoid scraping CDN covers/images.
+ * Page hooks are disabled on TikTok so the site player keeps working.
+ */
+async function downloadTikTok(tabId, pageUrl, filename, preferQuality) {
+  const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
+  if (!targetPage) throw new Error("TikTok 페이지 주소가 없습니다");
+  if (!isTiktokUrl(targetPage) && !/vm\.tiktok\.com|vt\.tiktok\.com/i.test(targetPage)) {
+    throw new Error("TikTok 영상 링크가 아닙니다");
+  }
+
+  emitDownloadProgress(tabId, 8, "TikTok 링크로 받는 중…", "start");
+
+  const helperUp = await YtDlp.available().catch(() => false);
+  if (!helperUp) {
     throw new Error(
-      "YouTube·TikTok은 로컬 도우미가 필요합니다. helper/start.command 를 실행한 뒤 다시 시도해 주세요"
+      "TikTok은 로컬 도우미가 필요합니다. helper/install_autostart.command 를 실행해 주세요"
     );
   }
 
+  const cookieHeader = await getCookieHeaderForUrl(targetPage);
+
+  // Optional: only use page CDN if it passes strict video checks (never covers/bmp)
+  let mediaUrl;
+  try {
+    const urls = (await collectTikTokMediaUrls(tabId, targetPage)).filter(looksLikeVideoFileUrl);
+    mediaUrl = urls[0];
+  } catch {
+    mediaUrl = undefined;
+  }
+
+  try {
+    const result = await YtDlp.downloadAndWait(
+      {
+        url: targetPage,
+        pageUrl: targetPage,
+        filename: filename || undefined,
+        title: filename || undefined,
+        quality: preferQuality || "best",
+        site: "tiktok",
+        cookieHeader: cookieHeader || undefined,
+        // only pass if looks like real video path
+        mediaUrl: mediaUrl && looksLikeVideoFileUrl(mediaUrl) ? mediaUrl : undefined
+      },
+      (p) => {
+        let message = p.message || "받는 중…";
+        if (/\[download\]/i.test(message)) {
+          message = `받는 중… ${Math.round(p.percent || 0)}%`;
+        }
+        if (/TikTok 링크 해석|공개 API|tikwm|직접/i.test(message)) {
+          message = message.slice(0, 80);
+        }
+        if (/IP address is blocked|blocked from accessing/i.test(message)) {
+          message = "TikTok 접근이 막혔습니다. 링크 붙여넣기로 다시 시도해 주세요";
+        }
+        emitDownloadProgress(tabId, Math.max(10, p.percent || 10), message, "download");
+      },
+      15 * 60 * 1000
+    );
+    emitDownloadProgress(tabId, 100, "저장 완료", "done");
+    return {
+      ok: true,
+      method: result.method || "yt-dlp",
+      downloadId: null,
+      ytdlp: true,
+      path: result.path || result.outDir || "",
+      outDir: result.outDir || "",
+      filename: result.filename || filename,
+      size: result.size || 0
+    };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    throw new Error(
+      /TikTok|재생|링크|막혔|도우미/i.test(msg)
+        ? msg
+        : `TikTok 다운로드 실패. 공유 링크를 복사해 위 「영상 링크 붙여넣기」에 넣고 받아 주세요. (${msg.slice(0, 60)})`
+    );
+  }
+}
+
+async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
   const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : url;
   const kind = siteKind(url, targetPage);
-  const label =
-    kind === "youtube" ? "YouTube" : kind === "tiktok" ? "TikTok" : "영상";
 
+  // Dedicated TikTok pipeline
+  if (kind === "tiktok") {
+    return downloadTikTok(tabId, targetPage, filename, preferQuality);
+  }
+
+  // Instagram: try captured CDN video first, then yt-dlp + cookies
+  if (kind === "instagram") {
+    return downloadInstagram(tabId, targetPage, filename, preferQuality);
+  }
+
+  const available = await YtDlp.available();
+  if (!available) {
+    throw new Error(
+      "YouTube·TikTok·Instagram은 로컬 도우미가 필요합니다. helper/install_autostart.command 를 실행해 주세요"
+    );
+  }
+
+  const label = kind === "youtube" ? "YouTube" : "영상";
   emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start");
+
+  const cookieHeader = await getCookieHeaderForUrl(targetPage);
 
   const result = await YtDlp.downloadAndWait(
     {
@@ -630,11 +1066,11 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
       filename: filename || undefined,
       title: filename || undefined,
       quality: preferQuality || "best",
-      site: kind || undefined
+      site: kind || undefined,
+      cookieHeader: cookieHeader || undefined
     },
     (p) => {
       let message = p.message || "받는 중…";
-      // Soften raw yt-dlp lines
       if (/\[download\]/i.test(message)) message = `받는 중… ${Math.round(p.percent || 0)}%`;
       if (/Merging|Merger/i.test(message)) message = "파일 합치는 중…";
       if (/Destination|Writing/i.test(message)) message = "저장 중…";
@@ -648,7 +1084,6 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
   return {
     ok: true,
     method: "yt-dlp",
-    // No chrome.downloads id — file written by helper to Downloads/VideoDownloader
     downloadId: null,
     ytdlp: true,
     path: result.path || result.outDir || "",
@@ -656,6 +1091,140 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
     filename: result.filename || filename,
     size: result.size || 0
   };
+}
+
+/**
+ * Instagram: yt-dlp + browser cookies (login required for many posts).
+ * Also try direct CDN mp4 captured while watching.
+ */
+async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
+  let targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
+  targetPage = normalizeInstagramUrl(targetPage);
+  if (!targetPage || !isInstagramUrl(targetPage)) {
+    throw new Error(
+      "Instagram 게시물 링크가 아닙니다. /p/… 또는 /reel/… 주소를 붙여 넣어 주세요"
+    );
+  }
+
+  emitDownloadProgress(tabId, 5, "Instagram 준비 중…", "start");
+
+  // 1) Direct CDN while viewing (must be real video bytes)
+  if (tabId != null) {
+    try {
+      await ensureContentScripts(tabId);
+      await chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" }).catch(() => {});
+      await chrome.tabs
+        .sendMessage(tabId, { type: "EXTRACT_INSTAGRAM" })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    const map = tabMedia.get(tabId);
+    if (map) {
+      const cdns = [...map.values()]
+        .map((i) => i.url)
+        .filter((u) => isInstagramCdnUrl(u));
+      for (const mediaUrl of cdns.slice(0, 5)) {
+        try {
+          emitDownloadProgress(tabId, 18, "재생 스트림 저장 중…", "download");
+          const saved = await downloadDirectMediaUrl(
+            tabId,
+            mediaUrl,
+            targetPage,
+            filename
+          );
+          if (saved?.ok || saved?.downloadId != null) {
+            emitDownloadProgress(tabId, 100, "저장 완료", "done");
+            return {
+              ok: true,
+              downloadId: saved.downloadId ?? null,
+              path: saved.path || "",
+              filename: saved.filename || filename,
+              size: saved.size || 0,
+              method: saved.method || "instagram-cdn",
+              ytdlp: false
+            };
+          }
+        } catch (e) {
+          console.warn("[UVD] instagram CDN", e);
+        }
+      }
+    }
+  }
+
+  // 2) yt-dlp + full browser cookie jar (Netscape file on helper side)
+  const helperUp = await YtDlp.available().catch(() => false);
+  if (!helperUp) {
+    throw new Error(
+      "Instagram은 로컬 도우미가 필요합니다. helper/install_autostart.command 를 실행해 주세요"
+    );
+  }
+
+  const cookiesList = await collectCookiesForUrl("https://www.instagram.com/");
+  const cookieHeader = await getCookieHeaderForUrl("https://www.instagram.com/");
+  if (!cookiesList.length) {
+    throw new Error(
+      "Instagram 로그인 쿠키가 없습니다. Chrome에서 instagram.com 에 로그인한 뒤 다시 시도해 주세요"
+    );
+  }
+
+  emitDownloadProgress(
+    tabId,
+    28,
+    `Instagram 받는 중… (쿠키 ${cookiesList.length}개)`,
+    "download"
+  );
+
+  try {
+    const result = await YtDlp.downloadAndWait(
+      {
+        url: targetPage,
+        pageUrl: targetPage,
+        filename: filename || undefined,
+        title: filename || undefined,
+        quality: preferQuality || "best",
+        site: "instagram",
+        cookieHeader: cookieHeader || undefined,
+        cookiesList
+      },
+      (p) => {
+        let message = p.message || "받는 중…";
+        if (/\[download\]/i.test(message)) {
+          message = `받는 중… ${Math.round(p.percent || 0)}%`;
+        }
+        if (/login|log in|not logged|empty media|rate-limit|403|400/i.test(message)) {
+          message =
+            "Instagram 인증 문제 — 브라우저에서 로그인·새로고침 후 링크를 다시 붙여 넣어 주세요";
+        }
+        emitDownloadProgress(tabId, Math.max(28, p.percent || 28), message, "download");
+      },
+      20 * 60 * 1000
+    );
+    emitDownloadProgress(tabId, 100, "저장 완료", "done");
+    return {
+      ok: true,
+      method: result.method || "yt-dlp",
+      downloadId: null,
+      ytdlp: true,
+      path: result.path || result.outDir || "",
+      outDir: result.outDir || "",
+      filename: result.filename || filename,
+      size: result.size || 0
+    };
+  } catch (e) {
+    const msg = String(e?.message || e);
+    if (/login|cookie|empty media|not granting|400|403|rate/i.test(msg)) {
+      throw new Error(
+        "Instagram 다운로드 실패. ① Chrome에서 로그인 ② 게시물/릴스를 한 번 열기 ③ 공유 링크를 다시 붙여 넣기"
+      );
+    }
+    throw new Error(
+      /Instagram|로그인|도우미/i.test(msg)
+        ? msg
+        : `Instagram 다운로드 실패: ${msg.slice(0, 80)}`
+    );
+  }
 }
 
 function bestNonBlobAlternative(tabId, excludeUrl) {
@@ -1722,7 +2291,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
           // YouTube / TikTok / hard sites
           if (needsYtDlpHelper(url, url) || msg.forceYtDlp) {
-            const data = await YtDlp.listFormats(url);
+            const cookieHeader = await getCookieHeaderForUrl(url);
+            const data = await YtDlp.listFormats(url, {
+              cookieHeader: cookieHeader || undefined
+            });
             sendResponse({
               ok: true,
               qualities: data.qualities || [],
@@ -1750,21 +2322,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case "DOWNLOAD_PAGE": {
-      // Download current page URL via yt-dlp (YouTube/TikTok/etc.)
+      // Download by page URL (YouTube/TikTok) — from current tab or pasted link
       const tid = msg.tabId ?? tabId;
       const pageUrl = msg.pageUrl || msg.url;
       if (!pageUrl) {
         sendResponse({ ok: false, error: "페이지 주소가 없습니다" });
         break;
       }
+      if (!/^https?:\/\//i.test(pageUrl)) {
+        sendResponse({ ok: false, error: "http(s) 링크만 가능합니다" });
+        break;
+      }
       const keep = startKeepAlive();
       const fname = safeDownloadName(
-        msg.filename || resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
+        msg.filename ||
+          resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
         "video/mp4"
       );
       downloadViaYtDlp(tid, pageUrl, pageUrl, fname, msg.preferQuality || "best")
         .then((r) => {
           stopKeepAlive(keep);
+          // TikTok direct / helper success may omit chrome downloadId
+          if (r?.ok === false) {
+            sendResponse({ ok: false, error: r.error || "다운로드 실패" });
+            return;
+          }
+          if (r?.method?.startsWith("tiktok") || r?.ytdlp || r?.downloadId != null) {
+            sendResponse({
+              ok: true,
+              ...r,
+              filename: r.filename || fname
+            });
+            return;
+          }
           sendResponse({ ok: true, ...r, filename: r.filename || fname });
         })
         .catch((err) => {
@@ -1782,7 +2372,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.9.5" });
+      sendResponse({ ok: true, version: "1.11.1" });
       break;
     case "PROBE_HLS": {
       const tid = msg.tabId ?? tabId;
@@ -1947,4 +2537,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("keepalive", { periodInMinutes: 4.5 });
 chrome.alarms.onAlarm.addListener(() => {});
 
-console.log("[VideoDownloader] ready v1.9.5");
+console.log("[VideoDownloader] ready v1.11.1");

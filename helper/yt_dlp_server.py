@@ -26,7 +26,8 @@ import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("UVD_PORT", "8787"))
@@ -36,6 +37,379 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+COOKIE_DIR = Path(os.environ.get("UVD_COOKIE_DIR", HOME / ".cache" / "uvd-helper"))
+COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def write_netscape_cookies(cookies: list, path: Path) -> int:
+    """
+    Write Chrome-exported cookies (list of dicts) as Netscape format for yt-dlp.
+    dict keys: name, value, domain, path, secure, expirationDate
+    """
+    lines = ["# Netscape HTTP Cookie File", "# https://curl.se/docs/http-cookies.html", ""]
+    n = 0
+    for c in cookies or []:
+        if not isinstance(c, dict):
+            continue
+        name = str(c.get("name") or "")
+        value = str(c.get("value") or "")
+        if not name:
+            continue
+        domain = str(c.get("domain") or "")
+        if not domain:
+            continue
+        # Netscape: subdomain flag TRUE if domain starts with .
+        flag = "TRUE" if domain.startswith(".") else "FALSE"
+        cpath = str(c.get("path") or "/")
+        secure = "TRUE" if c.get("secure") else "FALSE"
+        try:
+            exp = int(float(c.get("expirationDate") or 0))
+        except (TypeError, ValueError):
+            exp = 0
+        if exp <= 0:
+            exp = int(time.time()) + 3600 * 24 * 30
+        # tab-separated
+        lines.append(f"{domain}\t{flag}\t{cpath}\t{secure}\t{exp}\t{name}\t{value}")
+        n += 1
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return n
+
+
+# ─── TikTok (SnapTik / TikWM style multi-path resolver) ─────
+
+
+def is_tiktok_page(url: str) -> bool:
+    try:
+        h = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not h:
+        return False
+    if "tiktokcdn" in h or "byteicdn" in h or "byteoversea" in h:
+        return False
+    return "tiktok.com" in h or h.endswith("tiktokv.com")
+
+
+def clean_tiktok_url(url: str) -> str:
+    """Normalize share / short links to a stable form for APIs."""
+    u = (url or "").strip()
+    if not u:
+        return u
+    # strip tracking query noise but keep path
+    try:
+        p = urlparse(u)
+        # keep only essential query if any (usually none for /@user/video/id)
+        q = parse_qs(p.query)
+        keep = {}
+        for k in ("_d", "is_from_webapp", "sender_device", "item_id"):
+            if k in q:
+                keep[k] = q[k][0]
+        u = urlunparse((p.scheme, p.netloc, p.path, "", urlencode(keep), ""))
+    except Exception:
+        pass
+    return u.rstrip("/")
+
+
+def walk_json_for_media(obj, out: list[str], depth: int = 0) -> None:
+    if depth > 40 or obj is None:
+        return
+    if isinstance(obj, str):
+        if obj.startswith("http") and re.search(
+            r"tiktokcdn|byteicdn|tiktokv\.com|byteoversea|musical\.ly", obj, re.I
+        ):
+            if not re.search(r"\.(jpe?g|png|webp|gif)(\?|$)", obj, re.I) or re.search(
+                r"video|play|media|mime_type=video", obj, re.I
+            ):
+                out.append(obj)
+        return
+    if isinstance(obj, list):
+        for x in obj[:200]:
+            walk_json_for_media(x, out, depth + 1)
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            kl = str(k).lower()
+            if kl in (
+                "playaddr",
+                "downloadaddr",
+                "play_addr",
+                "download_addr",
+                "play",
+                "hdplay",
+                "wmplay",
+                "nwm_video_url",
+                "nwm_video_url_hq",
+            ) and isinstance(v, str):
+                walk_json_for_media(v, out, depth + 1)
+            elif kl in ("url_list", "urlList") and isinstance(v, list):
+                for x in v:
+                    walk_json_for_media(x, out, depth + 1)
+            else:
+                walk_json_for_media(v, out, depth + 1)
+
+
+def http_post_form(url: str, fields: dict, headers: dict | None = None, timeout: int = 25) -> dict | None:
+    data = urlencode(fields).encode("utf-8")
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json, text/plain, */*",
+    }
+    if headers:
+        hdrs.update(headers)
+    try:
+        req = Request(url, data=data, headers=hdrs, method="POST")
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def http_get_json(url: str, headers: dict | None = None, timeout: int = 25) -> dict | None:
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    }
+    if headers:
+        hdrs.update(headers)
+    try:
+        req = Request(url, headers=hdrs, method="GET")
+        with urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def resolve_tiktok_via_public_apis(page_url: str) -> dict | None:
+    """
+    Same idea as SnapTik / TikWM web tools: call a resolve API with the page link.
+    Returns {play_url, title, cover, method} or None.
+    """
+    u = clean_tiktok_url(page_url)
+    candidates: list[tuple[str, dict | None]] = []
+
+    # 1) TikWM (widely used free resolver)
+    r = http_post_form(
+        "https://www.tikwm.com/api/",
+        {"url": u, "hd": "1"},
+        headers={"Referer": "https://www.tikwm.com/"},
+    )
+    if r and (r.get("code") == 0 or r.get("code") == "0") and isinstance(r.get("data"), dict):
+        d = r["data"]
+        play = d.get("hdplay") or d.get("play") or d.get("wmplay")
+        if play:
+            return {
+                "play_url": play,
+                "title": d.get("title") or d.get("id") or "tiktok",
+                "cover": d.get("cover") or d.get("origin_cover"),
+                "id": str(d.get("id") or ""),
+                "method": "tikwm",
+                "duration": d.get("duration"),
+            }
+
+    # 2) tikwm alternative query style
+    r = http_get_json(
+        "https://www.tikwm.com/api/?" + urlencode({"url": u, "hd": "1"}),
+        headers={"Referer": "https://www.tikwm.com/"},
+    )
+    if r and (r.get("code") == 0 or r.get("code") == "0") and isinstance(r.get("data"), dict):
+        d = r["data"]
+        play = d.get("hdplay") or d.get("play") or d.get("wmplay")
+        if play:
+            return {
+                "play_url": play,
+                "title": d.get("title") or "tiktok",
+                "cover": d.get("cover"),
+                "id": str(d.get("id") or ""),
+                "method": "tikwm-get",
+            }
+
+    # 3) Generic third-party (may change; best-effort)
+    for api in (
+        "https://api.tiklydown.eu.org/api/download?" + urlencode({"url": u}),
+        "https://tikdown.org/getAjax?" + urlencode({"url": u}),
+    ):
+        try:
+            r = http_get_json(api)
+            if not r:
+                continue
+            # various shapes
+            data = r.get("data") or r.get("result") or r
+            if isinstance(data, dict):
+                play = (
+                    data.get("play")
+                    or data.get("hdplay")
+                    or data.get("video")
+                    or data.get("nwm_video_url")
+                    or data.get("nwm_video_url_hq")
+                )
+                if isinstance(play, list) and play:
+                    play = play[0]
+                if play and str(play).startswith("http"):
+                    return {
+                        "play_url": str(play),
+                        "title": data.get("title") or data.get("desc") or "tiktok",
+                        "cover": data.get("cover") or data.get("author_avatar"),
+                        "method": "public-api",
+                    }
+        except Exception:
+            continue
+
+    return None
+
+
+def _sniff_is_video(head: bytes) -> bool:
+    if not head or len(head) < 12:
+        return False
+    # Reject images
+    if head[:2] == b"BM":  # BMP
+        return False
+    if head[:3] == b"\xff\xd8\xff":  # JPEG
+        return False
+    if head[:8] == b"\x89PNG\r\n\x1a\n":  # PNG
+        return False
+    if head[:4] == b"GIF8":
+        return False
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return False
+    # Video containers
+    if len(head) >= 8 and head[4:8] == b"ftyp":  # MP4/MOV
+        return True
+    if head[:4] == b"\x1aE\xdf\xa3":  # WebM/MKV
+        return True
+    if head[:1] == b"G":  # MPEG-TS sync
+        return True
+    return False
+
+
+def download_url_to_file(
+    media_url: str,
+    dest: Path,
+    referer: str = "https://www.tiktok.com/",
+    cookie_header: str = "",
+) -> int:
+    """Stream download media_url to dest. Returns bytes written. Rejects non-video."""
+    # Block obvious non-video URLs
+    if re.search(r"\.(js|css|json|bmp|jpe?g|png|gif|webp|svg)(\?|$)", media_url, re.I):
+        raise ValueError("not a video url")
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Referer": referer or "https://www.tiktok.com/",
+        "Accept": "video/mp4,video/*,*/*;q=0.8",
+        "Origin": "https://www.tiktok.com",
+    }
+    if cookie_header:
+        hdrs["Cookie"] = cookie_header
+    req = Request(media_url, headers=hdrs, method="GET")
+    written = 0
+    first = b""
+    with urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
+        ctype = (resp.headers.get("Content-Type") or "").lower()
+        if any(x in ctype for x in ("javascript", "text/html", "text/css", "image/", "json")):
+            raise ValueError(f"bad content-type {ctype}")
+        while True:
+            chunk = resp.read(1024 * 256)
+            if not chunk:
+                break
+            if written == 0:
+                first = chunk[:16]
+                if not _sniff_is_video(first) and not ctype.startswith("video/"):
+                    raise ValueError("response is not a video file")
+            f.write(chunk)
+            written += len(chunk)
+    if written < 100_000:
+        raise ValueError(f"file too small ({written})")
+    return written
+
+
+def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) -> bool:
+    """
+    SnapTik-style path: resolve play URL via public API or client-provided mediaUrl,
+    then download bytes. Returns True if job completed successfully.
+    """
+    page_url = (payload.get("pageUrl") or payload.get("url") or "").strip()
+    media_hint = (payload.get("mediaUrl") or "").strip()
+    cookie_header = (payload.get("cookieHeader") or "").strip()
+    title_hint = (payload.get("filename") or payload.get("title") or "tiktok").strip()
+
+    play_url = ""
+    title = title_hint
+    method = ""
+
+    if media_hint and media_hint.startswith("http") and "tiktok.com/@" not in media_hint:
+        play_url = media_hint
+        method = "client-cdn"
+
+    if not play_url and is_tiktok_page(page_url):
+        with jobs_lock:
+            jobs[job_id]["message"] = "TikTok 링크 해석 중… (공개 API)"
+            jobs[job_id]["percent"] = 8
+        resolved = resolve_tiktok_via_public_apis(page_url)
+        if resolved and resolved.get("play_url"):
+            play_url = resolved["play_url"]
+            title = resolved.get("title") or title
+            method = resolved.get("method") or "public-api"
+
+    if not play_url:
+        return False
+
+    # Build output path
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title)
+    safe = re.sub(r"^\(\d{1,4}\)\s*", "", safe)
+    safe = " ".join(safe.split()).strip(" ._-" )[:80] or "tiktok"
+    dest = OUT_DIR / f"{safe}.mp4"
+    # uniquify
+    if dest.exists():
+        i = 2
+        while True:
+            cand = OUT_DIR / f"{safe} ({i}).mp4"
+            if not cand.exists():
+                dest = cand
+                break
+            i += 1
+
+    with jobs_lock:
+        jobs[job_id]["message"] = f"TikTok 받는 중… ({method})"
+        jobs[job_id]["percent"] = 15
+        jobs[job_id]["target"] = play_url[:120]
+
+    try:
+        size = download_url_to_file(
+            play_url,
+            dest,
+            referer=page_url or "https://www.tiktok.com/",
+            cookie_header=cookie_header,
+        )
+        if size < 50_000:
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+            return False
+        with jobs_lock:
+            jobs[job_id].update(
+                {
+                    "status": "done",
+                    "percent": 100,
+                    "message": f"저장 완료 → {dest}",
+                    "path": str(dest),
+                    "filename": dest.name,
+                    "size": size,
+                    "method": f"tiktok-{method}",
+                    "finishedAt": time.time(),
+                }
+            )
+        return True
+    except Exception as e:
+        with jobs_lock:
+            jobs[job_id]["message"] = f"TikTok 직접 저장 실패: {e}"
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
 
 
 def find_ytdlp() -> str | None:
@@ -100,24 +474,12 @@ def run_download(job_id: str, payload: dict) -> None:
             {
                 "status": "running",
                 "percent": 2,
-                "message": "yt-dlp 시작…",
+                "message": "시작…",
                 "startedAt": time.time(),
             }
         )
 
-    if not bin_path:
-        with jobs_lock:
-            jobs[job_id].update(
-                {
-                    "status": "error",
-                    "percent": 0,
-                    "message": "yt-dlp가 설치되어 있지 않습니다. pip install -U yt-dlp",
-                    "error": "yt-dlp not found",
-                }
-            )
-        return
-
-    if not url:
+    if not url and not page_url:
         with jobs_lock:
             jobs[job_id].update(
                 {"status": "error", "message": "URL 없음", "error": "no url"}
@@ -126,6 +488,33 @@ def run_download(job_id: str, payload: dict) -> None:
 
     # Prefer page URL when both given (site extractors work on watch pages)
     target = page_url if page_url and page_url.startswith("http") else url
+
+    # ── TikTok first: SnapTik/TikWM-style resolve (no yt-dlp required) ──
+    site_early = (payload.get("site") or "").lower()
+    if (
+        site_early == "tiktok"
+        or is_tiktok_page(target)
+        or is_tiktok_page(page_url)
+        or (payload.get("mediaUrl") or "").strip()
+    ):
+        try:
+            if try_tiktok_direct_download(job_id, payload, title_hint):
+                return
+        except Exception as e:
+            with jobs_lock:
+                jobs[job_id]["message"] = f"TikTok 직접 경로 실패, yt-dlp 시도… ({e})"
+
+    if not bin_path:
+        with jobs_lock:
+            jobs[job_id].update(
+                {
+                    "status": "error",
+                    "percent": 0,
+                    "message": "다운로드 실패 (TikTok 해석 실패 + yt-dlp 없음)",
+                    "error": "yt-dlp not found",
+                }
+            )
+        return
     # If user passed a direct m3u8/mp4, use that
     if url and (
         ".m3u8" in url
@@ -172,6 +561,35 @@ def run_download(job_id: str, payload: dict) -> None:
 
     is_youtube = site == "youtube" or "youtube" in host or "youtu.be" in target
     is_tiktok = site == "tiktok" or "tiktok" in host
+    is_instagram = (
+        site == "instagram"
+        or "instagram.com" in host
+        or "instagr.am" in host
+        or "instagram.com" in target
+    )
+
+    # Normalize Instagram URLs for yt-dlp
+    if is_instagram and target:
+        try:
+            p = urlparse(target)
+            path = p.path.replace("/reels/", "/reel/")
+            if not path.endswith("/"):
+                path += "/"
+            target = urlunparse((p.scheme or "https", p.netloc, path, "", "", ""))
+        except Exception:
+            pass
+
+    # Write browser cookies (from extension) to Netscape file — required for Instagram
+    cookies_file: str | None = None
+    cookies_list = payload.get("cookiesList") or payload.get("cookies")
+    if isinstance(cookies_list, list) and cookies_list:
+        try:
+            cpath = COOKIE_DIR / f"cookies_{job_id}.txt"
+            n = write_netscape_cookies(cookies_list, cpath)
+            if n > 0:
+                cookies_file = str(cpath)
+        except Exception as e:
+            print(f"[uvd-helper] cookie write failed: {e}", file=sys.stderr)
 
     # ── format selection (maximize quality; never re-encode) ──
     # YouTube serves separate video/audio streams. Must pick best of each + merge.
@@ -179,14 +597,27 @@ def run_download(job_id: str, payload: dict) -> None:
     merge_fmt = "mp4"
     sort_args: list[str] = []
 
-    if is_tiktok:
-        if quality in ("best", "all", ""):
+    if is_instagram:
+        # Instagram posts are usually progressive mp4; cookies required for many posts
+        if quality in ("best", "all", "", "4K", "max", "highest"):
+            fmt = "best"
+        elif quality.endswith("p") and quality[:-1].isdigit():
+            h = quality[:-1]
+            fmt = f"b[height<=?{h}]/best"
+        else:
+            fmt = "best"
+        merge_fmt = "mp4"
+        sort_args = ["-S", "res,tbr"]
+    elif is_tiktok:
+        # TikTok is usually one progressive file; keep simple selectors
+        if quality in ("best", "all", "", "4K", "max", "highest"):
             fmt = "b"
         elif quality.endswith("p") and quality[:-1].isdigit():
             h = quality[:-1]
             fmt = f"b[height<=?{h}]/b"
         else:
             fmt = "b"
+        merge_fmt = "mp4"
     elif is_youtube:
         # Max resolution + best audio, with broad fallbacks so "format not available" is rare.
         # (Do not force player_client=web/tv/ios — some sessions mark those DRM-only.)
@@ -255,31 +686,80 @@ def run_download(job_id: str, payload: dict) -> None:
                 c.extend(["--add-header", f"Origin:{origin}"])
             except Exception:
                 pass
-        cookies = payload.get("cookies")
-        if cookies and Path(cookies).is_file():
-            c.extend(["--cookies", cookies])
+        # Prefer Netscape cookie file from extension (works while Chrome is open)
+        if cookies_file and Path(cookies_file).is_file():
+            c.extend(["--cookies", cookies_file])
+        else:
+            cookies = payload.get("cookies")
+            if isinstance(cookies, str) and Path(cookies).is_file():
+                c.extend(["--cookies", cookies])
+        # Cookie header alone is weak for Instagram API but helps some CDNs
+        cookie_header = (payload.get("cookieHeader") or "").strip()
+        if cookie_header and not cookies_file:
+            c.extend(["--add-header", f"Cookie:{cookie_header}"])
         if payload.get("cookiesFromBrowser"):
+            # May fail if Chrome profile is locked — attempts without it still run
             c.extend(["--cookies-from-browser", str(payload["cookiesFromBrowser"])])
-        # Do NOT force youtube player_client — default clients get 4K and avoid DRM traps
+        # Instagram extractor: use webpage + API
+        if is_instagram:
+            c.extend(["--extractor-args", "instagram:include_ads=false"])
         if extra:
             c.extend(extra)
         c.append(target)
         return c
 
-    # Attempt chain: best quality → progressive best → any video
-    attempts: list[tuple[str, str, list[str]]] = [
-        (fmt, merge_fmt if is_youtube else "mp4", []),
-        ("bv*+ba/b", "mkv", []),
-        ("bestvideo+bestaudio/best", "mkv", []),
-        ("best", "mp4", []),
-    ]
-    # de-dupe identical format strings
-    seen_fmt = set()
+    # Site-specific attempt chains
+    if is_instagram:
+        # Instagram: cookies file first, then cookies-from-browser fallback
+        attempts: list[tuple[str, str, list[str]]] = [
+            (fmt, "mp4", []),
+            ("best", "mp4", []),
+            ("b", "mp4", []),
+            ("bestvideo+bestaudio/best", "mp4", []),
+            ("best", "mp4", ["--cookies-from-browser", "chrome"]),
+            ("b", "mp4", ["--cookies-from-browser", "chrome"]),
+        ]
+    elif is_tiktok:
+        # Impersonate real browsers — TikTok blocks bare yt-dlp IPs
+        imp_chrome = ["--impersonate", "chrome"]
+        imp_android = ["--impersonate", "chrome-131:android-14"]
+        imp_ios = ["--impersonate", "safari-18.0:ios-18.0"]
+        # cookies-from-browser as late fallback (Chrome lock often fails while browsing)
+        cfb = ["--cookies-from-browser", "chrome", "--impersonate", "chrome"]
+        attempts = [
+            (fmt, "mp4", imp_chrome),
+            ("b", "mp4", imp_chrome),
+            ("best", "mp4", imp_chrome),
+            ("b", "mp4", imp_android),
+            ("best", "mp4", imp_android),
+            ("b", "mp4", imp_ios),
+            ("b", "mp4", cfb),
+            ("best", "mp4", cfb),
+            # last resort without impersonate
+            ("b", "mp4", []),
+            ("best", "mp4", []),
+        ]
+    elif is_youtube:
+        attempts = [
+            (fmt, merge_fmt, []),
+            ("bv*+ba/b", "mkv", []),
+            ("bestvideo+bestaudio/best", "mkv", []),
+            ("best", "mp4", []),
+        ]
+    else:
+        attempts = [
+            (fmt, "mp4", []),
+            ("bv*+ba/b", "mkv", []),
+            ("best", "mp4", []),
+        ]
+    # de-dupe by (format, extra-key)
+    seen_key = set()
     uniq_attempts = []
     for a in attempts:
-        if a[0] in seen_fmt:
+        key = (a[0], " ".join(a[2]))
+        if key in seen_key:
             continue
-        seen_fmt.add(a[0])
+        seen_key.add(key)
         uniq_attempts.append(a)
     attempts = uniq_attempts
 
@@ -401,6 +881,17 @@ def run_download(job_id: str, payload: dict) -> None:
                     err = "영상을 사용할 수 없습니다"
                 elif "format is not available" in err.lower() or "only images are available" in err.lower():
                     err = "이 영상의 재생 포맷을 받지 못했습니다. 잠시 후 다시 시도해 주세요"
+                elif "ip address is blocked" in err.lower() or "blocked from accessing" in err.lower():
+                    err = (
+                        "TikTok이 이 PC의 접근을 막았습니다. "
+                        "브라우저에서 해당 영상을 재생한 뒤(로그인 권장) 다시 시도해 주세요"
+                    )
+                elif "unable to extract" in err.lower() or "status code 0" in err.lower():
+                    err = "TikTok 정보를 읽지 못했습니다. 영상 페이지를 새로고침한 뒤 재생 후 다시 시도해 주세요"
+                elif "instagram" in err.lower() and (
+                    "login" in err.lower() or "cookie" in err.lower() or "rate-limit" in err.lower()
+                ):
+                    err = "Instagram 로그인이 필요합니다. Chrome에서 로그인한 뒤 링크를 다시 붙여 넣어 주세요"
                 jobs[job_id].update(
                     {
                         "status": "error",
@@ -482,30 +973,49 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 send_json(self, 400, {"ok": False, "error": "url required"})
                 return
+            is_tt = "tiktok" in url.lower()
             try:
+                cmd = [
+                    bin_path,
+                    "--skip-download",
+                    "--no-playlist",
+                    "--ignore-config",
+                    "-J",
+                ]
+                if is_tt:
+                    cmd.extend(["--impersonate", "chrome"])
+                cookie_header = (payload.get("cookieHeader") or "").strip()
+                if cookie_header:
+                    cmd.extend(["--add-header", f"Cookie:{cookie_header}"])
+                cmd.append(url)
                 out = subprocess.check_output(
-                    [
-                        bin_path,
-                        "--skip-download",
-                        "--no-playlist",
-                        "--ignore-config",
-                        "-J",
-                        url,
-                    ],
+                    cmd,
                     text=True,
                     timeout=90,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.STDOUT,
                 )
-                info = json.loads(out)
+                # -J prints JSON; may have warnings before/after — find last JSON object
+                text = out.strip()
+                # Prefer last line that looks like JSON object
+                info = None
+                for line in reversed(text.splitlines()):
+                    line = line.strip()
+                    if line.startswith("{") and line.endswith("}"):
+                        try:
+                            info = json.loads(line)
+                            break
+                        except json.JSONDecodeError:
+                            continue
+                if info is None:
+                    info = json.loads(text[text.find("{") : text.rfind("}") + 1])
             except subprocess.TimeoutExpired:
                 send_json(self, 504, {"ok": False, "error": "포맷 조회 시간 초과"})
                 return
             except Exception as e:
-                send_json(
-                    self,
-                    500,
-                    {"ok": False, "error": f"포맷 조회 실패: {e}"},
-                )
+                msg = str(e)
+                if "IP address is blocked" in msg or "blocked from accessing" in msg:
+                    msg = "TikTok 접근이 막혔습니다. 브라우저에서 재생 후 다시 열어 주세요"
+                send_json(self, 500, {"ok": False, "error": f"포맷 조회 실패: {msg}"})
                 return
 
             # Collect video heights from formats (and nested entries for playlists)
@@ -595,7 +1105,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/download" or self.path.startswith("/download?"):
             payload = read_json(self)
             bin_path = find_ytdlp()
-            if not bin_path:
+            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
+            site = (payload.get("site") or "").lower()
+            # TikTok can resolve via public APIs without yt-dlp
+            is_tt = site == "tiktok" or is_tiktok_page(url) or bool(payload.get("mediaUrl"))
+            if not bin_path and not is_tt:
                 send_json(
                     self,
                     503,
@@ -607,8 +1121,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
-            if not url:
+            if not url and not payload.get("mediaUrl"):
                 send_json(self, 400, {"ok": False, "error": "url required"})
                 return
 

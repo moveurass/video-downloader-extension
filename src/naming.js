@@ -26,7 +26,7 @@ const Naming = (() => {
     t = t.replace(/^[\(\[]?\d{1,3}[\)\]]\s+/, "");
     // Remove site brand suffixes (adult tubes included)
     t = t.replace(
-      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|nico(?:nico)?|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|JavLibrary|JavDB|MissAV|Jable|Avgle|ThisAV|Netflav|Supjav).*$/i,
+      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|nico(?:nico)?|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|JavLibrary|JavDB|MissAV|Jable|Avgle|ThisAV|Netflav|Supjav|Reels).*$/i,
       ""
     );
     t = t.replace(/\s*[\-|–—|·•]\s*Watch\s*(Free|Online|Full).*$/i, "");

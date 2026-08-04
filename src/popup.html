@@ -31,11 +31,27 @@
     <p class="progress-text" id="progressText">받는 중…</p>
   </div>
 
+  <section class="link-box" id="linkBox">
+    <label class="link-label" for="linkInput">영상 링크 붙여넣기</label>
+    <div class="link-row">
+      <input
+        id="linkInput"
+        class="link-input"
+        type="url"
+        placeholder="YouTube / TikTok / Instagram 링크"
+        spellcheck="false"
+        autocomplete="off"
+      />
+      <button type="button" id="btnLinkDl" class="btn primary link-btn">받기</button>
+    </div>
+    <p class="link-hint">공유 링크를 붙여 넣으면 바로 받을 수 있습니다. (인스타는 로그인 권장)</p>
+  </section>
+
   <main id="list" class="list">
     <div class="empty" id="empty">
       <div class="empty-icon">🎬</div>
       <p>받을 영상이 없습니다.</p>
-      <p class="hint">페이지를 연 뒤 ↻ 를 눌러 보세요.</p>
+      <p class="hint">페이지를 열거나 위에 링크를 붙여 넣으세요.</p>
     </div>
   </main>
 
