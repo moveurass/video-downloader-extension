@@ -6,7 +6,9 @@
 
 const HLS = (() => {
   const MAX_SEGMENTS = 8000;
-  const CONCURRENCY = 8;
+  const CONCURRENCY = 6;
+  /** When CDN returns 403, slow down to look less like a hotlink scraper */
+  const CONCURRENCY_SOFT = 3;
 
   function resolveUrl(base, ref) {
     try {
@@ -208,14 +210,95 @@ const HLS = (() => {
     return s;
   }
 
-  async function fetchText(url, headers = {}, requestInit = {}) {
+  function headerBag(h) {
+    if (!h) return {};
+    if (h instanceof Headers) {
+      const o = {};
+      h.forEach((v, k) => {
+        o[k] = v;
+      });
+      return o;
+    }
+    return { ...h };
+  }
+
+  function refererVariants(pageUrl, segmentUrl) {
+    const out = [];
+    const push = (r) => {
+      if (r && !out.includes(r)) out.push(r);
+    };
+    push(pageUrl);
+    try {
+      if (pageUrl) {
+        const u = new URL(pageUrl);
+        push(u.origin + "/");
+        push(u.origin);
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      if (segmentUrl) {
+        const s = new URL(segmentUrl);
+        push(s.origin + "/");
+      }
+    } catch {
+      /* ignore */
+    }
+    return out;
+  }
+
+  /**
+   * Build several fetch inits — CDNs often 403 without the right Referer,
+   * or reject Origin, or reject concurrent cookie sessions.
+   */
+  function buildFetchAttempts(url, requestInit = {}, extraHeaders = {}) {
     const base = normalizeInit(requestInit);
-    const attempts = [
-      { credentials: "include", ...base, headers: { ...headers, ...(base.headers || {}) } },
-      { credentials: "omit", ...base, headers: { ...headers, ...(base.headers || {}) } },
-      // bare — extension default
-      { ...base, headers: { ...headers, ...(base.headers || {}) } }
-    ];
+    const baseHeaders = { ...headerBag(base.headers), ...headerBag(extraHeaders) };
+    const pageUrl =
+      baseHeaders.Referer ||
+      baseHeaders.referer ||
+      base.pageUrl ||
+      requestInit.pageUrl ||
+      "";
+    const refs = refererVariants(pageUrl, url);
+    const attempts = [];
+
+    const add = (credentials, headers) => {
+      attempts.push({
+        ...base,
+        credentials,
+        cache: "no-store",
+        headers: headers || {}
+      });
+    };
+
+    // 1) credentials + page referer (best for same-site cookies)
+    if (refs[0]) {
+      add("include", { ...baseHeaders, Referer: refs[0] });
+    }
+    // 2) credentials + origin-only referer
+    if (refs[1]) {
+      add("include", { ...baseHeaders, Referer: refs[1] });
+    }
+    // 3) omit cookies + page referer (some CDNs reject cookie mismatch)
+    if (refs[0]) {
+      add("omit", { Referer: refs[0] });
+    }
+    // 4) omit + segment origin as referer
+    if (refs.length > 2) {
+      add("omit", { Referer: refs[refs.length - 1] });
+    }
+    // 5) bare include / omit as last resort
+    add("include", { ...baseHeaders });
+    add("omit", {});
+    add("same-origin", refs[0] ? { Referer: refs[0] } : {});
+
+    return attempts;
+  }
+
+  async function fetchText(url, headers = {}, requestInit = {}) {
+    const attempts = buildFetchAttempts(url, requestInit, headers);
     let lastErr;
     for (const init of attempts) {
       try {
@@ -223,7 +306,9 @@ const HLS = (() => {
         if (!res.ok) {
           lastErr = new Error(`Playlist HTTP ${res.status}`);
           if (res.status === 403 || res.status === 401) {
-            lastErr = new Error(`접근 거부 HTTP ${res.status}`);
+            lastErr = new Error(
+              `접근 거부 HTTP ${res.status} — 영상을 재생한 직후 다시 시도해 주세요`
+            );
           }
           if (res.status === 404) break;
           continue;
@@ -246,24 +331,41 @@ const HLS = (() => {
   }
 
   async function fetchBuffer(url, requestInit = {}) {
-    const base = normalizeInit(requestInit);
-    const attempts = [
-      { credentials: "include", ...base },
-      { credentials: "omit", ...base },
-      { ...base }
-    ];
+    const attempts = buildFetchAttempts(url, requestInit);
     let lastErr;
-    for (const init of attempts) {
+    let saw403 = false;
+    for (let i = 0; i < attempts.length; i++) {
+      const init = attempts[i];
       try {
+        // Small stagger reduces burst 403s on hotlink-protected CDNs
+        if (i > 0 && saw403) {
+          await new Promise((r) => setTimeout(r, 250 * i));
+        }
         const res = await fetchOnce(url, init, 45000);
         if (!res.ok) {
+          if (res.status === 403 || res.status === 401) {
+            saw403 = true;
+            lastErr = new Error(`Segment HTTP ${res.status}`);
+            continue;
+          }
           lastErr = new Error(`Segment HTTP ${res.status}`);
+          if (res.status === 404) break;
           continue;
         }
-        return new Uint8Array(await res.arrayBuffer());
+        const buf = new Uint8Array(await res.arrayBuffer());
+        if (buf.byteLength < 16) {
+          lastErr = new Error("세그먼트 데이터 없음");
+          continue;
+        }
+        return buf;
       } catch (e) {
         lastErr = new Error(errMsg(e));
       }
+    }
+    if (saw403) {
+      throw new Error(
+        "Segment HTTP 403 — CDN이 접근을 막았습니다. 페이지에서 영상을 재생한 뒤 바로 다시 받아 주세요"
+      );
     }
     throw lastErr || new Error("Segment fetch failed");
   }
@@ -392,7 +494,16 @@ const HLS = (() => {
    */
   async function downloadAndMerge(url, options = {}) {
     const onProgress = options.onProgress || (() => {});
-    const requestInit = options.requestInit || {};
+    const pageUrl = options.pageUrl || options.referer || "";
+    // Always attach Referer so segment CDNs accept hotlink-protected streams
+    const requestInit = {
+      ...(options.requestInit || {}),
+      pageUrl,
+      headers: {
+        ...headerBag(options.requestInit?.headers),
+        ...(pageUrl ? { Referer: pageUrl } : {})
+      }
+    };
     onProgress({ phase: "playlist", current: 0, total: 1, message: "플레이리스트 분석 중…" });
 
     let { text, finalUrl } = await fetchText(url, {}, requestInit);
@@ -408,7 +519,7 @@ const HLS = (() => {
         phase: "playlist",
         current: 0,
         total: 1,
-        message: `품질 선택: ${quality} (${variant.bandwidth || "?"} bps)`
+        message: `품질 선택: ${quality}`
       });
       const media = await fetchText(variant.url, {}, requestInit);
       text = media.text;
@@ -454,7 +565,15 @@ const HLS = (() => {
     const parts = [];
     if (parsed.mapUri) {
       onProgress({ phase: "init", current: 0, total: 1, message: "초기화 세그먼트…" });
-      parts.push(await fetchBuffer(parsed.mapUri, requestInit));
+      try {
+        parts.push(await fetchBuffer(parsed.mapUri, requestInit));
+      } catch (e) {
+        throw new Error(
+          /403|401|접근 거부/i.test(String(e?.message || e))
+            ? "초기 세그먼트 접근 거부(403). 페이지에서 재생 후 바로 다시 받아 주세요"
+            : String(e?.message || e)
+        );
+      }
     }
 
     onProgress({
@@ -464,13 +583,23 @@ const HLS = (() => {
       message: `세그먼트 0/${segments.length}`
     });
 
+    // Adaptive concurrency: start soft if many segments (hotlink CDNs)
+    let concurrency = segments.length > 200 ? CONCURRENCY_SOFT : CONCURRENCY;
+    let hard403 = 0;
+    const softFail = options.allowPartial !== false;
+
     const buffers = await mapPool(
       segments,
-      CONCURRENCY,
-      async (seg) => {
+      concurrency,
+      async (seg, index) => {
         let lastErr;
-        for (let attempt = 0; attempt < 3; attempt++) {
+        // Up to 4 attempts with backoff; first 403s trigger slower mode
+        for (let attempt = 0; attempt < 4; attempt++) {
           try {
+            if (hard403 > 3 && attempt === 0) {
+              // Space out after many 403s
+              await new Promise((r) => setTimeout(r, 80 + (index % 5) * 40));
+            }
             let data = await fetchBuffer(seg.url, requestInit);
             if (!data || data.byteLength < 32) {
               throw new Error("세그먼트 데이터 없음");
@@ -483,8 +612,20 @@ const HLS = (() => {
             return data;
           } catch (e) {
             lastErr = e;
-            await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+            const msg = String(e?.message || e);
+            if (/403|401|접근 거부/i.test(msg)) {
+              hard403 += 1;
+              // Slow down global concurrency by spacing retries
+              await new Promise((r) => setTimeout(r, 500 * (attempt + 1) + Math.random() * 300));
+            } else {
+              await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+            }
           }
+        }
+        // Soft-fail individual segment if enough others succeed (caller checks ratio)
+        if (softFail && hard403 > 0) {
+          console.warn("[HLS] segment skip after 403:", (seg.url || "").slice(0, 80));
+          return null;
         }
         throw lastErr || new Error("세그먼트 실패: " + (seg.url || "").slice(0, 60));
       },
@@ -493,24 +634,36 @@ const HLS = (() => {
           phase: "segments",
           current,
           total,
-          message: `세그먼트 ${current}/${total}`
+          message:
+            hard403 > 5
+              ? `받는 중… ${current}/${total} (접근 제한 우회 중)`
+              : `세그먼트 ${current}/${total}`
         });
       }
     );
 
-    // Drop any empty results
+    // Drop empty / failed
     for (const b of buffers) {
       if (b && b.byteLength > 0) parts.push(b);
     }
 
-    if (parts.length < 2) {
-      throw new Error("유효한 세그먼트가 거의 없습니다");
-    }
-    // Require at least 80% of segments
     const expected = segments.length + (parsed.mapUri ? 1 : 0);
-    if (parts.length < expected * 0.8) {
+    const okCount = parts.length;
+
+    if (okCount < 2) {
       throw new Error(
-        `세그먼트 부족: ${parts.length}/${expected}개만 성공`
+        hard403 > 0
+          ? "Segment HTTP 403 — 거의 모든 조각이 차단되었습니다. 영상을 재생한 직후 다시 받아 주세요"
+          : "유효한 세그먼트가 거의 없습니다"
+      );
+    }
+    // Require at least 70% (was 80%) — short gaps are often tolerable
+    const minRatio = hard403 > 0 ? 0.7 : 0.8;
+    if (okCount < expected * minRatio) {
+      throw new Error(
+        hard403 > 0
+          ? `Segment HTTP 403 — 조각 ${okCount}/${expected}개만 성공. 재생 후 바로 다시 시도해 주세요`
+          : `세그먼트 부족: ${okCount}/${expected}개만 성공`
       );
     }
 

@@ -5,6 +5,7 @@
 let currentTabId = null;
 let currentTabUrl = null;
 let allItems = [];
+/** @deprecated use queue — true only while ANY job is running */
 let downloading = false;
 let helperOk = false;
 /** Selected download quality id (best | 4K | 1080p | …) */
@@ -12,6 +13,17 @@ let selectedQuality = "best";
 /** Only qualities that exist for the current video */
 let availableQualities = [{ id: "best", label: "최고" }];
 let qualitiesLoading = false;
+/** Background job ids tracked by this popup session */
+let trackedJobIds = new Set();
+/** Avoid double toast for the same completed job */
+let toastedJobIds = new Set();
+/** True after we already restored UI from an in-flight job */
+let restoredBackgroundJob = false;
+/** Local mirror of active download jobs for multi-queue UI @type {Map<string, object>} */
+const uiJobs = new Map();
+/** Max concurrent starts from this popup (SW can still hold more) */
+const MAX_CONCURRENT_STARTS = 6;
+let queuePollTimer = null;
 
 const $ = (sel) => document.querySelector(sel);
 const listEl = $("#list");
@@ -23,6 +35,11 @@ const progressText = $("#progressText");
 const helperBar = $("#helperBar");
 const helperDot = $("#helperDot");
 const helperText = $("#helperText");
+const dlQueueEl = $("#dlQueue");
+const dlQueueList = $("#dlQueueList");
+const dlQueueTitle = $("#dlQueueTitle");
+const dlQueueSub = $("#dlQueueSub");
+const dlQueueBadge = $("#dlQueueBadge");
 
 function isYoutubeUrl(url) {
   if (!url || typeof url !== "string") return false;
@@ -62,56 +79,68 @@ function isTiktokUrl(url) {
   }
 }
 
-function isInstagramUrl(url) {
+/** Instagram host (any page on the site) */
+function isInstagramHost(url) {
   if (!url || typeof url !== "string") return false;
-  if (/cdninstagram|fbcdn\.net/i.test(url) && !/instagram\.com\//i.test(url)) return false;
-  if (/instagram\.com\/(p|reel|reels|tv)\//i.test(url)) return true;
-  if (/instagr\.am\//i.test(url)) return true;
   try {
     const h = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
     return h === "instagram.com" || h.endsWith(".instagram.com") || h === "instagr.am";
   } catch {
-    return /instagram\.com/i.test(url);
+    return /instagram\.com|instagr\.am/i.test(url);
   }
 }
 
-function isSitePage(url) {
-  return isYoutubeUrl(url) || isTiktokUrl(url) || isInstagramUrl(url);
+/** Instagram post/reel/TV only — not home or profile */
+function isInstagramPostUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  if (/cdninstagram|fbcdn\.net/i.test(url) && !/instagram\.com\//i.test(url)) return false;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h === "instagr.am") return u.pathname.length > 2;
+    if (h === "instagram.com" || h.endsWith(".instagram.com")) {
+      return /\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(u.pathname);
+    }
+  } catch {
+    /* fall through */
+  }
+  return /instagram\.com\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(url);
 }
 
-/** watch / shorts / youtu.be / tiktok video pages */
+function isInstagramUrl(url) {
+  // Downloadable Instagram = post/reel only (not homepage/profile)
+  return isInstagramPostUrl(url);
+}
+
+function isSitePage(url) {
+  return isDownloadableSiteVideo(url);
+}
+
+/** Only real video pages — not home/profile/feed */
 function isDownloadableSiteVideo(url) {
   if (!url) return false;
   if (isYoutubeUrl(url)) {
-    // Be permissive: any youtube URL can try yt-dlp; home page will error with clear message
     try {
       const u = new URL(url);
       if (u.hostname.replace(/^www\./i, "") === "youtu.be" && u.pathname.length > 1) return true;
       if (u.searchParams.get("v")) return true;
       if (/\/(shorts|live|embed|clip)\/[\w-]+/i.test(u.pathname)) return true;
       if (/\/watch/i.test(u.pathname)) return true;
-      // Playlist watch, etc.
       if (/[?&]v=/i.test(url)) return true;
-      // If path is only / or /results /feed — not a video
-      if (/^\/?(results|feed|shorts\/?)?$/i.test(u.pathname.replace(/\/+$/, "") || "/")) {
-        return false;
-      }
-      // Any other deep path — allow card (yt-dlp decides)
-      return u.pathname.length > 1;
+      // home / results / feed — not a single video
+      const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+      if (path === "/" || /^\/(results|feed|shorts)$/i.test(path)) return false;
+      return false;
     } catch {
-      return /[?&]v=|\/shorts\/|youtu\.be\//i.test(url);
+      return /[?&]v=|\/shorts\/[\w-]+|youtu\.be\/[\w-]+/i.test(url);
     }
   }
-  if (isTiktokUrl(url)) {
-    return (
-      /\/video\/\d+|\/@[\w.-]+\/video\//i.test(url) ||
-      /vm\.tiktok\.com|vt\.tiktok\.com/i.test(url) ||
-      // Allow showing card on most tiktok pages
-      true
-    );
+  if (isTiktokUrl(url) || /tiktok\.com/i.test(url)) {
+    if (/vm\.tiktok\.com|vt\.tiktok\.com/i.test(url)) return true;
+    return /\/@[\w.-]+\/video\/\d+|\/video\/\d+|\/t\//i.test(url);
   }
-  if (isInstagramUrl(url)) {
-    return /\/(p|reel|reels|tv)\//i.test(url) || true;
+  if (isInstagramHost(url) || /instagram\.com|instagr\.am/i.test(url)) {
+    return isInstagramPostUrl(url);
   }
   return false;
 }
@@ -475,6 +504,14 @@ async function loadAvailableQualities(item) {
   availableQualities = [{ id: "best", label: "최고" }];
   const pageUrl = currentTabUrl || item?.pageUrl || item?.url || "";
   const mediaUrl = item?.url || pageUrl;
+
+  // Don't probe homepage/profile — yt-dlp returns "Unsupported URL"
+  if (!isDownloadableSiteVideo(mediaUrl) && !isDownloadableSiteVideo(pageUrl)) {
+    availableQualities = [{ id: "best", label: "최고" }];
+    qualitiesLoading = false;
+    return;
+  }
+
   try {
     const res = await chrome.runtime.sendMessage({
       type: "LIST_QUALITIES",
@@ -482,17 +519,27 @@ async function loadAvailableQualities(item) {
       pageUrl,
       tabId: currentTabId,
       mediaType: item?.type,
-      forceYtDlp: !!(item?.isSiteDownload || isSitePage(pageUrl))
+      forceYtDlp: !!(item?.isSiteDownload || isDownloadableSiteVideo(pageUrl))
     });
-    if (res?.qualities?.length) {
-      availableQualities = res.qualities;
+    if (res?.ok && res.qualities?.length) {
+      // Drop any junk labels (errors must never become chips)
+      availableQualities = res.qualities.filter(
+        (q) =>
+          q &&
+          q.id &&
+          q.label &&
+          !/unsupported|error|fail|http/i.test(String(q.label)) &&
+          !/unsupported|error/i.test(String(q.id))
+      );
+      if (!availableQualities.length) {
+        availableQualities = [{ id: "best", label: "최고" }];
+      }
     } else {
       availableQualities = [{ id: "best", label: "최고" }];
     }
   } catch {
     availableQualities = [{ id: "best", label: "최고" }];
   }
-  // Keep selection if still available, else highest
   if (!availableQualities.some((q) => q.id === selectedQuality)) {
     selectedQuality = availableQualities[0]?.id || "best";
   }
@@ -507,14 +554,362 @@ function thumbHtml(item) {
   return `<span class="thumb-fallback">🎬</span>`;
 }
 
+function runningJobCount() {
+  let n = 0;
+  for (const j of uiJobs.values()) {
+    if (j.status === "running") n += 1;
+  }
+  return n;
+}
+
+function canStartAnotherDownload() {
+  return runningJobCount() < MAX_CONCURRENT_STARTS;
+}
+
+function shortJobTitle(job) {
+  const raw =
+    job?.title ||
+    job?.filename ||
+    job?.pageUrl ||
+    "영상";
+  let t = String(raw)
+    .replace(/^https?:\/\/(www\.)?/i, "")
+    .replace(/\.mp4$/i, "")
+    .trim();
+  if (t.length > 36) t = t.slice(0, 34) + "…";
+  return t || "영상";
+}
+
+function cleanJobMessage(msg, phase) {
+  let text = String(msg || "").trim();
+  if (!text || /\d+\s*\/\s*\d+/.test(text) || /조각|세그먼트|\[download\]/i.test(text)) {
+    if (phase === "merge") return "파일 만드는 중…";
+    if (phase === "save") return "저장 중…";
+    return "받는 중…";
+  }
+  if (/ERROR/i.test(text)) return text.slice(0, 48);
+  if (phase === "merge" || /만들|합치|Merg/i.test(text)) return "파일 만드는 중…";
+  if (phase === "save" || /^저장/i.test(text)) return "저장 중…";
+  if (text.length > 42) text = text.slice(0, 40) + "…";
+  return text;
+}
+
+function syncDownloadingFlag() {
+  downloading = runningJobCount() > 0;
+}
+
+function ensureQueuePoll() {
+  if (queuePollTimer) return;
+  queuePollTimer = setInterval(() => {
+    if (runningJobCount() === 0) {
+      clearInterval(queuePollTimer);
+      queuePollTimer = null;
+      return;
+    }
+    refreshJobsFromBackground();
+  }, 900);
+}
+
+async function refreshJobsFromBackground() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_DOWNLOADS" });
+    const jobs = res?.jobs || [];
+    let changed = false;
+    for (const j of jobs) {
+      if (!j?.id) continue;
+      trackedJobIds.add(j.id);
+      const prev = uiJobs.get(j.id);
+      if (
+        !prev ||
+        prev.status !== j.status ||
+        prev.percent !== j.percent ||
+        prev.message !== j.message
+      ) {
+        upsertUiJob(j, { toast: false });
+        changed = true;
+      } else {
+        uiJobs.set(j.id, { ...prev, ...j });
+      }
+    }
+    // Drop very old finished jobs not in SW anymore (keep 45s for UX)
+    const now = Date.now();
+    for (const [id, j] of uiJobs) {
+      if (j.status === "running") continue;
+      if (!jobs.some((x) => x.id === id) && now - (j.updatedAt || 0) > 45_000) {
+        uiJobs.delete(id);
+        changed = true;
+      }
+    }
+    if (changed || jobs.length) renderDownloadQueue();
+  } catch {
+    /* ignore */
+  }
+}
+
+function upsertUiJob(job, opts = {}) {
+  if (!job?.id && !job?.jobId) return;
+  const id = job.id || job.jobId;
+  const prev = uiJobs.get(id) || {};
+  const status =
+    job.status ||
+    (job.phase === "done"
+      ? "done"
+      : job.phase === "error"
+        ? "error"
+        : prev.status || "running");
+  const next = {
+    ...prev,
+    ...job,
+    id,
+    status,
+    percent:
+      typeof job.percent === "number"
+        ? job.percent
+        : typeof prev.percent === "number"
+          ? prev.percent
+          : 0,
+    message: job.message || prev.message || "",
+    title: job.title || prev.title || job.filename || "영상",
+    filename: job.filename || prev.filename || "",
+    pageUrl: job.pageUrl || prev.pageUrl || "",
+    error: job.error || (status === "error" ? job.message : prev.error) || null,
+    result: job.result || prev.result || null,
+    updatedAt: job.updatedAt || Date.now(),
+    startedAt: job.startedAt || prev.startedAt || Date.now()
+  };
+  uiJobs.set(id, next);
+  trackedJobIds.add(id);
+  syncDownloadingFlag();
+  renderDownloadQueue();
+
+  if (opts.toast !== false) {
+    if (status === "done" && !toastedJobIds.has(id) && !job._silentDone) {
+      toastedJobIds.add(id);
+      const path = next.result?.path || next.path || "";
+      const where = path
+        ? String(path).split(/[/\\]/).slice(-2).join("/")
+        : "다운로드/VideoDownloader";
+      toast(`저장 완료 · ${where}`, "ok");
+    } else if (status === "error" && !toastedJobIds.has(id)) {
+      toastedJobIds.add(id);
+      toast(userError(next.error || next.message || "다운로드 실패"), "error");
+    }
+  }
+
+  if (status === "running") ensureQueuePoll();
+  // Auto-remove finished rows after a while
+  if (status === "done" || status === "error") {
+    setTimeout(() => {
+      const cur = uiJobs.get(id);
+      if (cur && cur.status !== "running") {
+        uiJobs.delete(id);
+        renderDownloadQueue();
+      }
+    }, 20_000);
+  }
+}
+
+function renderDownloadQueue() {
+  if (!dlQueueEl || !dlQueueList) return;
+  const jobs = [...uiJobs.values()].sort(
+    (a, b) => (b.startedAt || 0) - (a.startedAt || 0)
+  );
+  const running = jobs.filter((j) => j.status === "running");
+  const done = jobs.filter((j) => j.status === "done");
+  const errored = jobs.filter((j) => j.status === "error");
+
+  if (!jobs.length) {
+    dlQueueEl.classList.add("hidden");
+    // hide legacy single bar too
+    if (progressEl) progressEl.classList.add("hidden");
+    syncDownloadingFlag();
+    return;
+  }
+
+  dlQueueEl.classList.remove("hidden");
+  // Prefer multi queue over single bar
+  if (progressEl) progressEl.classList.add("hidden");
+
+  if (dlQueueTitle) {
+    if (running.length) {
+      dlQueueTitle.textContent = `받는 중 ${running.length}개`;
+    } else if (done.length && !errored.length) {
+      dlQueueTitle.textContent = `완료 ${done.length}개`;
+    } else if (errored.length) {
+      dlQueueTitle.textContent = `실패 ${errored.length}개`;
+    } else {
+      dlQueueTitle.textContent = `다운로드 ${jobs.length}개`;
+    }
+  }
+
+  if (dlQueueBadge) {
+    const n = running.length || done.length || errored.length;
+    dlQueueBadge.textContent = String(n);
+    dlQueueBadge.classList.remove("hidden", "done", "error");
+    if (!running.length && done.length) dlQueueBadge.classList.add("done");
+    if (!running.length && errored.length && !done.length) {
+      dlQueueBadge.classList.add("error");
+    }
+  }
+
+  if (dlQueueSub) {
+    if (running.length > 1) {
+      dlQueueSub.textContent = `${running.length}개 동시 다운로드 진행 중 · 페이지 이동 OK`;
+    } else if (running.length === 1) {
+      dlQueueSub.textContent = "백그라운드에서 받는 중 · 추가로 더 받을 수 있어요";
+    } else if (done.length) {
+      dlQueueSub.textContent = "저장 위치: 다운로드/VideoDownloader";
+    } else {
+      dlQueueSub.textContent = "다시 시도해 주세요";
+    }
+  }
+
+  dlQueueList.innerHTML = jobs
+    .map((j) => {
+      const st = j.status || "running";
+      const pct = Math.min(100, Math.max(0, Math.round(j.percent || 0)));
+      const icon = st === "done" ? "✓" : st === "error" ? "!" : "↓";
+      const pctLabel =
+        st === "done" ? "완료" : st === "error" ? "실패" : `${pct}%`;
+      const msg =
+        st === "error"
+          ? cleanJobMessage(j.error || j.message || "실패", "error")
+          : cleanJobMessage(j.message, j.phase);
+      return `
+        <div class="dl-job ${st === "done" ? "is-done" : ""} ${
+          st === "error" ? "is-error" : ""
+        }" data-job-id="${escapeAttr(j.id)}">
+          <div class="dl-job-top">
+            <span class="dl-job-status ${escapeAttr(st)}" aria-hidden="true">${icon}</span>
+            <div class="dl-job-meta">
+              <div class="dl-job-title" title="${escapeAttr(
+                j.title || j.filename || ""
+              )}">${escapeHtml(shortJobTitle(j))}</div>
+              <div class="dl-job-msg">${escapeHtml(msg)}</div>
+            </div>
+            <span class="dl-job-pct">${escapeHtml(pctLabel)}</span>
+          </div>
+          <div class="dl-job-bar">
+            <div class="dl-job-fill" style="width:${
+              st === "error" ? 100 : pct
+            }%"></div>
+          </div>
+        </div>`;
+    })
+    .join("");
+
+  syncDownloadingFlag();
+}
+
+/** Legacy single bar — only if queue DOM missing */
 function showProgress(show, percent = 0, text = "") {
+  if (dlQueueEl && uiJobs.size > 0) {
+    // Multi-queue owns the UI
+    if (progressEl) progressEl.classList.add("hidden");
+    return;
+  }
+  if (!progressEl) return;
   if (!show) {
     progressEl.classList.add("hidden");
     return;
   }
   progressEl.classList.remove("hidden");
-  progressFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
-  progressText.textContent = text || `받는 중… ${percent}%`;
+  if (progressFill) {
+    progressFill.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  }
+  if (progressText) {
+    progressText.textContent = text || `받는 중… ${percent}%`;
+  }
+}
+
+function applyJobProgress(jobOrProgress, opts = {}) {
+  if (!jobOrProgress) return;
+  const p = jobOrProgress;
+  const jobId = p.id || p.jobId;
+  if (!jobId) {
+    // Unscoped progress — attach to newest running job
+    let latest = null;
+    for (const j of uiJobs.values()) {
+      if (j.status !== "running") continue;
+      if (!latest || (j.startedAt || 0) > (latest.startedAt || 0)) latest = j;
+    }
+    if (latest) {
+      upsertUiJob(
+        {
+          ...latest,
+          percent: p.percent,
+          message: p.message,
+          phase: p.phase,
+          status:
+            p.phase === "done"
+              ? "done"
+              : p.phase === "error"
+                ? "error"
+                : "running"
+        },
+        opts
+      );
+    } else {
+      showProgress(true, p.percent || 10, p.message || "받는 중…");
+    }
+    return;
+  }
+  upsertUiJob(
+    {
+      id: jobId,
+      title: p.title,
+      percent: p.percent,
+      message: p.message || p.error,
+      phase: p.phase,
+      status:
+        p.status ||
+        (p.phase === "done" ? "done" : p.phase === "error" ? "error" : "running"),
+      error: p.error,
+      result: p.result,
+      path: p.path,
+      filename: p.filename,
+      pageUrl: p.pageUrl,
+      startedAt: p.startedAt,
+      updatedAt: p.updatedAt || Date.now(),
+      _silentDone: p._silentDone
+    },
+    opts
+  );
+}
+
+/**
+ * Re-attach UI to downloads still running in the service worker
+ * (after popup close or page navigation).
+ */
+async function restoreActiveDownloads() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_DOWNLOADS" });
+    const jobs = res?.jobs || [];
+    for (const j of jobs) {
+      if (j?.id) {
+        trackedJobIds.add(j.id);
+        upsertUiJob(j, { toast: false });
+      }
+    }
+    const running = jobs.filter((j) => j.status === "running");
+    if (running.length) {
+      restoredBackgroundJob = true;
+      ensureQueuePoll();
+      if (running.length > 1) {
+        toast(`동시 다운로드 ${running.length}개 진행 중`, "ok");
+      } else {
+        toast("백그라운드에서 받는 중 — 추가로 더 받을 수 있어요", "ok");
+      }
+      return true;
+    }
+    if (jobs.length && !restoredBackgroundJob) {
+      restoredBackgroundJob = true;
+      return true;
+    }
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 function escapeHtml(s) {
@@ -565,14 +960,17 @@ function userError(err) {
     return clean;
   }
   if (/DRM|SAMPLE-AES|Widevine/i.test(s)) return "보호된 영상이라 받을 수 없습니다";
+  if (/Segment HTTP 403|세그먼트.*403|조각 접근|CDN이 접근/i.test(s)) {
+    return "영상 조각 접근이 막혔습니다(403). 페이지에서 재생을 누른 직후 바로 다시 받아 주세요";
+  }
   if (/HTTP 403|HTTP 401|접근 거부/i.test(s)) {
     return "접근이 거부되었습니다. 로그인·재생 후 다시 시도해 주세요";
   }
   if (/HTTP \d{3}/i.test(s)) {
     return "서버에서 영상을 주지 않았습니다. 재생 후 다시 시도해 주세요";
   }
-  if (/너무 작|세그먼트 부족|병합 실패|유효한 세그먼트/i.test(s)) {
-    return "영상 데이터를 충분히 받지 못했습니다. 재생 후 다시 시도해 주세요";
+  if (/너무 작|세그먼트 부족|병합 실패|유효한 세그먼트|조각 \d+\/\d+/i.test(s)) {
+    return "영상 조각을 충분히 받지 못했습니다. 재생 직후 다시 시도해 주세요";
   }
   if (/시간 초과|timeout/i.test(s)) return "시간이 초과되었습니다. 다시 시도해 주세요";
   if (/Could not establish connection|Receiving end|Extension context/i.test(s)) {
@@ -645,15 +1043,20 @@ function render() {
 
   if (!items.length) {
     let title = "받을 영상이 없습니다.";
-    let hint = "페이지를 연 뒤 ↻ 를 눌러 보세요.";
-    if (isSitePage(currentTabUrl) && !isDownloadableSiteVideo(currentTabUrl)) {
+    let hint = "페이지를 열거나 위에 게시물 링크를 붙여 넣으세요.";
+    if (isInstagramHost(currentTabUrl) && !isInstagramPostUrl(currentTabUrl)) {
+      title = "게시물·릴스 페이지를 열어 주세요.";
+      hint =
+        "instagram.com 홈/프로필이 아니라, 받을 게시물(/p/) 또는 릴스(/reel/)를 연 뒤 다시 열어 주세요.";
+    } else if (isYoutubeUrl(currentTabUrl) && !isDownloadableSiteVideo(currentTabUrl)) {
       title = "영상 페이지를 열어 주세요.";
-      hint = isYoutubeUrl(currentTabUrl)
-        ? "YouTube에서 영상을 재생(watch/shorts)한 뒤 다시 열어 주세요."
-        : "TikTok 영상 페이지에서 다시 열어 주세요.";
-    } else if (isSitePage(currentTabUrl)) {
+      hint = "YouTube watch/shorts 페이지에서 다시 열어 주세요.";
+    } else if (isTiktokUrl(currentTabUrl) && !isDownloadableSiteVideo(currentTabUrl)) {
+      title = "영상 페이지를 열어 주세요.";
+      hint = "TikTok @유저/video/숫자 페이지에서 다시 열어 주세요.";
+    } else if (isDownloadableSiteVideo(currentTabUrl)) {
       title = "목록을 불러오지 못했습니다.";
-      hint = "확장 프로그램을 새로고침(chrome://extensions)한 뒤 다시 열어 주세요.";
+      hint = "확장 프로그램을 새로고침한 뒤 다시 열어 주세요. 또는 링크를 붙여 넣어 보세요.";
     }
     listEl.innerHTML = `
       <div class="empty" id="empty">
@@ -674,17 +1077,18 @@ function render() {
   const site = siteLabel(currentTabUrl, item);
   const btnLabel = site ? `${site} 다운로드` : "다운로드";
 
+  // Layout: thumb | title+meta on one row; filename full-width below (no overlap)
   card.innerHTML = `
     <div class="card-top">
-      <div class="thumb">${thumbHtml(item)}</div>
+      <div class="thumb" aria-hidden="true">${thumbHtml(item)}</div>
       <div class="meta">
         <div class="name" title="${escapeAttr(name)}">${escapeHtml(name)}</div>
         <div class="meta-grid">${metaRowsHtml(item)}</div>
-        <div class="filename-box" title="${escapeAttr(file)}">
-          <span class="filename-label">저장 이름</span>
-          <span class="filename-value">${escapeHtml(file)}</span>
-        </div>
       </div>
+    </div>
+    <div class="filename-box" title="${escapeAttr(file)}">
+      <span class="filename-label">저장 이름</span>
+      <span class="filename-value">${escapeHtml(file)}</span>
     </div>
     ${qualityPickerHtml()}
     <div class="card-actions">
@@ -706,7 +1110,6 @@ function render() {
 
   card.querySelectorAll(".q-chip").forEach((chip) => {
     chip.addEventListener("click", () => {
-      if (downloading) return;
       selectedQuality = chip.getAttribute("data-quality") || "best";
       // Re-render so filename + active chip update
       render();
@@ -714,18 +1117,22 @@ function render() {
   });
 
   card.querySelector(".btn-dl").addEventListener("click", async (e) => {
-    if (downloading) return;
+    if (!canStartAnotherDownload()) {
+      toast(`동시에 최대 ${MAX_CONCURRENT_STARTS}개까지 받을 수 있어요`, "error");
+      return;
+    }
     const btn = e.currentTarget;
     btn.disabled = true;
     const prev = btn.textContent;
-    btn.textContent = "받는 중…";
-    downloading = true;
+    btn.textContent = "추가됨";
     try {
       await downloadItem(item);
     } finally {
-      downloading = false;
-      btn.disabled = false;
-      btn.textContent = prev || "다운로드";
+      // Re-enable quickly so another file can be queued
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = prev || "다운로드";
+      }, 600);
     }
   });
 
@@ -733,16 +1140,12 @@ function render() {
 }
 
 async function downloadItem(item) {
-  showProgress(true, 5, "받는 중…");
-  let finished = false;
-  // Long streams can take many minutes — only warn, don't cancel SW work
-  const watchdog = setTimeout(() => {
-    if (finished) return;
-    toast("아직 받는 중입니다. 팝업을 닫지 말고 기다려 주세요…", "error");
-  }, 120_000);
+  if (!canStartAnotherDownload()) {
+    toast(`동시에 최대 ${MAX_CONCURRENT_STARTS}개까지 받을 수 있어요`, "error");
+    return;
+  }
 
   const pageUrl = currentTabUrl || item.pageUrl || item.url;
-  // Use yt-dlp helper for YT always; for TikTok only when we don't have a direct CDN URL
   const hasTiktokCdn =
     item.url &&
     /tiktokcdn|byteicdn|tiktokv\.com|byteoversea|musical\.ly/i.test(item.url) &&
@@ -762,9 +1165,6 @@ async function downloadItem(item) {
     if (useHelper) {
       await refreshHelperStatus(true);
       if (!helperOk) {
-        finished = true;
-        clearTimeout(watchdog);
-        showProgress(false);
         toast(
           "YouTube·TikTok은 로컬 도우미가 필요합니다. helper/start.command 를 실행해 주세요",
           "error"
@@ -773,12 +1173,30 @@ async function downloadItem(item) {
       }
     }
 
-    // Refresh filename with current quality pick
     const saveName = downloadFilename({
       ...item,
       quality: selectedQuality === "best" ? item.quality : selectedQuality
     });
     item._saveAs = saveName;
+    const title = item.title || item.pageTitle || saveName;
+
+    // Optimistic row so the user sees concurrency immediately
+    const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    upsertUiJob(
+      {
+        id: tempId,
+        title,
+        filename: saveName,
+        pageUrl,
+        status: "running",
+        percent: 3,
+        message: "대기열에 추가됨…",
+        phase: "start",
+        startedAt: Date.now()
+      },
+      { toast: false }
+    );
+
     const res = await chrome.runtime.sendMessage({
       type: useHelper
         ? "DOWNLOAD_PAGE"
@@ -792,57 +1210,61 @@ async function downloadItem(item) {
       preferQuality: selectedQuality || "best",
       mediaType: item.type,
       preferYtDlp: useHelper,
-      title: item.title || item.pageTitle || saveName,
+      title,
       autoHls: !useHelper
     });
-    finished = true;
-    clearTimeout(watchdog);
 
-    const ytdlpOk = res?.ok && (res.method === "yt-dlp" || res.ytdlp);
-    const chromeOk = res?.ok && res.downloadId != null;
-
-    if (ytdlpOk || chromeOk) {
-      const sz = res.size || 0;
-      if (chromeOk && sz > 0 && sz < 200_000) {
-        showProgress(false);
-        toast("파일이 너무 작습니다. 실제 영상이 저장되지 않았을 수 있습니다", "error");
-      } else {
-        showProgress(true, 100, "저장 완료");
-        setTimeout(() => showProgress(false), 1500);
-        const mb = sz >= 1024 * 1024 ? `${(sz / 1024 / 1024).toFixed(1)}MB` : "";
-        const where = res.path
-          ? res.path.split(/[/\\]/).slice(-2).join("/")
-          : res.outDir
-            ? "다운로드/VideoDownloader"
-            : "다운로드/VideoDownloader";
-        toast(mb ? `저장 완료 (${mb}) · ${where}` : `저장 완료 · ${where}`, "ok");
-        try {
-          if (res.downloadId != null) {
-            chrome.downloads.show(res.downloadId);
-          } else if (res.path && typeof res.path === "string" && res.path.includes("/")) {
-            // Open downloads folder for helper-saved files
-            chrome.downloads.showDefaultFolder?.();
-          }
-        } catch {
-          /* ignore */
-        }
-      }
-    } else {
-      showProgress(false);
-      toast(
-        userError(res?.error) ||
-          "다운로드 실패 — 저장이 확인되지 않았습니다",
-        "error"
+    // Replace optimistic row with real job id
+    if (res?.jobId) {
+      uiJobs.delete(tempId);
+      trackedJobIds.add(res.jobId);
+      upsertUiJob(
+        {
+          id: res.jobId,
+          title,
+          filename: saveName,
+          pageUrl,
+          status: "running",
+          percent: 4,
+          message: "백그라운드에서 받는 중…",
+          phase: "start",
+          startedAt: Date.now()
+        },
+        { toast: false }
       );
+      ensureQueuePoll();
+      const n = runningJobCount();
+      toast(
+        n > 1
+          ? `다운로드 ${n}개 동시 진행 중`
+          : "받기 시작 · 페이지를 이동해도 계속됩니다",
+        "ok"
+      );
+      return;
+    }
+
+    uiJobs.delete(tempId);
+    renderDownloadQueue();
+
+    if (res == null) {
+      toast("백그라운드에서 받는 중입니다", "ok");
+      return;
+    }
+    if (res?.ok === false) {
+      toast(userError(res?.error) || "다운로드 실패", "error");
+      return;
+    }
+    // Legacy full response (should be rare after started:true)
+    if (res?.ok) {
+      toast("저장 완료 · 다운로드/VideoDownloader", "ok");
     }
   } catch (e) {
-    finished = true;
-    clearTimeout(watchdog);
-    showProgress(false);
+    const msg = String(e?.message || e || "");
+    if (/Receiving end|message port|Extension context|The message port/i.test(msg)) {
+      toast("백그라운드에서 계속 받는 중입니다", "ok");
+      return;
+    }
     toast(userError(e?.message) || "다운로드 실패", "error");
-  } finally {
-    finished = true;
-    clearTimeout(watchdog);
   }
 }
 
@@ -990,6 +1412,10 @@ async function loadMedia() {
   }
 
   await refreshHelperStatus();
+  updateQuickPageUi();
+  // Auto-fill link input with current social page URL
+  autofillLinkFromCurrentTab();
+
   // First paint (may show "화질 확인 중…")
   qualitiesLoading = true;
   render();
@@ -1001,6 +1427,42 @@ async function loadMedia() {
     qualitiesLoading = false;
   }
   render();
+}
+
+function siteDisplayName(url) {
+  if (isInstagramUrl(url)) return "Instagram";
+  if (isTiktokUrl(url)) return "TikTok";
+  if (isYoutubeUrl(url)) return "YouTube";
+  return "이 페이지";
+}
+
+function updateQuickPageUi() {
+  const box = $("#quickBox");
+  const btn = $("#btnThisPage");
+  const hint = $("#quickHint");
+  if (!box || !btn) return;
+  if (currentTabUrl && isSitePage(currentTabUrl)) {
+    box.classList.remove("hidden");
+    const name = siteDisplayName(currentTabUrl);
+    btn.textContent = `이 ${name} 영상 받기`;
+    if (hint) {
+      hint.textContent =
+        name === "Instagram"
+          ? "로그인된 상태에서 가장 잘 받습니다 · Alt+Shift+D"
+          : `${name} 페이지를 바로 저장 · Alt+Shift+D`;
+    }
+  } else {
+    box.classList.add("hidden");
+  }
+}
+
+function autofillLinkFromCurrentTab() {
+  const input = $("#linkInput");
+  if (!input || !currentTabUrl) return;
+  if (isSitePage(currentTabUrl)) {
+    input.value = currentTabUrl;
+    input.title = currentTabUrl;
+  }
 }
 
 $("#btnScan").addEventListener("click", async () => {
@@ -1035,13 +1497,17 @@ function normalizePastedUrl(raw) {
   }
 }
 
-async function downloadByPastedLink() {
-  if (downloading) return;
+async function downloadByPastedLink(forcedUrl) {
+  if (!canStartAnotherDownload()) {
+    toast(`동시에 최대 ${MAX_CONCURRENT_STARTS}개까지 받을 수 있어요`, "error");
+    return;
+  }
   const input = $("#linkInput");
   const btn = $("#btnLinkDl");
-  const link = normalizePastedUrl(input?.value || "");
+  const thisBtn = $("#btnThisPage");
+  const link = normalizePastedUrl(forcedUrl || input?.value || "");
   if (!link) {
-    toast("유효한 링크를 붙여 넣어 주세요 (YouTube / TikTok)", "error");
+    toast("유효한 링크를 붙여 넣어 주세요 (YouTube / TikTok / Instagram)", "error");
     input?.focus();
     return;
   }
@@ -1055,15 +1521,13 @@ async function downloadByPastedLink() {
     return;
   }
 
-  downloading = true;
+  // Keep buttons usable so more links can be queued
   if (btn) {
     btn.disabled = true;
-    btn.textContent = "받는 중…";
+    btn.textContent = "추가…";
   }
-  showProgress(true, 5, "링크로 받는 중…");
 
   try {
-    // Prefer helper for YT/TT/IG page links; direct for raw mp4
     const isPage = isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link);
     const fnameBase = (() => {
       try {
@@ -1091,10 +1555,27 @@ async function downloadByPastedLink() {
         : "";
     const filename = `${fnameBase}${q}.mp4`;
 
+    const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+    upsertUiJob(
+      {
+        id: tempId,
+        title: fnameBase,
+        filename,
+        pageUrl: link,
+        status: "running",
+        percent: 3,
+        message: "대기열에 추가됨…",
+        phase: "start",
+        startedAt: Date.now()
+      },
+      { toast: false }
+    );
+
+    let res;
     if (isPage) {
       await refreshHelperStatus(true);
-      const res = await chrome.runtime.sendMessage({
-        type: "DOWNLOAD_PAGE",
+      res = await chrome.runtime.sendMessage({
+        type: "DOWNLOAD_CURRENT_PAGE",
         url: link,
         pageUrl: link,
         filename,
@@ -1102,25 +1583,8 @@ async function downloadByPastedLink() {
         preferQuality: selectedQuality || "best",
         title: fnameBase
       });
-      if (res?.ok && (res.downloadId != null || res.ytdlp || res.method)) {
-        showProgress(true, 100, "저장 완료");
-        setTimeout(() => showProgress(false), 1200);
-        const where = res.path
-          ? res.path.split(/[/\\]/).slice(-2).join("/")
-          : "다운로드/VideoDownloader";
-        toast(`저장 완료 · ${where}`, "ok");
-        try {
-          if (res.downloadId != null) chrome.downloads.show(res.downloadId);
-        } catch {
-          /* ignore */
-        }
-      } else {
-        showProgress(false);
-        toast(userError(res?.error) || "링크 다운로드 실패", "error");
-      }
     } else {
-      // Direct media URL
-      const res = await chrome.runtime.sendMessage({
+      res = await chrome.runtime.sendMessage({
         type: "DOWNLOAD",
         url: link,
         pageUrl: currentTabUrl || link,
@@ -1128,32 +1592,81 @@ async function downloadByPastedLink() {
         tabId: currentTabId,
         preferQuality: selectedQuality || "best",
         mediaType: "video",
-        preferYtDlp: false
+        preferYtDlp: false,
+        title: fnameBase
       });
-      if (res?.ok && res.downloadId != null) {
-        showProgress(true, 100, "저장 완료");
-        setTimeout(() => showProgress(false), 1200);
-        toast("저장 완료", "ok");
-        try {
-          chrome.downloads.show(res.downloadId);
-        } catch {
-          /* ignore */
-        }
-      } else {
-        showProgress(false);
-        toast(userError(res?.error) || "링크 다운로드 실패", "error");
-      }
+    }
+
+    if (res?.jobId) {
+      uiJobs.delete(tempId);
+      trackedJobIds.add(res.jobId);
+      upsertUiJob(
+        {
+          id: res.jobId,
+          title: fnameBase,
+          filename,
+          pageUrl: link,
+          status: "running",
+          percent: 4,
+          message: "백그라운드에서 받는 중…",
+          phase: "start",
+          startedAt: Date.now()
+        },
+        { toast: false }
+      );
+      ensureQueuePoll();
+      const n = runningJobCount();
+      toast(
+        n > 1
+          ? `다운로드 ${n}개 동시 진행 중`
+          : "받기 시작 · 페이지를 이동해도 계속됩니다",
+        "ok"
+      );
+      // Clear input so next link is easy to paste
+      if (input && !forcedUrl) input.value = "";
+      return;
+    }
+
+    uiJobs.delete(tempId);
+    renderDownloadQueue();
+
+    if (res == null) {
+      toast("백그라운드에서 받는 중입니다", "ok");
+      return;
+    }
+    if (res?.ok === false) {
+      toast(userError(res?.error) || "다운로드 실패", "error");
+      return;
+    }
+    if (res?.ok) {
+      toast("저장 완료 · 다운로드/VideoDownloader", "ok");
     }
   } catch (e) {
-    showProgress(false);
-    toast(userError(e?.message) || "링크 다운로드 실패", "error");
+    const msg = String(e?.message || e || "");
+    if (/Receiving end|message port|Extension context|The message port/i.test(msg)) {
+      toast("백그라운드에서 계속 받는 중입니다", "ok");
+    } else {
+      toast(userError(e?.message) || "다운로드 실패", "error");
+    }
   } finally {
-    downloading = false;
     if (btn) {
       btn.disabled = false;
       btn.textContent = "받기";
     }
+    if (thisBtn) {
+      thisBtn.disabled = false;
+      updateQuickPageUi();
+    }
   }
+}
+
+async function downloadThisPage() {
+  if (!currentTabUrl || !isSitePage(currentTabUrl)) {
+    toast("지원 사이트 페이지에서 열어 주세요", "error");
+    return;
+  }
+  if ($("#linkInput")) $("#linkInput").value = currentTabUrl;
+  await downloadByPastedLink(currentTabUrl);
 }
 
 function looksLikeDirectMedia(url) {
@@ -1161,6 +1674,7 @@ function looksLikeDirectMedia(url) {
 }
 
 $("#btnLinkDl")?.addEventListener("click", () => downloadByPastedLink());
+$("#btnThisPage")?.addEventListener("click", () => downloadThisPage());
 $("#linkInput")?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
@@ -1168,17 +1682,14 @@ $("#linkInput")?.addEventListener("keydown", (e) => {
   }
 });
 
-// Pre-fill from clipboard when popup opens (optional, non-blocking)
+// If clipboard has social link and input empty (and tab is not already social), fill it
 (async () => {
   try {
+    if ($("#linkInput")?.value) return;
+    if (currentTabUrl && isSitePage(currentTabUrl)) return;
     const text = await navigator.clipboard.readText();
     const link = normalizePastedUrl(text);
-    if (
-      link &&
-      (isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link)) &&
-      $("#linkInput") &&
-      !$("#linkInput").value
-    ) {
+    if (link && (isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link))) {
       $("#linkInput").value = link;
     }
   } catch {
@@ -1196,32 +1707,45 @@ chrome.runtime.onMessage.addListener((msg) => {
     render();
     refreshHelperStatus();
   }
-  if (msg.type === "HLS_PROGRESS" && (msg.tabId === currentTabId || msg.tabId === -1)) {
+
+  // Global download jobs — multi-queue (concurrent + page leave)
+  if (msg.type === "DOWNLOAD_JOB" && msg.job) {
+    const job = msg.job;
+    if (job.id) trackedJobIds.add(job.id);
+    applyJobProgress(job);
+    // Always keep action buttons available for more concurrent downloads
+    const btn = $("#btnLinkDl");
+    const thisBtn = $("#btnThisPage");
+    if (btn && btn.textContent !== "추가…") {
+      btn.disabled = false;
+      btn.textContent = "받기";
+    }
+    if (thisBtn) {
+      thisBtn.disabled = false;
+      updateQuickPageUi();
+    }
+    return;
+  }
+
+  // Progress from any tab / global job (page leave must not hide it)
+  if (msg.type === "HLS_PROGRESS") {
     const p = msg.progress;
     if (!p) return;
-    if (p.phase === "error") {
-      showProgress(false);
-    } else if (p.phase === "done") {
-      showProgress(true, 100, "저장 완료");
-      setTimeout(() => showProgress(false), 800);
-    } else {
-      const pct = p.percent || 10;
-      // Never surface raw segment counts like "1234/2375"
-      let text = `받는 중… ${Math.round(pct)}%`;
-      if (
-        p.message &&
-        !/\d+\s*\/\s*\d+/.test(p.message) &&
-        !/조각|세그먼트|\[download\]|ERROR/i.test(p.message)
-      ) {
-        text = p.message;
-      } else if (p.phase === "merge" || /만들|합치|Merg/i.test(p.message || "")) {
-        text = "파일 만드는 중…";
-      } else if (p.phase === "save" || /저장/i.test(p.message || "")) {
-        text = "저장 중…";
-      }
-      showProgress(true, pct, text);
-    }
+    const isOurs =
+      p.global ||
+      p.jobId ||
+      msg.tabId === currentTabId ||
+      msg.tabId === -1 ||
+      (p.jobId && trackedJobIds.has(p.jobId)) ||
+      runningJobCount() > 0;
+    if (!isOurs) return;
+    if (p.jobId) trackedJobIds.add(p.jobId);
+    applyJobProgress(p);
   }
 });
 
-loadMedia();
+// Restore in-flight downloads first, then load page media
+(async () => {
+  await restoreActiveDownloads();
+  await loadMedia();
+})();

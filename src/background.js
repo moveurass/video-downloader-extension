@@ -11,7 +11,27 @@ const tabMeta = new Map();
 const hlsProgress = new Map();
 const videoAssemblies = new Map();
 const probedUrls = new Set();
-const REFERER_RULE_ID = 771001;
+/** Base id for per-download DNR referer rules (unique ids avoid concurrent races) */
+const REFERER_RULE_BASE = 771001;
+let nextRefererRuleId = REFERER_RULE_BASE;
+const MAX_REFERER_RULES = 40;
+
+/**
+ * Active download jobs — independent of tab navigation / popup close.
+ * @type {Map<string, object>}
+ */
+const activeDownloads = new Map();
+/** @type {Map<number, string>} tabId → latest jobId for that tab */
+const tabJobMap = new Map();
+let jobSeq = 0;
+/** Refcounted SW keep-alive while any download runs */
+let keepAliveRefs = 0;
+let keepAliveTimer = null;
+/**
+ * Async job context for progress routing when several downloads run at once.
+ * Without this, emitDownloadProgress(tabId) would update the wrong job.
+ */
+let currentJobContext = null;
 
 const MEDIA_EXTENSIONS = new Set([
   "mp4", "webm", "mkv", "mov", "m4v", "mp3", "m4a", "aac", "wav",
@@ -103,11 +123,10 @@ function isTiktokUrl(url) {
   );
 }
 
-/** Instagram post / reel / TV pages */
-function isInstagramUrl(url) {
+/** Instagram host (any page) */
+function isInstagramHostUrl(url) {
   const h = hostOf(url);
   if (!h) return false;
-  // CDN hosts are direct media, not page extractors
   if (/cdninstagram|fbcdn\.net|instagram\.fs/i.test(h)) return false;
   return (
     h === "instagram.com" ||
@@ -115,6 +134,27 @@ function isInstagramUrl(url) {
     h === "instagr.am" ||
     h.endsWith(".instagr.am")
   );
+}
+
+/** Instagram post / reel / TV only — not home or profile */
+function isInstagramPostUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h === "instagr.am") return (u.pathname || "/").length > 2;
+    if (h === "instagram.com" || h.endsWith(".instagram.com")) {
+      return /\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(u.pathname || "");
+    }
+  } catch {
+    /* fall through */
+  }
+  return /instagram\.com\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(url);
+}
+
+/** Downloadable Instagram page URL (alias) */
+function isInstagramUrl(url) {
+  return isInstagramPostUrl(url);
 }
 
 function isInstagramCdnUrl(url) {
@@ -196,21 +236,22 @@ function sniffIsVideo(uint8) {
 function needsYtDlpHelper(url, pageUrl) {
   // Direct CDN files never need the page extractor
   if (isTiktokCdnUrl(url) && !isTiktokUrl(url)) return false;
-  if (isInstagramCdnUrl(url) && !isInstagramUrl(url)) return false;
+  if (isInstagramCdnUrl(url) && !isInstagramPostUrl(url)) return false;
   return (
     isYoutubeUrl(url) ||
     isYoutubeUrl(pageUrl) ||
     isTiktokUrl(url) ||
     isTiktokUrl(pageUrl) ||
-    isInstagramUrl(url) ||
-    isInstagramUrl(pageUrl)
+    isInstagramPostUrl(url) ||
+    isInstagramPostUrl(pageUrl)
   );
 }
 
 function siteKind(url, pageUrl) {
   if (isYoutubeUrl(url) || isYoutubeUrl(pageUrl)) return "youtube";
   if (isTiktokUrl(url) || isTiktokUrl(pageUrl)) return "tiktok";
-  if (isInstagramUrl(url) || isInstagramUrl(pageUrl)) return "instagram";
+  // Only real posts/reels — never homepage
+  if (isInstagramPostUrl(url) || isInstagramPostUrl(pageUrl)) return "instagram";
   return null;
 }
 
@@ -306,9 +347,280 @@ function friendlyFetchError(err) {
   return s;
 }
 
-function emitDownloadProgress(tabId, percent, message, phase = "download") {
-  const progress = { percent, message, phase };
+function publicJob(job) {
+  if (!job) return null;
+  return {
+    id: job.id,
+    tabId: job.tabId,
+    title: job.title,
+    pageUrl: job.pageUrl,
+    filename: job.filename,
+    status: job.status,
+    percent: job.percent,
+    message: job.message,
+    phase: job.phase,
+    error: job.error,
+    result: job.result
+      ? {
+          ok: job.result.ok,
+          downloadId: job.result.downloadId ?? null,
+          path: job.result.path || job.result.outDir || "",
+          filename: job.result.filename || job.filename,
+          size: job.result.size || 0,
+          method: job.result.method || null,
+          ytdlp: !!job.result.ytdlp
+        }
+      : null,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt
+  };
+}
+
+function persistJobs() {
+  try {
+    const list = [...activeDownloads.values()].map(publicJob);
+    if (chrome.storage?.session?.set) {
+      chrome.storage.session.set({ uvdActiveDownloads: list }).catch(() => {});
+    } else {
+      chrome.storage?.local?.set?.({ uvdActiveDownloads: list });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function broadcastJob(job) {
+  if (!job) return;
+  const pub = publicJob(job);
+  const progress = {
+    percent: job.percent,
+    message: job.message,
+    phase: job.phase,
+    jobId: job.id,
+    title: job.title,
+    status: job.status,
+    global: true
+  };
+  hlsProgress.set(job.tabId ?? -1, progress);
+  hlsProgress.set(-1, progress);
+  chrome.runtime
+    .sendMessage({ type: "DOWNLOAD_JOB", job: pub })
+    .catch(() => {});
+  chrome.runtime
+    .sendMessage({
+      type: "HLS_PROGRESS",
+      tabId: job.tabId ?? -1,
+      progress
+    })
+    .catch(() => {});
+}
+
+function createDownloadJob({ tabId, title, pageUrl, filename } = {}) {
+  const id = `dl_${Date.now()}_${++jobSeq}`;
+  const job = {
+    id,
+    tabId: tabId != null ? tabId : -1,
+    title: title || filename || "영상",
+    pageUrl: pageUrl || "",
+    filename: filename || "",
+    status: "running",
+    percent: 2,
+    message: "백그라운드에서 받는 중…",
+    phase: "start",
+    error: null,
+    result: null,
+    startedAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  activeDownloads.set(id, job);
+  if (tabId != null && tabId >= 0) tabJobMap.set(tabId, id);
+  persistJobs();
+  broadcastJob(job);
+  updateDownloadBadge();
+  return id;
+}
+
+function findRunningJob(tabId) {
+  // Prefer explicit async context (correct under concurrent downloads)
+  if (currentJobContext) {
+    const ctx = activeDownloads.get(currentJobContext);
+    if (ctx?.status === "running") return ctx;
+  }
+  if (tabId != null && tabId >= 0) {
+    const mapped = tabJobMap.get(tabId);
+    if (mapped) {
+      const j = activeDownloads.get(mapped);
+      if (j?.status === "running") return j;
+    }
+    for (const j of activeDownloads.values()) {
+      if (j.status === "running" && j.tabId === tabId) return j;
+    }
+  }
+  let latest = null;
+  for (const j of activeDownloads.values()) {
+    if (j.status !== "running") continue;
+    if (!latest || j.startedAt > latest.startedAt) latest = j;
+  }
+  return latest;
+}
+
+async function withJobContext(jobId, fn) {
+  const prev = currentJobContext;
+  currentJobContext = jobId;
+  try {
+    return await fn();
+  } finally {
+    currentJobContext = prev;
+  }
+}
+
+function updateDownloadJob(jobId, patch) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return null;
+  Object.assign(job, patch, { updatedAt: Date.now() });
+  persistJobs();
+  broadcastJob(job);
+  updateDownloadBadge();
+  return job;
+}
+
+function finishDownloadJob(jobId, result, error) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return;
+  if (error) {
+    job.status = "error";
+    job.phase = "error";
+    job.error = String(error?.message || error);
+    job.message = job.error;
+    job.percent = job.percent || 0;
+  } else {
+    job.status = "done";
+    job.phase = "done";
+    job.percent = 100;
+    job.message = "저장 완료";
+    job.result = result || null;
+    job.error = null;
+  }
+  job.updatedAt = Date.now();
+  // Detach from tab map so navigation cleanup is harmless
+  if (job.tabId != null && tabJobMap.get(job.tabId) === jobId) {
+    tabJobMap.delete(job.tabId);
+  }
+  persistJobs();
+  broadcastJob(job);
+  updateDownloadBadge();
+  // Keep finished job briefly so reopened popup can show result
+  setTimeout(() => {
+    const cur = activeDownloads.get(jobId);
+    if (cur && cur.status !== "running") {
+      activeDownloads.delete(jobId);
+      persistJobs();
+      if (hlsProgress.get(-1)?.jobId === jobId) hlsProgress.delete(-1);
+      updateDownloadBadge();
+    }
+  }, 120_000);
+}
+
+function listActiveDownloads() {
+  return [...activeDownloads.values()]
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .map(publicJob);
+}
+
+function updateDownloadBadge() {
+  const n = [...activeDownloads.values()].filter((j) => j.status === "running").length;
+  try {
+    if (n > 0) {
+      chrome.action.setBadgeText({ text: String(n) });
+      chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
+      chrome.action.setTitle({
+        title: `받는 중 ${n}개 · 페이지를 이동해도 계속됩니다`
+      });
+    } else {
+      // Clear global badge; per-tab badges refreshed on next tab event
+      chrome.action.setBadgeText({ text: "" });
+      chrome.action.setTitle({ title: "Video Downloader" });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Detach a job from a tab so navigation/close does not wipe progress.
+ * Download keeps running; tabJobMap is kept so in-flight emit(tabId) still finds the job.
+ */
+function detachJobsFromTab(tabId) {
+  if (tabId == null) return;
+  const mapped = tabJobMap.get(tabId);
+  if (mapped) {
+    const job = activeDownloads.get(mapped);
+    if (job?.status === "running") {
+      // Keep tabJobMap → jobId so progress callbacks with old tabId still route
+      job.tabId = -1;
+      job.updatedAt = Date.now();
+      if (!/백그라운드|이동/i.test(job.message || "")) {
+        job.message = (job.message || "받는 중…") + " · 백그라운드";
+      }
+      persistJobs();
+      broadcastJob(job);
+    } else {
+      tabJobMap.delete(tabId);
+    }
+  }
+  for (const job of activeDownloads.values()) {
+    if (job.tabId === tabId && job.status === "running") {
+      job.tabId = -1;
+      job.updatedAt = Date.now();
+      persistJobs();
+      broadcastJob(job);
+    }
+  }
+}
+
+/**
+ * @param {number|null} tabId
+ * @param {number} percent
+ * @param {string} message
+ * @param {string} [phase]
+ * @param {string|null} [jobId] — required for correct concurrent multi-download routing
+ */
+function emitDownloadProgress(tabId, percent, message, phase = "download", jobId = null) {
+  const job =
+    (jobId && activeDownloads.get(jobId)) ||
+    (currentJobContext && activeDownloads.get(currentJobContext)) ||
+    findRunningJob(tabId);
+  if (job) {
+    const status =
+      phase === "done" ? "done" : phase === "error" ? "error" : "running";
+    // Don't mark done/error here — finishDownloadJob owns terminal states
+    if (status === "running") {
+      updateDownloadJob(job.id, {
+        percent,
+        message,
+        phase,
+        status: "running"
+      });
+    } else {
+      const progress = {
+        percent,
+        message,
+        phase,
+        jobId: job.id,
+        title: job.title,
+        global: true
+      };
+      hlsProgress.set(job.tabId ?? -1, progress);
+      hlsProgress.set(-1, progress);
+      chrome.runtime
+        .sendMessage({ type: "HLS_PROGRESS", tabId: job.tabId ?? -1, progress })
+        .catch(() => {});
+    }
+    return;
+  }
+  const progress = { percent, message, phase, global: true, jobId: jobId || null };
   hlsProgress.set(tabId ?? -1, progress);
+  hlsProgress.set(-1, progress);
   chrome.runtime
     .sendMessage({ type: "HLS_PROGRESS", tabId: tabId ?? -1, progress })
     .catch(() => {});
@@ -628,13 +940,21 @@ function filterDisplayable(map) {
 }
 
 function updateBadge(tabId) {
-  // Async badge so YT/TT still show "1"
-  getMediaForTabAsync(tabId)
-    .then((items) => {
-      const count = items?.length || 0;
-      chrome.action.setBadgeText({
-        tabId,
-        text: count > 0 ? String(count) : ""
+  chrome.action.setBadgeBackgroundColor({ color: "#e11d48" });
+  // Social pages always show download cue
+  chrome.tabs
+    .get(tabId)
+    .then((tab) => {
+      if (tab?.url && needsYtDlpHelper(tab.url, tab.url)) {
+        updateSocialBadge(tabId, tab.url);
+        return;
+      }
+      return getMediaForTabAsync(tabId).then((items) => {
+        const count = items?.length || 0;
+        chrome.action.setBadgeText({
+          tabId,
+          text: count > 0 ? String(count) : ""
+        });
       });
     })
     .catch(() => {
@@ -645,7 +965,6 @@ function updateBadge(tabId) {
         text: count > 0 ? String(count) : ""
       });
     });
-  chrome.action.setBadgeBackgroundColor({ color: "#e11d48" });
 }
 
 function broadcastUpdate(tabId) {
@@ -689,7 +1008,7 @@ async function getMediaForTabAsync(tabId, hint = {}) {
   if (
     pageUrl &&
     /^https?:/i.test(pageUrl) &&
-    (isYoutubeUrl(pageUrl) || isInstagramUrl(pageUrl))
+    (isYoutubeUrl(pageUrl) || isInstagramPostUrl(pageUrl))
   ) {
     const placeholder = makeSitePlaceholder({
       id: tabId,
@@ -721,7 +1040,7 @@ async function getMediaForTabAsync(tabId, hint = {}) {
     if (!url || !/^https?:/i.test(url)) return items;
     // YouTube / Instagram: always page-level yt-dlp item
     // TikTok: prefer captured CDN/page play URL when present (yt-dlp often IP-blocked)
-    if (isYoutubeUrl(url) || isInstagramUrl(url)) {
+    if (isYoutubeUrl(url) || isInstagramPostUrl(url)) {
       const placeholder = makeSitePlaceholder({
         id: tab.id,
         url,
@@ -957,14 +1276,15 @@ async function downloadDirectMediaUrl(tabId, mediaUrl, pageUrl, filename) {
  * TikTok: prefer link-based helper (SnapTik style). Avoid scraping CDN covers/images.
  * Page hooks are disabled on TikTok so the site player keeps working.
  */
-async function downloadTikTok(tabId, pageUrl, filename, preferQuality) {
+async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = null) {
+  const jid = jobId || currentJobContext;
   const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
   if (!targetPage) throw new Error("TikTok 페이지 주소가 없습니다");
   if (!isTiktokUrl(targetPage) && !/vm\.tiktok\.com|vt\.tiktok\.com/i.test(targetPage)) {
     throw new Error("TikTok 영상 링크가 아닙니다");
   }
 
-  emitDownloadProgress(tabId, 8, "TikTok 링크로 받는 중…", "start");
+  emitDownloadProgress(tabId, 8, "TikTok 링크로 받는 중…", "start", jid);
 
   const helperUp = await YtDlp.available().catch(() => false);
   if (!helperUp) {
@@ -1008,11 +1328,11 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality) {
         if (/IP address is blocked|blocked from accessing/i.test(message)) {
           message = "TikTok 접근이 막혔습니다. 링크 붙여넣기로 다시 시도해 주세요";
         }
-        emitDownloadProgress(tabId, Math.max(10, p.percent || 10), message, "download");
+        emitDownloadProgress(tabId, Math.max(10, p.percent || 10), message, "download", jid);
       },
       15 * 60 * 1000
     );
-    emitDownloadProgress(tabId, 100, "저장 완료", "done");
+    emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
     return {
       ok: true,
       method: result.method || "yt-dlp",
@@ -1033,18 +1353,19 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality) {
   }
 }
 
-async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
+async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jobId = null) {
+  const jid = jobId || currentJobContext;
   const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : url;
   const kind = siteKind(url, targetPage);
 
   // Dedicated TikTok pipeline
   if (kind === "tiktok") {
-    return downloadTikTok(tabId, targetPage, filename, preferQuality);
+    return downloadTikTok(tabId, targetPage, filename, preferQuality, jid);
   }
 
   // Instagram: try captured CDN video first, then yt-dlp + cookies
   if (kind === "instagram") {
-    return downloadInstagram(tabId, targetPage, filename, preferQuality);
+    return downloadInstagram(tabId, targetPage, filename, preferQuality, jid);
   }
 
   const available = await YtDlp.available();
@@ -1055,7 +1376,7 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
   }
 
   const label = kind === "youtube" ? "YouTube" : "영상";
-  emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start");
+  emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start", jid);
 
   const cookieHeader = await getCookieHeaderForUrl(targetPage);
 
@@ -1075,12 +1396,12 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
       if (/Merging|Merger/i.test(message)) message = "파일 합치는 중…";
       if (/Destination|Writing/i.test(message)) message = "저장 중…";
       if (/ERROR/i.test(message)) message = message.slice(0, 120);
-      emitDownloadProgress(tabId, p.percent || 10, message, p.status || "download");
+      emitDownloadProgress(tabId, p.percent || 10, message, p.status || "download", jid);
     },
     40 * 60 * 1000
   );
 
-  emitDownloadProgress(tabId, 100, "저장 완료", "done");
+  emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
   return {
     ok: true,
     method: "yt-dlp",
@@ -1097,7 +1418,8 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality) {
  * Instagram: yt-dlp + browser cookies (login required for many posts).
  * Also try direct CDN mp4 captured while watching.
  */
-async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
+async function downloadInstagram(tabId, pageUrl, filename, preferQuality, jobId = null) {
+  const jid = jobId || currentJobContext;
   let targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
   targetPage = normalizeInstagramUrl(targetPage);
   if (!targetPage || !isInstagramUrl(targetPage)) {
@@ -1106,7 +1428,7 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
     );
   }
 
-  emitDownloadProgress(tabId, 5, "Instagram 준비 중…", "start");
+  emitDownloadProgress(tabId, 5, "Instagram 준비 중…", "start", jid);
 
   // 1) Direct CDN while viewing (must be real video bytes)
   if (tabId != null) {
@@ -1127,7 +1449,7 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
         .filter((u) => isInstagramCdnUrl(u));
       for (const mediaUrl of cdns.slice(0, 5)) {
         try {
-          emitDownloadProgress(tabId, 18, "재생 스트림 저장 중…", "download");
+          emitDownloadProgress(tabId, 18, "재생 스트림 저장 중…", "download", jid);
           const saved = await downloadDirectMediaUrl(
             tabId,
             mediaUrl,
@@ -1135,7 +1457,7 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
             filename
           );
           if (saved?.ok || saved?.downloadId != null) {
-            emitDownloadProgress(tabId, 100, "저장 완료", "done");
+            emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
             return {
               ok: true,
               downloadId: saved.downloadId ?? null,
@@ -1173,7 +1495,8 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
     tabId,
     28,
     `Instagram 받는 중… (쿠키 ${cookiesList.length}개)`,
-    "download"
+    "download",
+    jid
   );
 
   try {
@@ -1197,11 +1520,11 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality) {
           message =
             "Instagram 인증 문제 — 브라우저에서 로그인·새로고침 후 링크를 다시 붙여 넣어 주세요";
         }
-        emitDownloadProgress(tabId, Math.max(28, p.percent || 28), message, "download");
+        emitDownloadProgress(tabId, Math.max(28, p.percent || 28), message, "download", jid);
       },
       20 * 60 * 1000
     );
-    emitDownloadProgress(tabId, 100, "저장 완료", "done");
+    emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
     return {
       ok: true,
       method: result.method || "yt-dlp",
@@ -1282,9 +1605,10 @@ chrome.webRequest.onBeforeRequest.addListener(
 // ─── tabs ──────────────────────────────────────────────────
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  // Downloads keep running — only detach job from this tab
+  detachJobsFromTab(tabId);
   tabMedia.delete(tabId);
   tabMeta.delete(tabId);
-  hlsProgress.delete(tabId);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
@@ -1297,12 +1621,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       if (prevPath && prevPath === nextPath) {
         setTabMeta(tabId, { lastUrl: next });
       } else {
+        // Leaving the page: keep active downloads, clear only media list for this tab
+        detachJobsFromTab(tabId);
         tabMedia.delete(tabId);
         tabMeta.delete(tabId);
         updateBadge(tabId);
         setTabMeta(tabId, { lastUrl: next });
       }
+      updateSocialBadge(tabId, next);
     } catch {
+      detachJobsFromTab(tabId);
       tabMedia.delete(tabId);
       tabMeta.delete(tabId);
       updateBadge(tabId);
@@ -1319,6 +1647,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
         }
       })()
     });
+    updateSocialBadge(tabId, tab.url);
   }
   if (changeInfo.title) {
     const t = Naming.cleanPageTitle(changeInfo.title);
@@ -1364,11 +1693,109 @@ function setupContextMenus() {
       title: "이 페이지 영상 다운로드",
       contexts: ["page", "frame"]
     });
+    chrome.contextMenus.create({
+      id: "uvd-download-link",
+      title: "이 링크 영상 다운로드",
+      contexts: ["link"]
+    });
+    chrome.contextMenus.create({
+      id: "uvd-download-selection",
+      title: "선택한 링크로 영상 다운로드",
+      contexts: ["selection"]
+    });
   });
 }
 chrome.runtime.onInstalled.addListener(setupContextMenus);
 chrome.runtime.onStartup.addListener(setupContextMenus);
 setupContextMenus();
+
+async function downloadPageFromUi(tabId, pageUrl, preferQuality = "best", jobId = null) {
+  const jid = jobId || currentJobContext;
+  if (!pageUrl || !/^https?:/i.test(pageUrl)) {
+    throw new Error("받을 페이지 주소가 없습니다");
+  }
+  const kind = siteKind(pageUrl, pageUrl);
+  let fname = "영상.mp4";
+  try {
+    if (kind === "instagram") {
+      const m = pageUrl.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+      fname = m ? `Instagram_${m[2]}.mp4` : "Instagram.mp4";
+    } else if (kind === "tiktok") {
+      const m = pageUrl.match(/video\/(\d+)/);
+      fname = m ? `TikTok_${m[1]}.mp4` : "TikTok.mp4";
+    } else if (kind === "youtube") {
+      const u = new URL(pageUrl);
+      const id = u.searchParams.get("v") || u.pathname.split("/").filter(Boolean).pop();
+      fname = id ? `YouTube_${id}.mp4` : "YouTube.mp4";
+    } else {
+      fname = resolveFilename(tabId, { pageTitle: "" }, pageUrl);
+    }
+  } catch {
+    /* keep default */
+  }
+  fname = safeDownloadName(fname, "video/mp4");
+
+  // Social sites → dedicated path; others → scan + best item
+  if (kind) {
+    return downloadViaYtDlp(tabId, pageUrl, pageUrl, fname, preferQuality, jid);
+  }
+
+  try {
+    if (tabId != null) {
+      await chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" });
+    }
+  } catch {
+    /* ignore */
+  }
+  await new Promise((r) => setTimeout(r, 600));
+  const items = tabId != null ? await getMediaForTabAsync(tabId, { pageUrl }) : [];
+  const best = items[0];
+  if (!best?.url) throw new Error("감지된 영상이 없습니다. 재생 후 다시 시도해 주세요");
+  return downloadSmart(
+    tabId,
+    best.url,
+    best.filename || fname,
+    preferQuality,
+    best.type || "video",
+    best,
+    { pageUrl, jobId: jid }
+  );
+}
+
+function updateSocialBadge(tabId, url) {
+  if (tabId == null) return;
+  try {
+    const social = !!(url && needsYtDlpHelper(url, url));
+    if (social) {
+      chrome.action.setBadgeText({ tabId, text: "↓" });
+      chrome.action.setBadgeBackgroundColor({ tabId, color: "#e11d48" });
+      chrome.action.setTitle({
+        tabId,
+        title: "이 페이지 영상 다운로드 가능"
+      });
+    } else {
+      // keep media count badge from updateBadge if any
+      const map = tabMedia.get(tabId);
+      const count = map ? filterDisplayable(map).length : 0;
+      chrome.action.setBadgeText({
+        tabId,
+        text: count > 0 ? String(count) : ""
+      });
+      chrome.action.setTitle({ tabId, title: "Video Downloader" });
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+chrome.tabs.onActivated.addListener(async (info) => {
+  try {
+    const tab = await chrome.tabs.get(info.tabId);
+    updateSocialBadge(info.tabId, tab?.url);
+  } catch {
+    /* ignore */
+  }
+});
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   const tabId = tab?.id;
@@ -1382,59 +1809,200 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       });
       const item = getTabMap(tabId).get(info.srcUrl);
       const fname = resolveFilename(tabId, item || {}, info.srcUrl);
-      await downloadSmart(tabId, info.srcUrl, fname, "best", item?.type || "video", item, {
-        pageUrl: tab.url
-      });
+      await runTrackedDownloadAsync(
+        {
+          tabId,
+          title: fname,
+          pageUrl: tab.url,
+          filename: fname
+        },
+        () =>
+          downloadSmart(tabId, info.srcUrl, fname, "best", item?.type || "video", item, {
+            pageUrl: tab.url
+          })
+      );
+      return;
     }
+
+    if (info.menuItemId === "uvd-download-link" && info.linkUrl) {
+      await runTrackedDownloadAsync(
+        {
+          tabId,
+          title: info.linkUrl,
+          pageUrl: info.linkUrl,
+          filename: "video.mp4"
+        },
+        () => downloadPageFromUi(tabId, info.linkUrl, "best")
+      );
+      return;
+    }
+
+    if (info.menuItemId === "uvd-download-selection" && info.selectionText) {
+      const text = String(info.selectionText).trim();
+      const m = text.match(/https?:\/\/[^\s]+/i);
+      const link = m ? m[0] : text;
+      if (!/^https?:\/\//i.test(link)) throw new Error("선택한 텍스트에 링크가 없습니다");
+      await runTrackedDownloadAsync(
+        { tabId, title: link, pageUrl: link, filename: "video.mp4" },
+        () => downloadPageFromUi(tabId, link, "best")
+      );
+      return;
+    }
+
     if (info.menuItemId === "uvd-download-best") {
+      // Social page → dedicated download; else scan media list
+      if (tab?.url && needsYtDlpHelper(tab.url, tab.url)) {
+        await runTrackedDownloadAsync(
+          {
+            tabId,
+            title: tab.title || tab.url,
+            pageUrl: tab.url,
+            filename: "video.mp4"
+          },
+          () => downloadPageFromUi(tabId, tab.url, "best")
+        );
+        return;
+      }
       try {
         await chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" });
       } catch {
         /* ignore */
       }
       await new Promise((r) => setTimeout(r, 800));
-      const best = getMediaForTab(tabId)[0];
+      const best = (await getMediaForTabAsync(tabId, { pageUrl: tab?.url }))[0];
       if (!best) throw new Error("감지된 영상이 없습니다");
-      await downloadSmart(
-        tabId,
-        best.url,
-        best.filename,
-        "best",
-        best.type,
-        best,
-        { pageUrl: tab.url }
+      await runTrackedDownloadAsync(
+        {
+          tabId,
+          title: best.title || best.filename,
+          pageUrl: tab.url,
+          filename: best.filename || "video.mp4"
+        },
+        () =>
+          downloadSmart(tabId, best.url, best.filename, "best", best.type, best, {
+            pageUrl: tab.url
+          })
       );
     }
   } catch (e) {
     console.warn("[UVD] context menu", e);
+    try {
+      chrome.notifications?.create?.({
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: "다운로드 실패",
+        message: String(e?.message || e).slice(0, 120)
+      });
+    } catch {
+      /* notifications optional */
+    }
+  }
+});
+
+// Keyboard shortcut: Alt+Shift+D → download current tab
+chrome.commands?.onCommand?.addListener(async (command) => {
+  if (command !== "download-current-page") return;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || !tab.url) throw new Error("탭 없음");
+    await runTrackedDownloadAsync(
+      {
+        tabId: tab.id,
+        title: tab.title || tab.url,
+        pageUrl: tab.url,
+        filename: "video.mp4"
+      },
+      () => downloadPageFromUi(tab.id, tab.url, "best")
+    );
+  } catch (e) {
+    console.warn("[UVD] command download", e);
   }
 });
 
 // ─── downloads ─────────────────────────────────────────────
 
+/** Refcounted keep-alive so concurrent jobs don't kill SW early */
 function startKeepAlive() {
-  const id = setInterval(() => {
-    try {
-      chrome.runtime.getPlatformInfo(() => {});
-    } catch {
-      /* ignore */
-    }
-  }, 2000);
-  // Alarms also prevent SW kill during long merges/saves
+  keepAliveRefs += 1;
+  if (!keepAliveTimer) {
+    keepAliveTimer = setInterval(() => {
+      try {
+        chrome.runtime.getPlatformInfo(() => {});
+      } catch {
+        /* ignore */
+      }
+    }, 2000);
+  }
   try {
     chrome.alarms.create("uvd-dl-keepalive", { periodInMinutes: 0.5 });
   } catch {
     /* ignore */
   }
-  return id;
+  return true;
 }
 
-function stopKeepAlive(id) {
-  if (id) clearInterval(id);
+function stopKeepAlive(_token) {
+  keepAliveRefs = Math.max(0, keepAliveRefs - 1);
+  if (keepAliveRefs === 0) {
+    if (keepAliveTimer) {
+      clearInterval(keepAliveTimer);
+      keepAliveTimer = null;
+    }
+    try {
+      chrome.alarms.clear("uvd-dl-keepalive");
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+/**
+ * Run a download tied to a durable job. Survives popup close & page leave.
+ * @param {object} meta
+ * @param {() => Promise<object>} asyncFn
+ * @param {(r: object) => void} sendResponse
+ */
+function runTrackedDownload(meta, asyncFn, sendResponse) {
+  const jobId = createDownloadJob(meta);
+  const keep = startKeepAlive();
+  // Immediate ack so popup can show the new row before work finishes
   try {
-    chrome.alarms.clear("uvd-dl-keepalive");
+    sendResponse({
+      ok: true,
+      started: true,
+      jobId,
+      background: true,
+      concurrent: [...activeDownloads.values()].filter((j) => j.status === "running").length
+    });
   } catch {
-    /* ignore */
+    /* ignore — popup may be gone; job still runs */
+  }
+  Promise.resolve()
+    .then(() => withJobContext(jobId, () => asyncFn(jobId)))
+    .then((r) => {
+      finishDownloadJob(jobId, r, null);
+      stopKeepAlive(keep);
+    })
+    .catch((err) => {
+      finishDownloadJob(jobId, null, err);
+      stopKeepAlive(keep);
+    });
+  return true;
+}
+
+/** Same as runTrackedDownload but awaitable (context menu / commands) */
+async function runTrackedDownloadAsync(meta, asyncFn) {
+  const jobId = createDownloadJob(meta);
+  const keep = startKeepAlive();
+  try {
+    const r = await withJobContext(jobId, () => asyncFn(jobId));
+    finishDownloadJob(jobId, r, null);
+    return r;
+  } catch (err) {
+    finishDownloadJob(jobId, null, err);
+    throw err;
+  } finally {
+    stopKeepAlive(keep);
   }
 }
 
@@ -1860,57 +2428,75 @@ async function downloadMedia(url, filename) {
   };
 }
 
-async function withTabReferer(tabId, fn) {
-  let pageUrl = "";
-  let origin = "";
+/**
+ * Attach page Referer to extension network requests while fn() runs.
+ * Uses a unique DNR rule id so concurrent downloads don't clobber each other.
+ * Prefer NOT forcing Origin — many CDNs return 403 when Origin ≠ expected.
+ * @param {number|null} tabId
+ * @param {() => Promise<any>} fn
+ * @param {string} [pageUrlHint] page URL captured at download start
+ */
+async function withTabReferer(tabId, fn, pageUrlHint = "") {
+  let pageUrl = pageUrlHint || "";
   try {
-    if (tabId != null && tabId >= 0) {
+    if (!pageUrl && tabId != null && tabId >= 0) {
       const tab = await chrome.tabs.get(tabId);
       pageUrl = tab.url || "";
-      origin = pageUrl ? new URL(pageUrl).origin : "";
     }
   } catch {
     /* ignore */
   }
 
+  const ruleId =
+    REFERER_RULE_BASE + ((nextRefererRuleId++ - REFERER_RULE_BASE) % MAX_REFERER_RULES);
+  let ruleInstalled = false;
+
   if (pageUrl && chrome.declarativeNetRequest) {
     try {
       await chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [REFERER_RULE_ID],
+        removeRuleIds: [ruleId],
         addRules: [
           {
-            id: REFERER_RULE_ID,
+            id: ruleId,
             priority: 1,
             action: {
               type: "modifyHeaders",
               requestHeaders: [
-                { header: "Referer", operation: "set", value: pageUrl },
-                ...(origin
-                  ? [{ header: "Origin", operation: "set", value: origin }]
-                  : [])
+                { header: "Referer", operation: "set", value: pageUrl }
+                // Do not force Origin — causes Segment HTTP 403 on many CDNs
               ]
             },
             condition: {
               urlFilter: "*",
-              resourceTypes: ["xmlhttprequest", "media", "other", "sub_frame"]
+              resourceTypes: [
+                "xmlhttprequest",
+                "media",
+                "other",
+                "sub_frame",
+                "image",
+                "object"
+              ]
             }
           }
         ]
       });
+      ruleInstalled = true;
     } catch (e) {
       console.warn("[UVD] DNR", e);
     }
   }
 
   try {
-    return await fn();
+    return await fn(pageUrl);
   } finally {
-    try {
-      await chrome.declarativeNetRequest?.updateSessionRules({
-        removeRuleIds: [REFERER_RULE_ID]
-      });
-    } catch {
-      /* ignore */
+    if (ruleInstalled) {
+      try {
+        await chrome.declarativeNetRequest?.updateSessionRules({
+          removeRuleIds: [ruleId]
+        });
+      } catch {
+        /* ignore */
+      }
     }
   }
 }
@@ -1927,11 +2513,24 @@ async function resolvePageUrl(tabId, fallback) {
   return fallback || "";
 }
 
-async function runHlsDownload(tabId, url, preferQuality, filenameHint, itemHint) {
+async function runHlsDownload(tabId, url, preferQuality, filenameHint, itemHint, pageUrlHint) {
   if (!url) throw new Error("받을 주소가 없습니다");
   const key = tabId ?? -1;
+  const pageUrl =
+    pageUrlHint ||
+    itemHint?.pageUrl ||
+    (await resolvePageUrl(tabId, "")) ||
+    "";
+
   const setProg = (p) => {
     hlsProgress.set(key, p);
+    // Also feed global job progress
+    emitDownloadProgress(
+      tabId,
+      p.percent || 10,
+      p.message || "받는 중…",
+      p.phase || "download"
+    );
     chrome.runtime
       .sendMessage({ type: "HLS_PROGRESS", tabId: key, progress: p })
       .catch(() => {});
@@ -1941,19 +2540,26 @@ async function runHlsDownload(tabId, url, preferQuality, filenameHint, itemHint)
 
   const result = await HLS.downloadAndMerge(url, {
     preferQuality: preferQuality || "best",
-    requestInit: { credentials: "include", cache: "no-store" },
+    pageUrl,
+    referer: pageUrl,
+    requestInit: {
+      credentials: "include",
+      cache: "no-store",
+      headers: pageUrl ? { Referer: pageUrl } : {}
+    },
+    allowPartial: true,
     onProgress: (p) => {
       let percent = 3;
       let message = "준비 중…";
       if (p.phase === "segments" && p.total) {
         percent = Math.round((p.current / p.total) * 88) + 5;
-        message = `받는 중… ${percent}%`;
+        message = p.message || `받는 중… ${percent}%`;
       } else if (p.phase === "merge") {
         percent = 94;
         message = "파일 만드는 중…";
       } else if (p.phase === "playlist") {
         percent = 5;
-        message = "준비 중…";
+        message = p.message || "준비 중…";
       }
       setProg({ ...p, percent, message });
     }
@@ -2033,10 +2639,11 @@ async function pageDownloadAllFrames(tabId, payload) {
 async function downloadSmart(tabId, url, filename, preferQuality, mediaType, itemHint, options = {}) {
   if (!url) throw new Error("받을 주소가 없습니다");
   const errors = [];
+  const jid = options.jobId || currentJobContext;
   const pageUrl =
     options.pageUrl || itemHint?.pageUrl || (await resolvePageUrl(tabId, ""));
 
-  emitDownloadProgress(tabId, 3, "시작…", "start");
+  emitDownloadProgress(tabId, 3, "시작…", "start", jid);
 
   // YouTube / TikTok → local yt-dlp helper (primary)
   const forceHelper =
@@ -2053,7 +2660,8 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
         url,
         pageUrl || url,
         filename,
-        preferQuality
+        preferQuality,
+        jid
       );
     } catch (e) {
       // For YT/TT do not fall through to broken browser paths unless helper said optional
@@ -2077,12 +2685,12 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
       workType = "stream";
       workItem = alt;
       filename = filename || alt.filename || filename;
-      emitDownloadProgress(tabId, 5, "스트림으로 전환…");
+      emitDownloadProgress(tabId, 5, "스트림으로 전환…", "download", jid);
     }
   }
 
   if (workUrl.startsWith("blob:")) {
-    emitDownloadProgress(tabId, 10, "버퍼 추출 중…");
+    emitDownloadProgress(tabId, 10, "버퍼 추출 중…", "download", jid);
     const pageResult = await pageDownloadAllFrames(tabId, {
       url: workUrl,
       filename,
@@ -2095,7 +2703,7 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
       pageResult.downloadId != null &&
       (pageResult.size || 0) >= 100_000
     ) {
-      emitDownloadProgress(tabId, 100, "저장 완료", "done");
+      emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
       return pageResult;
     }
     throw new Error(
@@ -2106,11 +2714,27 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
   const hls = isRealHls(workUrl, workType);
 
   if (hls) {
-    emitDownloadProgress(tabId, 6, "받는 중…", "playlist");
-    try {
+    emitDownloadProgress(tabId, 6, "스트림 받는 중…", "playlist", jid);
+    // Prefer page-context first on sites that often 403 extension SW fetches
+    // (page has real cookies + referer of the player).
+    const tryPageFirst = /surrit|javplayer|missav|njav|jable|avgle|hanime|hls|cdn/i.test(
+      workUrl + pageUrl
+    );
+
+    const runSwHls = async () => {
       const result = await withTimeout(
-        withTabReferer(tabId, () =>
-          runHlsDownload(tabId, workUrl, preferQuality, filename, workItem)
+        withTabReferer(
+          tabId,
+          (resolvedPage) =>
+            runHlsDownload(
+              tabId,
+              workUrl,
+              preferQuality,
+              filename,
+              workItem,
+              resolvedPage || pageUrl
+            ),
+          pageUrl
         ),
         40 * 60 * 1000,
         "다운로드 시간 초과"
@@ -2119,47 +2743,77 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
       if (result.downloadId == null) {
         throw new Error("파일이 저장되지 않았습니다");
       }
-      emitDownloadProgress(tabId, 100, "저장 완료", "done");
       return result;
-    } catch (e) {
-      errors.push(friendlyFetchError(e));
-    }
+    };
 
-    // Page fallback
-    emitDownloadProgress(tabId, 8, "다른 방법으로 시도…");
-    try {
+    const runPageHls = async () => {
+      emitDownloadProgress(tabId, 8, "페이지에서 조각 받는 중…", "download", jid);
       const pageResult = await pageDownloadAllFrames(tabId, {
         url: workUrl,
         filename,
         preferQuality,
         mediaType: "stream",
-        tabId
+        tabId,
+        pageUrl
       });
       if (
         pageResult?.ok &&
         pageResult.downloadId != null &&
         (pageResult.size || 0) >= 100_000
       ) {
-        emitDownloadProgress(tabId, 100, "저장 완료", "done");
         return pageResult;
       }
-      errors.push(pageResult?.error || "페이지 병합 실패");
-    } catch (e) {
-      errors.push(friendlyFetchError(e));
+      throw new Error(pageResult?.error || "페이지 병합 실패");
+    };
+
+    const order = tryPageFirst
+      ? [runPageHls, runSwHls]
+      : [runSwHls, runPageHls];
+
+    for (let i = 0; i < order.length; i++) {
+      try {
+        const result = await order[i]();
+        emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+        return result;
+      } catch (e) {
+        const msg = friendlyFetchError(e);
+        errors.push(msg);
+        // If 403 and we have another method, continue
+        if (i + 1 < order.length && /403|401|접근 거부|Segment HTTP/i.test(msg)) {
+          emitDownloadProgress(
+            tabId,
+            10,
+            "접근 제한 — 다른 방법으로 재시도…",
+            "download",
+            jid
+          );
+          continue;
+        }
+        if (i + 1 < order.length) {
+          emitDownloadProgress(tabId, 10, "다른 방법으로 시도…", "download", jid);
+          continue;
+        }
+      }
     }
 
+    const joined = errors.filter(Boolean).join(" / ");
+    if (/403|401|접근 거부|Segment HTTP/i.test(joined)) {
+      throw new Error(
+        "조각 접근이 거부되었습니다(403). 영상 페이지에서 재생을 시작한 직후 다시 받아 주세요"
+      );
+    }
     throw new Error(errors[0] || "다운로드 실패");
   }
 
   // Direct file
-  emitDownloadProgress(tabId, 15, "다운로드 시작…");
+  emitDownloadProgress(tabId, 15, "다운로드 시작…", "download", jid);
   try {
     const saved = await withTimeout(
       withTabReferer(tabId, () => downloadMedia(workUrl, filename)),
       90000,
       "다운로드 시간 초과"
     );
-    emitDownloadProgress(tabId, 100, "저장 완료", "done");
+    emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
     return { ok: true, ...saved, method: "chrome-downloads" };
   } catch (e) {
     errors.push(e?.message || String(e));
@@ -2173,7 +2827,7 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
     tabId
   });
   if (pageResult?.ok && pageResult.downloadId != null) {
-    emitDownloadProgress(tabId, 100, "저장 완료", "done");
+    emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
     return pageResult;
   }
   throw new Error(errors[0] || pageResult?.error || "다운로드 실패");
@@ -2322,7 +2976,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case "DOWNLOAD_PAGE": {
-      // Download by page URL (YouTube/TikTok) — from current tab or pasted link
+      // Download by page URL (YouTube/TikTok) — survives page leave / popup close
       const tid = msg.tabId ?? tabId;
       const pageUrl = msg.pageUrl || msg.url;
       if (!pageUrl) {
@@ -2333,35 +2987,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: "http(s) 링크만 가능합니다" });
         break;
       }
-      const keep = startKeepAlive();
       const fname = safeDownloadName(
         msg.filename ||
           resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
         "video/mp4"
       );
-      downloadViaYtDlp(tid, pageUrl, pageUrl, fname, msg.preferQuality || "best")
-        .then((r) => {
-          stopKeepAlive(keep);
-          // TikTok direct / helper success may omit chrome downloadId
+      return runTrackedDownload(
+        {
+          tabId: tid,
+          title: msg.title || fname,
+          pageUrl,
+          filename: fname
+        },
+        async (jobId) => {
+          const r = await downloadViaYtDlp(
+            tid,
+            pageUrl,
+            pageUrl,
+            fname,
+            msg.preferQuality || "best",
+            jobId
+          );
           if (r?.ok === false) {
-            sendResponse({ ok: false, error: r.error || "다운로드 실패" });
-            return;
+            throw new Error(r.error || "다운로드 실패");
           }
-          if (r?.method?.startsWith("tiktok") || r?.ytdlp || r?.downloadId != null) {
-            sendResponse({
-              ok: true,
-              ...r,
-              filename: r.filename || fname
-            });
-            return;
-          }
-          sendResponse({ ok: true, ...r, filename: r.filename || fname });
-        })
-        .catch((err) => {
-          stopKeepAlive(keep);
-          sendResponse({ ok: false, error: String(err.message || err) });
-        });
-      return true;
+          return { ...r, filename: r.filename || fname };
+        },
+        sendResponse
+      );
+    }
+    case "GET_ACTIVE_DOWNLOADS": {
+      sendResponse({ ok: true, jobs: listActiveDownloads() });
+      break;
+    }
+    case "GET_DOWNLOAD_PROGRESS": {
+      const jobs = listActiveDownloads();
+      const running = jobs.find((j) => j.status === "running") || jobs[0] || null;
+      const prog = hlsProgress.get(-1) || (msg.tabId != null ? hlsProgress.get(msg.tabId) : null);
+      sendResponse({
+        ok: true,
+        jobs,
+        job: running,
+        progress: prog || null
+      });
+      break;
     }
     case "CLEAR_MEDIA": {
       if (msg.tabId != null) {
@@ -2372,8 +3041,35 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.11.1" });
+      sendResponse({ ok: true, version: "1.12.5" });
       break;
+    case "DOWNLOAD_CURRENT_PAGE": {
+      const tid = msg.tabId ?? tabId;
+      const pageUrl = msg.pageUrl || msg.url;
+      const fname = safeDownloadName(
+        msg.filename ||
+          resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
+        "video/mp4"
+      );
+      return runTrackedDownload(
+        {
+          tabId: tid,
+          title: msg.title || fname,
+          pageUrl,
+          filename: fname
+        },
+        async (jobId) => {
+          const r = await downloadPageFromUi(
+            tid,
+            pageUrl,
+            msg.preferQuality || "best",
+            jobId
+          );
+          return { ...r, filename: r?.filename || fname };
+        },
+        sendResponse
+      );
+    }
     case "PROBE_HLS": {
       const tid = msg.tabId ?? tabId;
       const url = msg.url;
@@ -2406,55 +3102,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         item?.type ||
         (isHlsUrl(url) || msg.type === "DOWNLOAD_HLS" ? "stream" : "video");
 
-      const keep = setInterval(() => {
-        try {
-          chrome.runtime.getPlatformInfo(() => {});
-        } catch {
-          /* ignore */
-        }
-      }, 4000);
-
       const preferYtDlp =
         msg.preferYtDlp === true ||
         item?.isSiteDownload ||
         needsYtDlpHelper(url, msg.pageUrl || item?.pageUrl);
 
-      downloadSmart(tid, url, fname, msg.preferQuality || "best", mediaType, item, {
-        pageUrl: msg.pageUrl || item?.pageUrl,
-        preferYtDlp
-      })
-        .then((r) => {
-          clearInterval(keep);
-          // yt-dlp writes files itself — no chrome.downloads id
+      return runTrackedDownload(
+        {
+          tabId: tid,
+          title: msg.title || item?.title || fname,
+          pageUrl: msg.pageUrl || item?.pageUrl || url,
+          filename: fname
+        },
+        async (jobId) => {
+          const r = await downloadSmart(
+            tid,
+            url,
+            fname,
+            msg.preferQuality || "best",
+            mediaType,
+            item,
+            {
+              pageUrl: msg.pageUrl || item?.pageUrl,
+              preferYtDlp,
+              jobId
+            }
+          );
           if (r?.method === "yt-dlp" || r?.ytdlp) {
-            sendResponse({
-              ok: true,
-              ...r,
-              filename: r.filename || fname
-            });
-            return;
+            return { ...r, filename: r.filename || fname };
           }
-          // Browser path requires a real chrome.downloads id
           if (r == null || r.downloadId == null) {
-            sendResponse({
-              ok: false,
-              error:
-                r?.error ||
+            throw new Error(
+              r?.error ||
                 "파일이 저장되지 않았습니다. chrome://downloads 를 확인해 주세요"
-            });
-            return;
+            );
           }
-          sendResponse({
-            ok: true,
-            ...r,
-            filename: r.filename || fname
-          });
-        })
-        .catch((err) => {
-          clearInterval(keep);
-          sendResponse({ ok: false, error: String(err.message || err) });
-        });
-      return true;
+          return { ...r, filename: r.filename || fname };
+        },
+        sendResponse
+      );
     }
     case "VIDEO_CHUNK": {
       try {
@@ -2537,4 +3223,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("keepalive", { periodInMinutes: 4.5 });
 chrome.alarms.onAlarm.addListener(() => {});
 
-console.log("[VideoDownloader] ready v1.11.1");
+console.log("[VideoDownloader] ready v1.12.1");

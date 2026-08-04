@@ -26,10 +26,31 @@
     <span class="helper-text" id="helperText">도우미 확인 중…</span>
   </div>
 
+  <!-- Multi-download queue: shows every concurrent job -->
+  <section id="dlQueue" class="dl-queue hidden" aria-live="polite">
+    <div class="dl-queue-header">
+      <div class="dl-queue-title-row">
+        <span class="dl-queue-icon" aria-hidden="true">↓</span>
+        <span id="dlQueueTitle">받는 중 0개</span>
+        <span id="dlQueueBadge" class="dl-queue-badge hidden">0</span>
+      </div>
+      <span id="dlQueueSub" class="dl-queue-sub">동시에 받을 수 있어요</span>
+    </div>
+    <div id="dlQueueList" class="dl-queue-list"></div>
+  </section>
+
+  <!-- Legacy single bar kept for quick flashes; usually hidden when queue is used -->
   <div id="progress" class="progress hidden">
     <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
     <p class="progress-text" id="progressText">받는 중…</p>
   </div>
+
+  <section class="quick-box hidden" id="quickBox">
+    <button type="button" id="btnThisPage" class="btn primary btn-this-page">
+      이 페이지 영상 받기
+    </button>
+    <p class="quick-hint" id="quickHint">현재 탭 영상을 바로 저장합니다</p>
+  </section>
 
   <section class="link-box" id="linkBox">
     <label class="link-label" for="linkInput">영상 링크 붙여넣기</label>
@@ -44,7 +65,7 @@
       />
       <button type="button" id="btnLinkDl" class="btn primary link-btn">받기</button>
     </div>
-    <p class="link-hint">공유 링크를 붙여 넣으면 바로 받을 수 있습니다. (인스타는 로그인 권장)</p>
+    <p class="link-hint">공유 링크를 붙여 넣거나, 지원 사이트에서는 위 큰 버튼을 쓰세요</p>
   </section>
 
   <main id="list" class="list">
@@ -56,7 +77,7 @@
   </main>
 
   <footer class="footer">
-    <p class="note">저장 위치: 다운로드/VideoDownloader</p>
+    <p class="note">저장: 다운로드/VideoDownloader · 여러 개 동시 받기 · 페이지 이동 OK</p>
   </footer>
 
   <script src="popup.js"></script>

@@ -211,11 +211,20 @@
     }
     onProgress?.({ phase: "playlist", percent: 5, message: "재생목록 분석 중…" });
 
+    // Page origin as Referer — critical to avoid Segment HTTP 403 on hotlink CDNs
+    const pageUrl = location.href || "";
     const result = await withTimeout(
       HLS.downloadAndMerge(url, {
         preferQuality: preferQuality || "best",
+        pageUrl,
+        referer: pageUrl,
         // Do not set mode:"cors" — causes Failed to fetch on many CDNs in CS
-        requestInit: { credentials: "include", cache: "no-store" },
+        requestInit: {
+          credentials: "include",
+          cache: "no-store",
+          headers: pageUrl ? { Referer: pageUrl } : {}
+        },
+        allowPartial: true,
         onProgress: (p) => {
           let percent = 5;
           if (p.phase === "segments" && p.total) {

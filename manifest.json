@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.11.1",
-  "description": "페이지 영상·HLS + YouTube/TikTok/Instagram 다운로드",
+  "version": "1.12.5",
+  "description": "페이지 영상·HLS + YouTube/TikTok/Instagram · 동시 큐 · 403 재시도",
   "permissions": [
     "downloads",
     "storage",
@@ -21,6 +21,15 @@
   ],
   "background": {
     "service_worker": "src/background.js"
+  },
+  "commands": {
+    "download-current-page": {
+      "suggested_key": {
+        "default": "Alt+Shift+D",
+        "mac": "Alt+Shift+D"
+      },
+      "description": "현재 탭 영상 다운로드"
+    }
   },
   "action": {
     "default_popup": "src/popup.html",
