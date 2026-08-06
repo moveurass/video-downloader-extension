@@ -437,13 +437,22 @@ function ytdlpFilenameHint(filename, title) {
   return undefined; // yt-dlp %(title)s
 }
 
-async function ytdlpExtraFromSettings(pageUrl) {
+/**
+ * @param {string} pageUrl
+ * @param {{ mediaMode?: string, saveThumbnail?: boolean }} [force]
+ */
+async function ytdlpExtraFromSettings(pageUrl, force = {}) {
   const s = await UVD.getSettings();
+  const mediaMode = force.mediaMode || s.mediaMode || "video";
+  const saveThumb =
+    force.saveThumbnail !== undefined
+      ? force.saveThumbnail
+      : s.saveThumbnail !== false;
   return {
-    audioOnly: s.mediaMode === "audio",
-    writeSubs: s.mediaMode === "video_subs",
-    writeThumbnail: s.saveThumbnail !== false && s.mediaMode !== "audio",
-    mediaMode: s.mediaMode,
+    audioOnly: mediaMode === "audio",
+    writeSubs: mediaMode === "video_subs",
+    writeThumbnail: saveThumb && mediaMode !== "audio",
+    mediaMode,
     yesPlaylist: UVD.isPlaylistUrl(pageUrl),
     subfolder: s.subfolder
   };
@@ -1738,7 +1747,14 @@ async function downloadDirectMediaUrl(tabId, mediaUrl, pageUrl, filename) {
  * TikTok: prefer link-based helper (SnapTik style). Avoid scraping CDN covers/images.
  * Page hooks are disabled on TikTok so the site player keeps working.
  */
-async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = null) {
+async function downloadTikTok(
+  tabId,
+  pageUrl,
+  filename,
+  preferQuality,
+  jobId = null,
+  forceOpts = {}
+) {
   const jid = jobId || currentJobContext;
   const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
   if (!targetPage) throw new Error("TikTok 페이지 주소가 없습니다");
@@ -1767,7 +1783,7 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = n
   }
 
   try {
-    const extra = await ytdlpExtraFromSettings(targetPage);
+    const extra = await ytdlpExtraFromSettings(targetPage, forceOpts);
     const nameHint = ytdlpFilenameHint(filename);
     const result = await YtDlp.downloadAndWait(
       {
@@ -1818,19 +1834,27 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = n
   }
 }
 
-async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jobId = null) {
+async function downloadViaYtDlp(
+  tabId,
+  url,
+  pageUrl,
+  filename,
+  preferQuality,
+  jobId = null,
+  forceOpts = {}
+) {
   const jid = jobId || currentJobContext;
   const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : url;
   const kind = siteKind(url, targetPage);
 
   // Dedicated TikTok pipeline
   if (kind === "tiktok") {
-    return downloadTikTok(tabId, targetPage, filename, preferQuality, jid);
+    return downloadTikTok(tabId, targetPage, filename, preferQuality, jid, forceOpts);
   }
 
   // Instagram: try captured CDN video first, then yt-dlp + cookies
   if (kind === "instagram") {
-    return downloadInstagram(tabId, targetPage, filename, preferQuality, jid);
+    return downloadInstagram(tabId, targetPage, filename, preferQuality, jid, forceOpts);
   }
 
   const available = await YtDlp.available();
@@ -1844,7 +1868,7 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jo
   emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start", jid);
 
   const cookieHeader = await getCookieHeaderForUrl(targetPage);
-  const extra = await ytdlpExtraFromSettings(targetPage);
+  const extra = await ytdlpExtraFromSettings(targetPage, forceOpts);
   if (extra.audioOnly) {
     emitDownloadProgress(tabId, 5, "오디오만 추출 중…", "start", jid);
   } else if (extra.writeSubs) {
@@ -1892,7 +1916,14 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jo
  * Instagram: yt-dlp + browser cookies (login required for many posts).
  * Also try direct CDN mp4 captured while watching.
  */
-async function downloadInstagram(tabId, pageUrl, filename, preferQuality, jobId = null) {
+async function downloadInstagram(
+  tabId,
+  pageUrl,
+  filename,
+  preferQuality,
+  jobId = null,
+  forceOpts = {}
+) {
   const jid = jobId || currentJobContext;
   let targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
   targetPage = normalizeInstagramUrl(targetPage);
@@ -1974,7 +2005,7 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality, jobId 
   );
 
   try {
-    const extra = await ytdlpExtraFromSettings(targetPage);
+    const extra = await ytdlpExtraFromSettings(targetPage, forceOpts);
     const nameHint = ytdlpFilenameHint(filename);
     const result = await YtDlp.downloadAndWait(
       {
@@ -2203,12 +2234,29 @@ chrome.runtime.onInstalled.addListener(setupContextMenus);
 chrome.runtime.onStartup.addListener(setupContextMenus);
 setupContextMenus();
 
-async function downloadPageFromUi(tabId, pageUrl, preferQuality = "best", jobId = null) {
+/**
+ * @param {number} tabId
+ * @param {string} pageUrl
+ * @param {string} [preferQuality]
+ * @param {string|null} [jobId]
+ * @param {{ mediaMode?: string, preferQuality?: string }} [forceOpts] one-shot overrides (shortcuts)
+ */
+async function downloadPageFromUi(
+  tabId,
+  pageUrl,
+  preferQuality = "best",
+  jobId = null,
+  forceOpts = {}
+) {
   const jid = jobId || currentJobContext;
   if (!pageUrl || !/^https?:/i.test(pageUrl)) {
     throw new Error("받을 페이지 주소가 없습니다");
   }
   const kind = siteKind(pageUrl, pageUrl);
+  const settings = await UVD.getSettings();
+  const mediaMode = forceOpts.mediaMode || settings.mediaMode || "video";
+  const quality =
+    forceOpts.preferQuality || preferQuality || "best";
 
   // Prefer tab title / meta (readable). Never force YouTube_id style names.
   let fname = "";
@@ -2225,9 +2273,9 @@ async function downloadPageFromUi(tabId, pageUrl, preferQuality = "best", jobId 
     }
     fname = await buildSaveFilename({
       title: tabTitle,
-      quality: preferQuality,
+      quality,
       pageUrl,
-      mediaMode: (await UVD.getSettings()).mediaMode
+      mediaMode
     });
   } catch {
     fname = "";
@@ -2236,7 +2284,15 @@ async function downloadPageFromUi(tabId, pageUrl, preferQuality = "best", jobId 
 
   // Social sites → dedicated path; others → scan + best item
   if (kind) {
-    return downloadViaYtDlp(tabId, pageUrl, pageUrl, fname || undefined, preferQuality, jid);
+    return downloadViaYtDlp(
+      tabId,
+      pageUrl,
+      pageUrl,
+      fname || undefined,
+      quality,
+      jid,
+      { mediaMode }
+    );
   }
 
   try {
@@ -2254,10 +2310,10 @@ async function downloadPageFromUi(tabId, pageUrl, preferQuality = "best", jobId 
     tabId,
     best.url,
     best.filename || fname,
-    preferQuality,
-    best.type || "video",
+    quality,
+    mediaMode === "audio" ? "audio" : best.type || "video",
     best,
-    { pageUrl, jobId: jid }
+    { pageUrl, jobId: jid, forceMediaMode: mediaMode }
   );
 }
 
@@ -2398,23 +2454,59 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-// Keyboard shortcut: Alt+Shift+D → download current tab
+// Keyboard shortcuts (popup closed — runs in service worker)
+// Alt+Shift+D 현재 탭 영상
+// Alt+Shift+A 오디오만
+// Alt+Shift+B 최고 화질
 chrome.commands?.onCommand?.addListener(async (command) => {
-  if (command !== "download-current-page") return;
+  const map = {
+    "download-current-page": { label: "영상" },
+    "download-audio-only": { mediaMode: "audio", preferQuality: "best", label: "오디오" },
+    "download-best-quality": { mediaMode: "video", preferQuality: "best", label: "최고 화질" }
+  };
+  const force = map[command];
+  if (!force) return;
   try {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !tab.url) throw new Error("탭 없음");
+    const settings = await UVD.getSettings();
+    const quality =
+      force.preferQuality ||
+      UVD.qualityForSite(settings, tab.url) ||
+      "best";
+    const mediaMode = force.mediaMode || settings.mediaMode || "video";
+    const title =
+      Naming.cleanPageTitle(tab.title || "") || tab.title || force.label || "영상";
     await runTrackedDownloadAsync(
       {
         tabId: tab.id,
-        title: tab.title || tab.url,
+        title,
         pageUrl: tab.url,
-        filename: "video.mp4"
+        filename: "",
+        mediaMode,
+        quality,
+        thumbnail: tabMeta.get(tab.id)?.thumbnail || ""
       },
-      () => downloadPageFromUi(tab.id, tab.url, "best")
+      (jobId) =>
+        downloadPageFromUi(tab.id, tab.url, quality, jobId, {
+          mediaMode,
+          preferQuality: quality
+        })
     );
   } catch (e) {
-    console.warn("[UVD] command download", e);
+    console.warn("[UVD] command download", command, e);
+    try {
+      if (chrome.notifications?.create) {
+        chrome.notifications.create({
+          type: "basic",
+          iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+          title: "다운로드 실패",
+          message: String(e?.message || e).slice(0, 120)
+        });
+      }
+    } catch {
+      /* ignore */
+    }
   }
 });
 
@@ -3785,7 +3877,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.16.0" });
+      sendResponse({ ok: true, version: "1.17.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;

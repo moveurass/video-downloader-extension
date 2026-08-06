@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.16.0",
-  "description": "최근 파일 · 나중 받기 · 썸네일 저장",
+  "version": "1.17.0",
+  "description": "단축키 확장 · 컴팩트 모드 · 최근 파일 · 나중 받기",
   "permissions": [
     "downloads",
     "storage",
@@ -30,6 +30,20 @@
         "mac": "Alt+Shift+D"
       },
       "description": "현재 탭 영상 다운로드"
+    },
+    "download-audio-only": {
+      "suggested_key": {
+        "default": "Alt+Shift+A",
+        "mac": "Alt+Shift+A"
+      },
+      "description": "현재 탭 오디오만 다운로드"
+    },
+    "download-best-quality": {
+      "suggested_key": {
+        "default": "Alt+Shift+B",
+        "mac": "Alt+Shift+B"
+      },
+      "description": "현재 탭 최고 화질 다운로드"
     }
   },
   "action": {

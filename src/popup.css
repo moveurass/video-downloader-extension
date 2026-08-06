@@ -466,6 +466,153 @@ body {
   border-color: var(--muted);
 }
 
+/* ── Compact UI mode ──────────────────────────── */
+body.compact-ui .header {
+  padding: 8px 10px 6px;
+}
+
+body.compact-ui .logo {
+  width: 30px;
+  height: 30px;
+  font-size: 12px;
+}
+
+body.compact-ui h1 {
+  font-size: 13px;
+}
+
+body.compact-ui .tab {
+  padding: 5px 4px;
+  font-size: 11px;
+}
+
+body.compact-ui .helper-bar {
+  padding: 5px 10px;
+  font-size: 10px;
+}
+
+body.compact-ui .list {
+  padding: 6px 8px 2px;
+}
+
+body.compact-ui .card {
+  padding: 8px;
+  gap: 6px;
+}
+
+body.compact-ui .thumb {
+  flex: 0 0 64px !important;
+  width: 64px !important;
+  min-width: 64px !important;
+  max-width: 64px !important;
+  height: 36px !important;
+}
+
+body.compact-ui .name {
+  font-size: 12px;
+  -webkit-line-clamp: 1;
+}
+
+body.compact-ui .meta-grid {
+  display: none;
+}
+
+body.compact-ui .estimate-bar {
+  padding: 4px 6px;
+  font-size: 10px;
+  gap: 4px 8px;
+}
+
+body.compact-ui .quality-picker {
+  gap: 2px;
+}
+
+body.compact-ui .quality-label {
+  display: none;
+}
+
+body.compact-ui .q-chip {
+  padding: 3px 7px;
+  font-size: 10px;
+}
+
+body.compact-ui .card-details {
+  display: none;
+}
+
+body.compact-ui .mode-box {
+  padding: 4px 8px;
+}
+
+body.compact-ui .mode-chip {
+  padding: 4px 3px;
+  font-size: 10px;
+}
+
+body.compact-ui .link-box {
+  padding: 5px 8px 6px;
+}
+
+body.compact-ui .link-textarea {
+  min-height: 32px;
+  max-height: 52px;
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+body.compact-ui .recent-strip {
+  margin: 0 8px 6px;
+  padding: 5px 6px;
+}
+
+body.compact-ui .recent-item-title {
+  font-size: 10px;
+}
+
+body.compact-ui .dl-queue {
+  margin: 4px 8px 0;
+  max-height: 88px;
+  padding: 5px 6px;
+}
+
+body.compact-ui .dl-queue-list {
+  max-height: 48px;
+}
+
+body.compact-ui .footer {
+  padding: 4px 10px 6px;
+}
+
+body.compact-ui .clip-banner {
+  margin: 4px 8px 0;
+  padding: 5px 7px;
+}
+
+.shortcut-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.shortcut-list kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 10px;
+  font-family: inherit;
+  font-weight: 650;
+}
+
 .history-list {
   padding: 4px 10px 12px;
   display: flex;

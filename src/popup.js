@@ -1143,7 +1143,12 @@ async function loadSettings() {
     }
   }
   applyModeChips();
+  applyCompactUi();
   updateFooterNote();
+}
+
+function applyCompactUi() {
+  document.body.classList.toggle("compact-ui", uvdSettings.compactUi !== false);
 }
 
 function applyModeChips() {
@@ -1158,7 +1163,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.16`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.17`;
 }
 
 function fillSettingsForm() {
@@ -1184,6 +1189,8 @@ function fillSettingsForm() {
   if (warnDup) warnDup.checked = uvdSettings.warnDuplicates !== false;
   const saveThumb = $("#setSaveThumb");
   if (saveThumb) saveThumb.checked = uvdSettings.saveThumbnail !== false;
+  const compact = $("#setCompact");
+  if (compact) compact.checked = uvdSettings.compactUi !== false;
   const setSel = (id, val) => {
     const el = $(id);
     if (!el) return;
@@ -1232,6 +1239,7 @@ async function saveSettingsFromForm() {
     clipboardWatch: !!$("#setClipboard")?.checked,
     warnDuplicates: $("#setWarnDup")?.checked !== false,
     saveThumbnail: $("#setSaveThumb")?.checked !== false,
+    compactUi: $("#setCompact")?.checked !== false,
     qualityBySite: {
       default: $("#setQDefault")?.value || "best",
       youtube: $("#setQYoutube")?.value || "1080p",
@@ -1246,6 +1254,7 @@ async function saveSettingsFromForm() {
     });
     uvdSettings = res?.settings || patch;
     applyModeChips();
+    applyCompactUi();
     updateFooterNote();
     setupClipboardWatch();
     // Re-apply site quality to current video

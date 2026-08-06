@@ -26,7 +26,9 @@ const UVD = (() => {
       instagram: "best"
     },
     /** Save cover image as .jpg next to the video */
-    saveThumbnail: true
+    saveThumbnail: true,
+    /** Compact popup UI (less padding / meta, more CTA above fold) */
+    compactUi: true
   };
 
   const HISTORY_KEY = "uvdHistory";
@@ -76,6 +78,7 @@ const UVD = (() => {
     next.clipboardWatch = !!next.clipboardWatch;
     next.warnDuplicates = next.warnDuplicates !== false;
     next.saveThumbnail = next.saveThumbnail !== false;
+    next.compactUi = next.compactUi !== false;
     const qbs = next.qualityBySite && typeof next.qualityBySite === "object"
       ? next.qualityBySite
       : {};
