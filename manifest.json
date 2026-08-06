@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.12.5",
-  "description": "페이지 영상·HLS + YouTube/TikTok/Instagram · 동시 큐 · 403 재시도",
+  "version": "1.14.0",
+  "description": "완료 알림 · 용량 미리보기 · 클립보드 감시",
   "permissions": [
     "downloads",
     "storage",
@@ -13,6 +13,7 @@
     "alarms",
     "contextMenus",
     "cookies",
+    "notifications",
     "declarativeNetRequest",
     "declarativeNetRequestWithHostAccess"
   ],

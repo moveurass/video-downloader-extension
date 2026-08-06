@@ -21,65 +21,162 @@
     </div>
   </header>
 
+  <nav class="tabs" role="tablist">
+    <button type="button" class="tab active" data-tab="main" role="tab">받기</button>
+    <button type="button" class="tab" data-tab="history" role="tab">기록</button>
+    <button type="button" class="tab" data-tab="settings" role="tab">설정</button>
+  </nav>
+
   <div id="helperBar" class="helper-bar hidden">
     <span class="helper-dot" id="helperDot"></span>
     <span class="helper-text" id="helperText">도우미 확인 중…</span>
+    <button type="button" id="btnHelperFix" class="btn tiny hidden">도우미 안내</button>
   </div>
 
-  <!-- Multi-download queue: shows every concurrent job -->
-  <section id="dlQueue" class="dl-queue hidden" aria-live="polite">
-    <div class="dl-queue-header">
-      <div class="dl-queue-title-row">
-        <span class="dl-queue-icon" aria-hidden="true">↓</span>
-        <span id="dlQueueTitle">받는 중 0개</span>
-        <span id="dlQueueBadge" class="dl-queue-badge hidden">0</span>
+  <!-- ═══════ MAIN TAB ═══════ -->
+  <!-- Order: primary CTA (card/quick) first — no scroll needed to download -->
+  <div id="tab-main" class="tab-panel">
+    <section id="dlQueue" class="dl-queue hidden" aria-live="polite">
+      <div class="dl-queue-header">
+        <div class="dl-queue-title-row">
+          <span class="dl-queue-icon" aria-hidden="true">↓</span>
+          <span id="dlQueueTitle">받는 중 0개</span>
+          <span id="dlQueueBadge" class="dl-queue-badge hidden">0</span>
+        </div>
+        <span id="dlQueueSub" class="dl-queue-sub">동시에 받을 수 있어요</span>
       </div>
-      <span id="dlQueueSub" class="dl-queue-sub">동시에 받을 수 있어요</span>
-    </div>
-    <div id="dlQueueList" class="dl-queue-list"></div>
-  </section>
+      <div id="dlQueueList" class="dl-queue-list"></div>
+    </section>
 
-  <!-- Legacy single bar kept for quick flashes; usually hidden when queue is used -->
-  <div id="progress" class="progress hidden">
-    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
-    <p class="progress-text" id="progressText">받는 중…</p>
+    <div id="progress" class="progress hidden">
+      <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+      <p class="progress-text" id="progressText">받는 중…</p>
+    </div>
+
+    <!-- Clipboard suggestion (opt-in in settings) -->
+    <section id="clipBanner" class="clip-banner hidden">
+      <div class="clip-banner-text">
+        <span class="clip-banner-label">클립보드 링크</span>
+        <span id="clipBannerUrl" class="clip-banner-url">—</span>
+      </div>
+      <div class="clip-banner-actions">
+        <button type="button" id="btnClipApply" class="btn primary tiny">적용</button>
+        <button type="button" id="btnClipDismiss" class="btn ghost tiny">닫기</button>
+      </div>
+    </section>
+
+    <!-- Video card first so Download is above the fold -->
+    <main id="list" class="list">
+      <div class="empty" id="empty">
+        <div class="empty-icon">🎬</div>
+        <p>받을 영상이 없습니다.</p>
+        <p class="hint">페이지를 열거나 아래 링크를 붙여 넣으세요.</p>
+      </div>
+    </main>
+
+    <section class="quick-box hidden" id="quickBox">
+      <button type="button" id="btnThisPage" class="btn primary btn-this-page">
+        이 페이지 영상 받기
+      </button>
+      <p class="quick-hint" id="quickHint">현재 탭 영상을 바로 저장합니다</p>
+    </section>
+
+    <section class="mode-box compact" id="modeBox">
+      <div class="mode-chips" role="group" aria-label="받기 형식">
+        <button type="button" class="mode-chip active" data-mode="video">영상</button>
+        <button type="button" class="mode-chip" data-mode="audio">오디오</button>
+        <button type="button" class="mode-chip" data-mode="video_subs">+자막</button>
+      </div>
+    </section>
+
+    <section class="link-box compact" id="linkBox">
+      <div class="link-row">
+        <textarea
+          id="linkInput"
+          class="link-input link-textarea"
+          rows="2"
+          placeholder="링크 붙여넣기 (여러 줄 OK)"
+          spellcheck="false"
+          aria-label="영상 링크"
+        ></textarea>
+        <button type="button" id="btnLinkDl" class="btn primary link-btn">받기</button>
+      </div>
+      <div class="link-row link-row-actions">
+        <span id="linkCount" class="link-count">0개 링크</span>
+        <span class="link-hint inline">재생목록·여러 링크 지원</span>
+      </div>
+    </section>
   </div>
 
-  <section class="quick-box hidden" id="quickBox">
-    <button type="button" id="btnThisPage" class="btn primary btn-this-page">
-      이 페이지 영상 받기
-    </button>
-    <p class="quick-hint" id="quickHint">현재 탭 영상을 바로 저장합니다</p>
-  </section>
-
-  <section class="link-box" id="linkBox">
-    <label class="link-label" for="linkInput">영상 링크 붙여넣기</label>
-    <div class="link-row">
-      <input
-        id="linkInput"
-        class="link-input"
-        type="url"
-        placeholder="YouTube / TikTok / Instagram 링크"
-        spellcheck="false"
-        autocomplete="off"
-      />
-      <button type="button" id="btnLinkDl" class="btn primary link-btn">받기</button>
+  <!-- ═══════ HISTORY TAB ═══════ -->
+  <div id="tab-history" class="tab-panel hidden">
+    <div class="panel-toolbar">
+      <span class="panel-title">최근 다운로드</span>
+      <button type="button" id="btnClearHistory" class="btn ghost tiny">비우기</button>
     </div>
-    <p class="link-hint">공유 링크를 붙여 넣거나, 지원 사이트에서는 위 큰 버튼을 쓰세요</p>
-  </section>
-
-  <main id="list" class="list">
-    <div class="empty" id="empty">
-      <div class="empty-icon">🎬</div>
-      <p>받을 영상이 없습니다.</p>
-      <p class="hint">페이지를 열거나 위에 링크를 붙여 넣으세요.</p>
+    <div id="historyList" class="history-list">
+      <div class="empty small">
+        <p>기록이 없습니다.</p>
+      </div>
     </div>
-  </main>
+  </div>
+
+  <!-- ═══════ SETTINGS TAB ═══════ -->
+  <div id="tab-settings" class="tab-panel hidden">
+    <div class="settings-form">
+      <label class="field">
+        <span class="field-label">저장 폴더 (다운로드 아래)</span>
+        <input id="setSubfolder" class="field-input" type="text" placeholder="VideoDownloader" />
+        <span class="field-hint">예: VideoDownloader 또는 VideoDownloader/YouTube</span>
+      </label>
+      <label class="field">
+        <span class="field-label">파일명 템플릿</span>
+        <input
+          id="setTemplate"
+          class="field-input"
+          type="text"
+          placeholder="{title}_{quality}"
+        />
+        <span class="field-hint">{title} {quality} {site} {date} {mode}</span>
+      </label>
+      <label class="field">
+        <span class="field-label">미리보기</span>
+        <code id="setPreview" class="field-preview">영상_1080p.mp4</code>
+      </label>
+      <label class="field">
+        <span class="field-label">기본 받기 형식</span>
+        <select id="setMediaMode" class="field-input">
+          <option value="video">영상 (MP4)</option>
+          <option value="audio">오디오만 (MP3)</option>
+          <option value="video_subs">영상 + 자막</option>
+        </select>
+      </label>
+      <label class="field check-field">
+        <input type="checkbox" id="setNotify" checked />
+        <span>
+          <span class="field-label">완료 시 알림</span>
+          <span class="field-hint">팝업을 닫아도 OS 알림 · 클릭 시 폴더</span>
+        </span>
+      </label>
+      <label class="field check-field">
+        <input type="checkbox" id="setClipboard" />
+        <span>
+          <span class="field-label">클립보드 링크 감시</span>
+          <span class="field-hint">팝업이 열린 동안 복사한 YT/TT/IG 링크 제안 (선택)</span>
+        </span>
+      </label>
+      <button type="button" id="btnSaveSettings" class="btn primary settings-save">
+        설정 저장
+      </button>
+      <p class="field-hint center">자막·오디오는 YouTube 등 도우미 사이트에서 가장 잘 됩니다</p>
+    </div>
+  </div>
 
   <footer class="footer">
-    <p class="note">저장: 다운로드/VideoDownloader · 여러 개 동시 받기 · 페이지 이동 OK</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.14</p>
   </footer>
 
+  <script src="uvd-common.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

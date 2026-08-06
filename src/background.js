@@ -2,7 +2,7 @@
  * Universal Video Downloader — Background Service Worker
  * Detect media, merge HLS, save via chrome.downloads (verified complete).
  */
-importScripts("hls-downloader.js", "naming.js", "ytdlp.js");
+importScripts("uvd-common.js", "hls-downloader.js", "naming.js", "ytdlp.js");
 
 /** @type {Map<number, Map<string, object>>} */
 const tabMedia = new Map();
@@ -27,6 +27,10 @@ let jobSeq = 0;
 /** Refcounted SW keep-alive while any download runs */
 let keepAliveRefs = 0;
 let keepAliveTimer = null;
+const BG_MAX_CONCURRENT_STARTS = 6;
+function MAX_CONCURRENT_STARTS_BG() {
+  return BG_MAX_CONCURRENT_STARTS;
+}
 /**
  * Async job context for progress routing when several downloads run at once.
  * Without this, emitDownloadProgress(tabId) would update the wrong job.
@@ -349,6 +353,7 @@ function friendlyFetchError(err) {
 
 function publicJob(job) {
   if (!job) return null;
+  const errMeta = job.error ? UVD.classifyError(job.error) : null;
   return {
     id: job.id,
     tabId: job.tabId,
@@ -360,6 +365,12 @@ function publicJob(job) {
     message: job.message,
     phase: job.phase,
     error: job.error,
+    errorCode: job.errorCode || errMeta?.code || null,
+    errorLabel: errMeta?.label || null,
+    errorHint: errMeta?.hint || null,
+    errorActions: errMeta?.actions || [],
+    mediaMode: job.mediaMode || "video",
+    quality: job.quality || "",
     result: job.result
       ? {
           ok: job.result.ok,
@@ -373,6 +384,44 @@ function publicJob(job) {
       : null,
     startedAt: job.startedAt,
     updatedAt: job.updatedAt
+  };
+}
+
+/** Chrome downloads relative path under user Downloads */
+async function relDownloadPath(filename) {
+  const s = await UVD.getSettings();
+  return UVD.downloadRelPath(s.subfolder, filename);
+}
+
+/** Build human filename from template + settings */
+async function buildSaveFilename({
+  title,
+  quality,
+  pageUrl,
+  mediaType,
+  mediaMode
+} = {}) {
+  const s = await UVD.getSettings();
+  const mode = mediaMode || s.mediaMode || "video";
+  const base = UVD.applyFilenameTemplate(s.filenameTemplate, {
+    title: title || "영상",
+    quality: quality || "",
+    site: UVD.siteFromUrl(pageUrl || ""),
+    mediaMode: mode
+  });
+  const ext =
+    mode === "audio" || mediaType === "audio" ? ".mp3" : ".mp4";
+  return safeDownloadName(base.endsWith(ext) ? base : base + ext, mode === "audio" ? "audio/mp3" : "video/mp4");
+}
+
+async function ytdlpExtraFromSettings(pageUrl) {
+  const s = await UVD.getSettings();
+  return {
+    audioOnly: s.mediaMode === "audio",
+    writeSubs: s.mediaMode === "video_subs",
+    mediaMode: s.mediaMode,
+    yesPlaylist: UVD.isPlaylistUrl(pageUrl),
+    subfolder: s.subfolder
   };
 }
 
@@ -415,7 +464,14 @@ function broadcastJob(job) {
     .catch(() => {});
 }
 
-function createDownloadJob({ tabId, title, pageUrl, filename } = {}) {
+function createDownloadJob({
+  tabId,
+  title,
+  pageUrl,
+  filename,
+  mediaMode,
+  quality
+} = {}) {
   const id = `dl_${Date.now()}_${++jobSeq}`;
   const job = {
     id,
@@ -423,16 +479,20 @@ function createDownloadJob({ tabId, title, pageUrl, filename } = {}) {
     title: title || filename || "영상",
     pageUrl: pageUrl || "",
     filename: filename || "",
+    mediaMode: mediaMode || "video",
+    quality: quality || "",
     status: "running",
     percent: 2,
     message: "백그라운드에서 받는 중…",
     phase: "start",
     error: null,
+    errorCode: null,
     result: null,
     startedAt: Date.now(),
     updatedAt: Date.now()
   };
   activeDownloads.set(id, job);
+  // Keep latest job id for tab (UI only); progress always uses explicit jobId
   if (tabId != null && tabId >= 0) tabJobMap.set(tabId, id);
   persistJobs();
   broadcastJob(job);
@@ -440,28 +500,45 @@ function createDownloadJob({ tabId, title, pageUrl, filename } = {}) {
   return id;
 }
 
-function findRunningJob(tabId) {
-  // Prefer explicit async context (correct under concurrent downloads)
-  if (currentJobContext) {
+function countRunningJobs() {
+  let n = 0;
+  for (const j of activeDownloads.values()) {
+    if (j.status === "running") n += 1;
+  }
+  return n;
+}
+
+/**
+ * Resolve which job a progress event belongs to.
+ * When several downloads run, NEVER guess — only explicit jobId is safe
+ * (currentJobContext breaks across await boundaries).
+ */
+function findRunningJob(tabId, explicitJobId = null) {
+  if (explicitJobId) {
+    const j = activeDownloads.get(explicitJobId);
+    if (j) return j;
+  }
+  const running = countRunningJobs();
+  // Only use ambient context when a single job is active
+  if (running <= 1 && currentJobContext) {
     const ctx = activeDownloads.get(currentJobContext);
     if (ctx?.status === "running") return ctx;
   }
+  if (running === 1) {
+    for (const j of activeDownloads.values()) {
+      if (j.status === "running") return j;
+    }
+  }
+  // Multiple jobs: do not map by tabId (many jobs share one tab)
+  if (running > 1) return null;
   if (tabId != null && tabId >= 0) {
     const mapped = tabJobMap.get(tabId);
     if (mapped) {
       const j = activeDownloads.get(mapped);
       if (j?.status === "running") return j;
     }
-    for (const j of activeDownloads.values()) {
-      if (j.status === "running" && j.tabId === tabId) return j;
-    }
   }
-  let latest = null;
-  for (const j of activeDownloads.values()) {
-    if (j.status !== "running") continue;
-    if (!latest || j.startedAt > latest.startedAt) latest = j;
-  }
-  return latest;
+  return null;
 }
 
 async function withJobContext(jobId, fn) {
@@ -470,14 +547,45 @@ async function withJobContext(jobId, fn) {
   try {
     return await fn();
   } finally {
-    currentJobContext = prev;
+    // Only restore if we still own the slot (another job may have nested)
+    if (currentJobContext === jobId) currentJobContext = prev;
+    else currentJobContext = prev;
   }
+}
+
+function phaseRank(phase) {
+  const p = String(phase || "");
+  if (p === "start" || p === "playlist") return 1;
+  if (p === "download" || p === "segments" || p === "running") return 2;
+  if (p === "merge" || p === "save") return 3;
+  if (p === "done") return 4;
+  if (p === "error") return 4;
+  return 2;
 }
 
 function updateDownloadJob(jobId, patch) {
   const job = activeDownloads.get(jobId);
   if (!job) return null;
-  Object.assign(job, patch, { updatedAt: Date.now() });
+  if (job.status !== "running" && patch.status === "running") {
+    // ignore late progress after finish
+    return job;
+  }
+  const next = { ...patch };
+  // Monotonic percent while running — prevents up/down thrash from mixed events
+  if (
+    job.status === "running" &&
+    typeof next.percent === "number" &&
+    typeof job.percent === "number"
+  ) {
+    const sameOrEarlierPhase =
+      phaseRank(next.phase || job.phase) <= phaseRank(job.phase);
+    if (sameOrEarlierPhase && next.percent < job.percent) {
+      next.percent = job.percent;
+    }
+    // Cap tiny noise: don't jump backwards more than 0 (already clamped)
+    next.percent = Math.max(0, Math.min(100, next.percent));
+  }
+  Object.assign(job, next, { updatedAt: Date.now() });
   persistJobs();
   broadcastJob(job);
   updateDownloadBadge();
@@ -493,6 +601,8 @@ function finishDownloadJob(jobId, result, error) {
     job.error = String(error?.message || error);
     job.message = job.error;
     job.percent = job.percent || 0;
+    const meta = UVD.classifyError(job.error);
+    job.errorCode = meta.code;
   } else {
     job.status = "done";
     job.phase = "done";
@@ -500,6 +610,7 @@ function finishDownloadJob(jobId, result, error) {
     job.message = "저장 완료";
     job.result = result || null;
     job.error = null;
+    job.errorCode = null;
   }
   job.updatedAt = Date.now();
   // Detach from tab map so navigation cleanup is harmless
@@ -509,6 +620,34 @@ function finishDownloadJob(jobId, result, error) {
   persistJobs();
   broadcastJob(job);
   updateDownloadBadge();
+
+  // Persist history (done + failed)
+  try {
+    UVD.appendHistory({
+      id: `h_${job.id}`,
+      title: job.title,
+      filename: result?.filename || job.filename,
+      url: job.pageUrl,
+      pageUrl: job.pageUrl,
+      path: result?.path || result?.outDir || "",
+      downloadId: result?.downloadId ?? null,
+      status: job.status,
+      error: job.error,
+      errorCode: job.errorCode,
+      size: result?.size || 0,
+      method: result?.method || "",
+      quality: job.quality || "",
+      mediaMode: job.mediaMode || "video",
+      site: UVD.siteFromUrl(job.pageUrl || ""),
+      at: Date.now()
+    }).catch(() => {});
+  } catch {
+    /* ignore */
+  }
+
+  // OS notification (works even when popup is closed)
+  notifyDownloadFinished(job, result, error).catch(() => {});
+
   // Keep finished job briefly so reopened popup can show result
   setTimeout(() => {
     const cur = activeDownloads.get(jobId);
@@ -519,6 +658,80 @@ function finishDownloadJob(jobId, result, error) {
       updateDownloadBadge();
     }
   }, 120_000);
+}
+
+/** Map notificationId → { downloadId, path } for click-to-open */
+const notifActions = new Map();
+
+async function notifyDownloadFinished(job, result, error) {
+  try {
+    const settings = await UVD.getSettings();
+    if (settings.notifyOnComplete === false) return;
+    if (!chrome.notifications?.create) return;
+
+    const title = (job?.title || job?.filename || "영상").slice(0, 60);
+    const ok = !error && job?.status === "done";
+    const notifId = `uvd_${job?.id || Date.now()}`;
+    const path = result?.path || result?.outDir || "";
+    const downloadId = result?.downloadId ?? null;
+    const size = result?.size || 0;
+    const sizeTxt =
+      size >= 1024 * 1024
+        ? `${(size / 1024 / 1024).toFixed(1)}MB`
+        : size > 0
+          ? `${Math.round(size / 1024)}KB`
+          : "";
+
+    notifActions.set(notifId, { downloadId, path, pageUrl: job?.pageUrl || "" });
+    // prune old
+    if (notifActions.size > 40) {
+      const first = notifActions.keys().next().value;
+      notifActions.delete(first);
+    }
+
+    await chrome.notifications.create(notifId, {
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: ok ? "저장 완료" : "다운로드 실패",
+      message: ok
+        ? `${title}${sizeTxt ? ` · ${sizeTxt}` : ""}\n클릭하면 폴더를 엽니다`
+        : `${title}\n${String(error?.message || job?.error || "실패").slice(0, 100)}`,
+      priority: 1,
+      requireInteraction: false
+    });
+  } catch (e) {
+    console.warn("[UVD] notify", e);
+  }
+}
+
+if (chrome.notifications?.onClicked) {
+  chrome.notifications.onClicked.addListener(async (notifId) => {
+    const info = notifActions.get(notifId);
+    try {
+      chrome.notifications.clear(notifId).catch(() => {});
+      if (info?.downloadId != null) {
+        chrome.downloads.show(info.downloadId);
+        return;
+      }
+      if (info?.path) {
+        const name = String(info.path).split(/[/\\]/).pop();
+        if (name) {
+          const items = await chrome.downloads.search({
+            filenameRegex: name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+            limit: 3,
+            orderBy: ["-startTime"]
+          });
+          if (items?.[0]?.id != null) {
+            chrome.downloads.show(items[0].id);
+            return;
+          }
+        }
+      }
+      chrome.downloads.showDefaultFolder?.();
+    } catch {
+      /* ignore */
+    }
+  });
 }
 
 function listActiveDownloads() {
@@ -583,47 +796,53 @@ function detachJobsFromTab(tabId) {
  * @param {number} percent
  * @param {string} message
  * @param {string} [phase]
- * @param {string|null} [jobId] — required for correct concurrent multi-download routing
+ * @param {string|null} [jobId] — required when multiple downloads run
  */
 function emitDownloadProgress(tabId, percent, message, phase = "download", jobId = null) {
-  const job =
-    (jobId && activeDownloads.get(jobId)) ||
-    (currentJobContext && activeDownloads.get(currentJobContext)) ||
-    findRunningJob(tabId);
-  if (job) {
-    const status =
-      phase === "done" ? "done" : phase === "error" ? "error" : "running";
-    // Don't mark done/error here — finishDownloadJob owns terminal states
-    if (status === "running") {
-      updateDownloadJob(job.id, {
-        percent,
-        message,
-        phase,
-        status: "running"
-      });
-    } else {
-      const progress = {
-        percent,
-        message,
-        phase,
-        jobId: job.id,
-        title: job.title,
-        global: true
-      };
-      hlsProgress.set(job.tabId ?? -1, progress);
-      hlsProgress.set(-1, progress);
-      chrome.runtime
-        .sendMessage({ type: "HLS_PROGRESS", tabId: job.tabId ?? -1, progress })
-        .catch(() => {});
-    }
+  const job = findRunningJob(tabId, jobId);
+  if (!job) {
+    // Multi-download without jobId: drop ambient noise (was causing % thrash)
+    if (countRunningJobs() > 1 && !jobId) return;
+    const progress = {
+      percent,
+      message,
+      phase,
+      global: true,
+      jobId: jobId || null
+    };
+    // Per-job progress map key when we have id
+    if (jobId) hlsProgress.set(jobId, progress);
+    hlsProgress.set(tabId ?? -1, progress);
+    chrome.runtime
+      .sendMessage({ type: "HLS_PROGRESS", tabId: tabId ?? -1, progress })
+      .catch(() => {});
     return;
   }
-  const progress = { percent, message, phase, global: true, jobId: jobId || null };
-  hlsProgress.set(tabId ?? -1, progress);
-  hlsProgress.set(-1, progress);
-  chrome.runtime
-    .sendMessage({ type: "HLS_PROGRESS", tabId: tabId ?? -1, progress })
-    .catch(() => {});
+  const status =
+    phase === "done" ? "done" : phase === "error" ? "error" : "running";
+  // Don't mark done/error here — finishDownloadJob owns terminal states
+  if (status === "running") {
+    updateDownloadJob(job.id, {
+      percent,
+      message,
+      phase,
+      status: "running"
+    });
+  } else {
+    const progress = {
+      percent,
+      message,
+      phase,
+      jobId: job.id,
+      title: job.title,
+      global: true
+    };
+    hlsProgress.set(job.id, progress);
+    hlsProgress.set(job.tabId ?? -1, progress);
+    chrome.runtime
+      .sendMessage({ type: "HLS_PROGRESS", tabId: job.tabId ?? -1, progress })
+      .catch(() => {});
+  }
 }
 
 function safeDownloadName(filename, mime = "") {
@@ -672,6 +891,85 @@ function resolveFilename(tabId, item = {}, url = item.url) {
 
 // ─── media store ───────────────────────────────────────────
 
+/**
+ * Identity of the "current video page" — used to wipe stale thumbs/titles.
+ * YouTube /watch?v=A → /watch?v=B share pathname but are different videos.
+ */
+function pageIdentityKey(url) {
+  if (!url || !/^https?:/i.test(url)) return "";
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    const path = u.pathname || "/";
+
+    // YouTube
+    if (host === "youtu.be") {
+      const id = path.replace(/^\//, "").split("/")[0];
+      return id ? `yt:${id}` : `yt:${path}`;
+    }
+    if (host.includes("youtube") || host.includes("youtube-nocookie")) {
+      const v = u.searchParams.get("v");
+      if (v) return `yt:${v}`;
+      const m = path.match(/\/(shorts|embed|live|clip)\/([^/?#]+)/i);
+      if (m) return `yt:${m[1]}:${m[2]}`;
+      const list = u.searchParams.get("list");
+      if (list && /playlist/i.test(path)) return `yt:list:${list}`;
+      return `yt:${path}`;
+    }
+
+    // TikTok
+    if (host.includes("tiktok")) {
+      const m = path.match(/\/@[^/]+\/video\/(\d+)/i);
+      if (m) return `tt:${m[1]}`;
+      const t = path.match(/\/t\/([^/?#]+)/i);
+      if (t) return `tt:t:${t[1]}`;
+      return `tt:${path}`;
+    }
+
+    // Instagram
+    if (host.includes("instagram") || host.includes("instagr.am")) {
+      const m = path.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+      if (m) return `ig:${m[1]}:${m[2]}`;
+      return `ig:${path.replace(/\/+$/, "") || "/"}`;
+    }
+
+    // Generic: origin + path + significant query keys
+    const keep = [];
+    for (const k of ["v", "id", "video_id", "vid", "clip", "watch"]) {
+      const val = u.searchParams.get(k);
+      if (val) keep.push(`${k}=${val}`);
+    }
+    keep.sort();
+    return `${host}${path}${keep.length ? "?" + keep.join("&") : ""}`;
+  } catch {
+    return String(url).slice(0, 200);
+  }
+}
+
+function clearTabMediaState(tabId, { keepLastUrl } = {}) {
+  if (tabId == null) return;
+  tabMedia.delete(tabId);
+  const prevUrl = keepLastUrl || tabMeta.get(tabId)?.lastUrl || "";
+  tabMeta.delete(tabId);
+  if (prevUrl) {
+    tabMeta.set(tabId, {
+      lastUrl: prevUrl,
+      pageKey: pageIdentityKey(prevUrl),
+      title: undefined,
+      thumbnail: undefined,
+      host: (() => {
+        try {
+          return new URL(prevUrl).hostname;
+        } catch {
+          return undefined;
+        }
+      })()
+    });
+  }
+  updateBadge(tabId);
+  broadcastUpdate(tabId);
+}
+
 function enrichItem(tabId, item) {
   const meta = tabId != null ? tabMeta.get(tabId) : null;
   const quality = item.quality || qualityLabel(item.height) || null;
@@ -697,7 +995,17 @@ function enrichItem(tabId, item) {
   if (title && Naming.isUglyBase(title)) title = Naming.cleanPageTitle(tabTitle) || "";
 
   const host = meta?.host || item.host || "";
-  const thumbnail = item.thumbnail || meta?.thumbnail || undefined;
+  // Only inherit tab thumbnail if it belongs to the same page identity
+  const itemPage = item.pageUrl || item.url || meta?.lastUrl || "";
+  const samePage =
+    !meta?.pageKey ||
+    !itemPage ||
+    pageIdentityKey(itemPage) === meta.pageKey ||
+    pageIdentityKey(meta.lastUrl || "") === meta.pageKey;
+  const thumbnail =
+    item.thumbnail ||
+    (samePage && meta?.thumbnail ? meta.thumbnail : undefined) ||
+    undefined;
   const existingRaw = (item.filename || "").replace(/\.[a-z0-9]{2,5}$/i, "");
   const existingOk =
     existingRaw && !Naming.isUglyBase(existingRaw) ? item.filename : "";
@@ -800,19 +1108,65 @@ function addMedia(tabId, item) {
 function setTabMeta(tabId, meta) {
   if (tabId == null || tabId < 0 || !meta) return;
   const prev = tabMeta.get(tabId) || {};
+  const nextUrl = meta.lastUrl || prev.lastUrl || "";
+  const nextKey =
+    meta.pageKey ||
+    (nextUrl ? pageIdentityKey(nextUrl) : "") ||
+    prev.pageKey ||
+    "";
+  const prevKey = prev.pageKey || (prev.lastUrl ? pageIdentityKey(prev.lastUrl) : "");
+  const pageChanged = !!(prevKey && nextKey && prevKey !== nextKey);
+
+  // Never keep previous page's thumbnail/title when the video page changed
+  let title;
+  if (pageChanged) {
+    title = meta.title || undefined;
+  } else if (Object.prototype.hasOwnProperty.call(meta, "title")) {
+    title = meta.title || undefined;
+  } else {
+    title = prev.title;
+  }
+
+  let thumbnail;
+  if (pageChanged) {
+    thumbnail = meta.thumbnail || undefined;
+  } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
+    thumbnail = meta.thumbnail || undefined;
+  } else {
+    thumbnail = prev.thumbnail;
+  }
+
   const next = {
-    title: meta.title || prev.title,
-    thumbnail: meta.thumbnail || prev.thumbnail,
+    title,
+    thumbnail,
     host: meta.host || prev.host,
-    lastUrl: meta.lastUrl || prev.lastUrl
+    lastUrl: nextUrl || prev.lastUrl,
+    pageKey: nextKey || prevKey || undefined
   };
+
+  if (pageChanged) {
+    // Drop media from previous video page; jobs keep running separately
+    tabMedia.delete(tabId);
+  }
+
   tabMeta.set(tabId, next);
 
   const map = tabMedia.get(tabId);
-  if (!map) return;
-  let changed = false;
+  if (!map) {
+    if (pageChanged) {
+      updateBadge(tabId);
+      broadcastUpdate(tabId);
+    }
+    return;
+  }
+  let changed = pageChanged;
   for (const [url, item] of map) {
-    const patched = enrichItem(tabId, item);
+    // Strip stale thumbnails that don't match current page
+    let base = item;
+    if (pageChanged || (item.thumbnail && next.pageKey && item.pageUrl && pageIdentityKey(item.pageUrl) !== next.pageKey)) {
+      base = { ...item, thumbnail: item.pageUrl && pageIdentityKey(item.pageUrl) === next.pageKey ? item.thumbnail : undefined };
+    }
+    const patched = enrichItem(tabId, base);
     if (
       patched.filename !== item.filename ||
       patched.thumbnail !== item.thumbnail ||
@@ -1305,6 +1659,7 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = n
   }
 
   try {
+    const extra = await ytdlpExtraFromSettings(targetPage);
     const result = await YtDlp.downloadAndWait(
       {
         url: targetPage,
@@ -1315,7 +1670,8 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = n
         site: "tiktok",
         cookieHeader: cookieHeader || undefined,
         // only pass if looks like real video path
-        mediaUrl: mediaUrl && looksLikeVideoFileUrl(mediaUrl) ? mediaUrl : undefined
+        mediaUrl: mediaUrl && looksLikeVideoFileUrl(mediaUrl) ? mediaUrl : undefined,
+        ...extra
       },
       (p) => {
         let message = p.message || "받는 중…";
@@ -1379,6 +1735,12 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jo
   emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start", jid);
 
   const cookieHeader = await getCookieHeaderForUrl(targetPage);
+  const extra = await ytdlpExtraFromSettings(targetPage);
+  if (extra.audioOnly) {
+    emitDownloadProgress(tabId, 5, "오디오만 추출 중…", "start", jid);
+  } else if (extra.writeSubs) {
+    emitDownloadProgress(tabId, 5, "영상+자막 받는 중…", "start", jid);
+  }
 
   const result = await YtDlp.downloadAndWait(
     {
@@ -1388,13 +1750,14 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jo
       title: filename || undefined,
       quality: preferQuality || "best",
       site: kind || undefined,
-      cookieHeader: cookieHeader || undefined
+      cookieHeader: cookieHeader || undefined,
+      ...extra
     },
     (p) => {
       let message = p.message || "받는 중…";
       if (/\[download\]/i.test(message)) message = `받는 중… ${Math.round(p.percent || 0)}%`;
       if (/Merging|Merger/i.test(message)) message = "파일 합치는 중…";
-      if (/Destination|Writing/i.test(message)) message = "저장 중…";
+      if (/Destination|Writing|subtitle/i.test(message)) message = "저장 중…";
       if (/ERROR/i.test(message)) message = message.slice(0, 120);
       emitDownloadProgress(tabId, p.percent || 10, message, p.status || "download", jid);
     },
@@ -1500,6 +1863,7 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality, jobId 
   );
 
   try {
+    const extra = await ytdlpExtraFromSettings(targetPage);
     const result = await YtDlp.downloadAndWait(
       {
         url: targetPage,
@@ -1509,7 +1873,8 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality, jobId 
         quality: preferQuality || "best",
         site: "instagram",
         cookieHeader: cookieHeader || undefined,
-        cookiesList
+        cookiesList,
+        ...extra
       },
       (p) => {
         let message = p.message || "받는 중…";
@@ -1616,28 +1981,45 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     try {
       const prev = tabMeta.get(tabId)?.lastUrl || "";
       const next = changeInfo.url;
+      const prevKey = tabMeta.get(tabId)?.pageKey || pageIdentityKey(prev);
+      const nextKey = pageIdentityKey(next);
+      // Also compare full path (non-SPA sites)
       const prevPath = prev ? new URL(prev).origin + new URL(prev).pathname : "";
       const nextPath = new URL(next).origin + new URL(next).pathname;
-      if (prevPath && prevPath === nextPath) {
-        setTabMeta(tabId, { lastUrl: next });
+      const sameVideo =
+        prevKey && nextKey ? prevKey === nextKey : prevPath && prevPath === nextPath;
+
+      if (sameVideo) {
+        // Same video, only query noise (e.g. t= timestamp) — keep media, update url
+        setTabMeta(tabId, { lastUrl: next, pageKey: nextKey || prevKey });
       } else {
-        // Leaving the page: keep active downloads, clear only media list for this tab
+        // Different video/page: clear media + stale thumbnail (jobs keep running)
         detachJobsFromTab(tabId);
-        tabMedia.delete(tabId);
-        tabMeta.delete(tabId);
-        updateBadge(tabId);
-        setTabMeta(tabId, { lastUrl: next });
+        clearTabMediaState(tabId, { keepLastUrl: next });
+        setTabMeta(tabId, {
+          lastUrl: next,
+          pageKey: nextKey,
+          title: undefined,
+          thumbnail: undefined,
+          host: (() => {
+            try {
+              return new URL(next).hostname;
+            } catch {
+              return undefined;
+            }
+          })()
+        });
       }
       updateSocialBadge(tabId, next);
     } catch {
       detachJobsFromTab(tabId);
-      tabMedia.delete(tabId);
-      tabMeta.delete(tabId);
+      clearTabMediaState(tabId);
       updateBadge(tabId);
     }
   } else if (changeInfo.status === "complete" && tab?.url) {
     setTabMeta(tabId, {
       lastUrl: tab.url,
+      pageKey: pageIdentityKey(tab.url),
       title: Naming.cleanPageTitle(tab.title || "") || undefined,
       host: (() => {
         try {
@@ -2150,7 +2532,7 @@ async function downloadBlobViaServiceWorker(blob, name) {
   try {
     let id;
     try {
-      id = await startChromeDownload(objectUrl, `VideoDownloader/${name}`);
+      id = await startChromeDownload(objectUrl, await relDownloadPath(name));
     } catch (e1) {
       // Some Chrome builds reject subfolder paths
       try {
@@ -2210,7 +2592,7 @@ async function downloadBlobViaDataUrl(blob, name) {
   const dataUrl = await blobToDataUrl(blob);
   let id;
   try {
-    id = await startChromeDownload(dataUrl, `VideoDownloader/${name}`);
+    id = await startChromeDownload(dataUrl, await relDownloadPath(name));
   } catch {
     id = await startChromeDownload(dataUrl, name);
   }
@@ -2415,7 +2797,7 @@ async function downloadMedia(url, filename) {
   const name = safeDownloadName(filename || filenameFromUrl(url), "video/mp4");
   let id;
   try {
-    id = await startChromeDownload(url, `VideoDownloader/${name}`);
+    id = await startChromeDownload(url, await relDownloadPath(name));
   } catch {
     id = await startChromeDownload(url, name);
   }
@@ -2513,9 +2895,18 @@ async function resolvePageUrl(tabId, fallback) {
   return fallback || "";
 }
 
-async function runHlsDownload(tabId, url, preferQuality, filenameHint, itemHint, pageUrlHint) {
+async function runHlsDownload(
+  tabId,
+  url,
+  preferQuality,
+  filenameHint,
+  itemHint,
+  pageUrlHint,
+  jobId = null
+) {
   if (!url) throw new Error("받을 주소가 없습니다");
-  const key = tabId ?? -1;
+  const jid = jobId || currentJobContext;
+  const key = jid || tabId || -1;
   const pageUrl =
     pageUrlHint ||
     itemHint?.pageUrl ||
@@ -2523,17 +2914,16 @@ async function runHlsDownload(tabId, url, preferQuality, filenameHint, itemHint,
     "";
 
   const setProg = (p) => {
-    hlsProgress.set(key, p);
-    // Also feed global job progress
+    const progress = { ...p, jobId: jid || undefined, global: true };
+    hlsProgress.set(key, progress);
+    if (jid) hlsProgress.set(jid, progress);
     emitDownloadProgress(
       tabId,
       p.percent || 10,
       p.message || "받는 중…",
-      p.phase || "download"
+      p.phase || "download",
+      jid
     );
-    chrome.runtime
-      .sendMessage({ type: "HLS_PROGRESS", tabId: key, progress: p })
-      .catch(() => {});
   };
 
   setProg({ phase: "start", message: "준비 중…", percent: 2 });
@@ -2732,7 +3122,8 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
               preferQuality,
               filename,
               workItem,
-              resolvedPage || pageUrl
+              resolvedPage || pageUrl,
+              jid
             ),
           pageUrl
         ),
@@ -2851,18 +3242,34 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   switch (msg.type) {
     case "PAGE_META": {
-      if (tabId != null && msg.pageMeta) setTabMeta(tabId, msg.pageMeta);
+      if (tabId != null && msg.pageMeta) {
+        const pageUrl = msg.pageMeta.lastUrl || sender.tab?.url || msg.pageUrl || "";
+        setTabMeta(tabId, {
+          ...msg.pageMeta,
+          lastUrl: pageUrl || msg.pageMeta.lastUrl,
+          pageKey: pageUrl ? pageIdentityKey(pageUrl) : msg.pageMeta.pageKey
+        });
+      }
       sendResponse({ ok: true });
       break;
     }
     case "PAGE_MEDIA": {
       if (tabId == null) break;
-      if (msg.pageMeta) setTabMeta(tabId, msg.pageMeta);
+      const pageUrl = sender.tab?.url || msg.pageUrl || "";
+      if (msg.pageMeta) {
+        setTabMeta(tabId, {
+          ...msg.pageMeta,
+          lastUrl: pageUrl || msg.pageMeta.lastUrl,
+          pageKey: pageUrl ? pageIdentityKey(pageUrl) : undefined
+        });
+      } else if (pageUrl) {
+        setTabMeta(tabId, { lastUrl: pageUrl, pageKey: pageIdentityKey(pageUrl) });
+      }
       for (const item of msg.items || []) {
         addMedia(tabId, {
           ...item,
           source: item.source || "page",
-          pageUrl: sender.tab?.url
+          pageUrl
         });
       }
       sendResponse({ ok: true });
@@ -2922,8 +3329,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                       : qualityLabel(v.height) || (v.height ? `${v.height}p` : null);
                   if (!lab || lab === "unknown") continue;
                   const h = v.height || 0;
+                  const estBw = v.estimateBandwidth || v.bandwidth || 0;
                   if (!byLabel.has(lab) || (byLabel.get(lab).height || 0) < h) {
-                    byLabel.set(lab, { id: lab, label: lab, height: h });
+                    byLabel.set(lab, {
+                      id: lab,
+                      label: lab,
+                      height: h,
+                      estimateBandwidth: estBw
+                    });
                   }
                 }
                 for (const lab of order) {
@@ -2935,7 +3348,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 for (const [lab, q] of byLabel) {
                   if (!seen.has(lab)) qualities.push(q);
                 }
-                sendResponse({ ok: true, qualities, source: "hls" });
+                // Media playlist duration if already known on tab item
+                let duration = 0;
+                let estimatedSize = 0;
+                try {
+                  const mediaInfo = await withTabReferer(tid, () =>
+                    HLS.probe(info.variants[0].url)
+                  );
+                  if (mediaInfo?.duration >= 1) duration = mediaInfo.duration;
+                } catch {
+                  /* ignore */
+                }
+                const best = byLabel.get(qualities[1]?.id) || info.variants[0];
+                const bw =
+                  best?.estimateBandwidth ||
+                  best?.bandwidth ||
+                  info.variants[0]?.estimateBandwidth ||
+                  0;
+                if (bw > 0 && duration >= 1) {
+                  estimatedSize = Math.round((bw / 8) * duration);
+                  if (qualities[0]) {
+                    qualities[0].estimatedSize = estimatedSize;
+                    qualities[0].approx = true;
+                  }
+                }
+                sendResponse({
+                  ok: true,
+                  qualities,
+                  source: "hls",
+                  duration: duration || 0,
+                  estimatedSize: estimatedSize || 0
+                });
+                return;
+              }
+              if (info?.kind === "media") {
+                sendResponse({
+                  ok: true,
+                  qualities: [{ id: "best", label: "최고" }],
+                  source: "hls",
+                  duration: info.duration >= 1 ? info.duration : 0,
+                  estimatedSize: 0
+                });
                 return;
               }
             } catch {
@@ -2954,6 +3407,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               qualities: data.qualities || [],
               heights: data.heights || [],
               title: data.title || "",
+              duration: data.duration || 0,
+              estimatedSize: data.estimatedSize || 0,
+              thumbnail: data.thumbnail || "",
               source: "yt-dlp"
             });
             return;
@@ -2963,7 +3419,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({
             ok: true,
             qualities: [{ id: "best", label: "최고" }],
-            source: "default"
+            source: "default",
+            duration: 0,
+            estimatedSize: 0
           });
         } catch (e) {
           sendResponse({
@@ -2987,34 +3445,166 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: "http(s) 링크만 가능합니다" });
         break;
       }
-      const fname = safeDownloadName(
-        msg.filename ||
-          resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
-        "video/mp4"
-      );
-      return runTrackedDownload(
-        {
-          tabId: tid,
-          title: msg.title || fname,
-          pageUrl,
-          filename: fname
-        },
-        async (jobId) => {
-          const r = await downloadViaYtDlp(
-            tid,
+      (async () => {
+        const settings = await UVD.getSettings();
+        const fname =
+          msg.filename ||
+          (await buildSaveFilename({
+            title: msg.title || resolveFilename(tid, { title: msg.title }, pageUrl),
+            quality: msg.preferQuality,
             pageUrl,
+            mediaMode: settings.mediaMode
+          }));
+        runTrackedDownload(
+          {
+            tabId: tid,
+            title: msg.title || fname,
             pageUrl,
-            fname,
-            msg.preferQuality || "best",
-            jobId
-          );
-          if (r?.ok === false) {
-            throw new Error(r.error || "다운로드 실패");
+            filename: fname,
+            mediaMode: settings.mediaMode,
+            quality: msg.preferQuality || "best"
+          },
+          async (jobId) => {
+            const r = await downloadViaYtDlp(
+              tid,
+              pageUrl,
+              pageUrl,
+              fname,
+              msg.preferQuality || "best",
+              jobId
+            );
+            if (r?.ok === false) {
+              throw new Error(r.error || "다운로드 실패");
+            }
+            return { ...r, filename: r.filename || fname };
+          },
+          sendResponse
+        );
+      })().catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "GET_SETTINGS": {
+      UVD.getSettings()
+        .then((s) => sendResponse({ ok: true, settings: s }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "SET_SETTINGS": {
+      UVD.setSettings(msg.settings || msg.patch || {})
+        .then((s) => sendResponse({ ok: true, settings: s }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "GET_HISTORY": {
+      UVD.getHistory()
+        .then((history) => sendResponse({ ok: true, history }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "CLEAR_HISTORY": {
+      UVD.clearHistory()
+        .then(() => sendResponse({ ok: true, history: [] }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "SHOW_DOWNLOAD": {
+      (async () => {
+        try {
+          if (msg.downloadId != null) {
+            chrome.downloads.show(msg.downloadId);
+            sendResponse({ ok: true });
+            return;
           }
-          return { ...r, filename: r.filename || fname };
-        },
-        sendResponse
-      );
+          if (msg.path && typeof msg.path === "string") {
+            // Search chrome downloads by filename
+            const name = msg.path.split(/[/\\]/).pop();
+            const items = await chrome.downloads.search({
+              filenameRegex: name ? name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : undefined,
+              limit: 5,
+              orderBy: ["-startTime"]
+            });
+            if (items?.[0]?.id != null) {
+              chrome.downloads.show(items[0].id);
+              sendResponse({ ok: true });
+              return;
+            }
+            chrome.downloads.showDefaultFolder?.();
+            sendResponse({ ok: true, fallback: true });
+            return;
+          }
+          chrome.downloads.showDefaultFolder?.();
+          sendResponse({ ok: true, fallback: true });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e?.message || e) });
+        }
+      })();
+      return true;
+    }
+    case "OPEN_URL": {
+      const u = msg.url;
+      if (u && /^https?:/i.test(u)) {
+        chrome.tabs.create({ url: u }).catch(() => {});
+        sendResponse({ ok: true });
+      } else {
+        sendResponse({ ok: false, error: "bad url" });
+      }
+      break;
+    }
+    case "DOWNLOAD_BATCH": {
+      // Multi-link paste: start each URL as its own job
+      const urls = Array.isArray(msg.urls)
+        ? msg.urls
+        : UVD.parseUrlsFromText(msg.text || "");
+      const unique = [...new Set(urls.filter((u) => /^https?:/i.test(u)))];
+      if (!unique.length) {
+        sendResponse({ ok: false, error: "유효한 링크가 없습니다" });
+        break;
+      }
+      const tid = msg.tabId ?? tabId;
+      const preferQuality = msg.preferQuality || "best";
+      (async () => {
+        const settings = await UVD.getSettings();
+        const started = [];
+        for (const pageUrl of unique.slice(0, MAX_CONCURRENT_STARTS_BG())) {
+          const fname = await buildSaveFilename({
+            title: msg.title || UVD.siteFromUrl(pageUrl) || "영상",
+            quality: preferQuality,
+            pageUrl,
+            mediaMode: settings.mediaMode
+          });
+          // fire each as tracked job without waiting on popup
+          const jobId = createDownloadJob({
+            tabId: tid,
+            title: fname,
+            pageUrl,
+            filename: fname,
+            mediaMode: settings.mediaMode,
+            quality: preferQuality
+          });
+          const keep = startKeepAlive();
+          started.push(jobId);
+          withJobContext(jobId, () =>
+            downloadPageFromUi(tid, pageUrl, preferQuality, jobId)
+          )
+            .then((r) => {
+              finishDownloadJob(jobId, r, null);
+              stopKeepAlive(keep);
+            })
+            .catch((err) => {
+              finishDownloadJob(jobId, null, err);
+              stopKeepAlive(keep);
+            });
+        }
+        sendResponse({
+          ok: true,
+          started: true,
+          count: started.length,
+          jobIds: started,
+          total: unique.length,
+          truncated: unique.length > started.length
+        });
+      })().catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
     }
     case "GET_ACTIVE_DOWNLOADS": {
       sendResponse({ ok: true, jobs: listActiveDownloads() });
@@ -3041,34 +3631,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.12.5" });
+      sendResponse({ ok: true, version: "1.14.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;
       const pageUrl = msg.pageUrl || msg.url;
-      const fname = safeDownloadName(
-        msg.filename ||
-          resolveFilename(tid, { title: msg.title, pageTitle: msg.title }, pageUrl),
-        "video/mp4"
-      );
-      return runTrackedDownload(
-        {
-          tabId: tid,
-          title: msg.title || fname,
-          pageUrl,
-          filename: fname
-        },
-        async (jobId) => {
-          const r = await downloadPageFromUi(
-            tid,
+      (async () => {
+        const settings = await UVD.getSettings();
+        const fname =
+          msg.filename ||
+          (await buildSaveFilename({
+            title: msg.title || resolveFilename(tid, { title: msg.title }, pageUrl),
+            quality: msg.preferQuality,
             pageUrl,
-            msg.preferQuality || "best",
-            jobId
-          );
-          return { ...r, filename: r?.filename || fname };
-        },
-        sendResponse
-      );
+            mediaMode: settings.mediaMode
+          }));
+        runTrackedDownload(
+          {
+            tabId: tid,
+            title: msg.title || fname,
+            pageUrl,
+            filename: fname,
+            mediaMode: settings.mediaMode,
+            quality: msg.preferQuality || "best"
+          },
+          async (jobId) => {
+            const r = await downloadPageFromUi(
+              tid,
+              pageUrl,
+              msg.preferQuality || "best",
+              jobId
+            );
+            return { ...r, filename: r?.filename || fname };
+          },
+          sendResponse
+        );
+      })().catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
     }
     case "PROBE_HLS": {
       const tid = msg.tabId ?? tabId;
@@ -3223,4 +3822,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 chrome.alarms.create("keepalive", { periodInMinutes: 4.5 });
 chrome.alarms.onAlarm.addListener(() => {});
 
-console.log("[VideoDownloader] ready v1.12.1");
+console.log("[VideoDownloader] ready v1.13.0");

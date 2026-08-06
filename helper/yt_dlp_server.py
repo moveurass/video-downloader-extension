@@ -651,15 +651,17 @@ def run_download(job_id: str, payload: dict) -> None:
     concurrent = "16" if is_youtube else "4"
     referer = page_url or payload.get("referer") or ""
 
+    audio_only = bool(payload.get("audioOnly") or payload.get("mediaMode") == "audio")
+    write_subs = bool(
+        payload.get("writeSubs")
+        or payload.get("mediaMode") in ("video_subs", "video+subs", "subs")
+    )
+    yes_playlist = bool(payload.get("yesPlaylist") or payload.get("playlist"))
+
     def build_cmd(format_str: str, merge: str, extra: list[str] | None = None) -> list[str]:
         c = [
             bin_path,
-            "--no-playlist",
             "--newline",
-            "-f",
-            format_str,
-            "--merge-output-format",
-            merge,
             "-o",
             outtmpl,
             "--no-overwrites",
@@ -676,7 +678,42 @@ def run_download(job_id: str, payload: dict) -> None:
             "--socket-timeout",
             "20",
         ]
-        c.extend(sort_args)
+        # Playlist: only when explicitly requested (batch paste of playlist URLs)
+        if yes_playlist:
+            c.append("--yes-playlist")
+        else:
+            c.append("--no-playlist")
+
+        if audio_only:
+            # Extract audio → mp3
+            c.extend(
+                [
+                    "-f",
+                    "ba/b",
+                    "-x",
+                    "--audio-format",
+                    "mp3",
+                    "--audio-quality",
+                    "0",
+                ]
+            )
+        else:
+            c.extend(["-f", format_str, "--merge-output-format", merge])
+            c.extend(sort_args)
+
+        if write_subs and not audio_only:
+            c.extend(
+                [
+                    "--write-subs",
+                    "--write-auto-subs",
+                    "--sub-langs",
+                    "ko.*,en.*,ko,en",
+                    "--convert-subs",
+                    "srt",
+                    "--embed-subs",
+                ]
+            )
+
         if not title_hint:
             c.append("--restrict-filenames")
         if referer:
@@ -809,9 +846,20 @@ def run_download(job_id: str, payload: dict) -> None:
                     except Exception:
                         percent = None
                 with jobs_lock:
-                    jobs[job_id]["message"] = line[-200:]
+                    # Keep last non-noisy message for UI
+                    if line and not line.startswith("["):
+                        jobs[job_id]["message"] = line[-200:]
+                    elif "[download]" in line or "Merging" in line or "Destination" in line:
+                        jobs[job_id]["message"] = line[-200:]
                     if percent is not None:
-                        jobs[job_id]["percent"] = max(2, min(99, percent))
+                        # Monotonic within a single yt-dlp attempt so UI doesn't bounce
+                        prev_p = float(jobs[job_id].get("percent") or 0)
+                        p = max(2, min(99, percent))
+                        # Allow small resets only at the very start of a new fragment chain
+                        if p + 15 < prev_p and p < 8:
+                            jobs[job_id]["percent"] = p
+                        else:
+                            jobs[job_id]["percent"] = max(prev_p, p)
                     elif "Destination" in line or "Merging" in line or "Merger" in line:
                         jobs[job_id]["percent"] = max(jobs[job_id].get("percent", 50), 90)
                         jobs[job_id]["message"] = "파일 합치는 중…"
@@ -1018,31 +1066,64 @@ class Handler(BaseHTTPRequestHandler):
                 send_json(self, 500, {"ok": False, "error": f"포맷 조회 실패: {msg}"})
                 return
 
-            # Collect video heights from formats (and nested entries for playlists)
+            # Collect video heights + rough size estimates from formats
             entries = info.get("entries") or [info]
+            # Prefer first real entry for duration/title on playlists
+            primary = next((e for e in entries if e and not e.get("entries")), info) or info
+            duration = primary.get("duration") or info.get("duration") or 0
+            try:
+                duration = float(duration or 0)
+            except (TypeError, ValueError):
+                duration = 0
+
             heights: set[int] = set()
+            # height -> best estimated bytes for that height
+            size_by_h: dict[int, int] = {}
+
+            def fmt_size(f: dict, dur: float) -> int:
+                fs = f.get("filesize") or f.get("filesize_approx")
+                if fs:
+                    try:
+                        return int(fs)
+                    except (TypeError, ValueError):
+                        pass
+                tbr = f.get("tbr") or f.get("vbr") or 0
+                try:
+                    tbr = float(tbr or 0)
+                except (TypeError, ValueError):
+                    tbr = 0
+                if tbr > 0 and dur >= 1:
+                    return int((tbr * 1000 / 8) * dur)
+                return 0
+
             for ent in entries:
                 if not ent:
                     continue
+                ent_dur = ent.get("duration") or duration or 0
+                try:
+                    ent_dur = float(ent_dur or 0)
+                except (TypeError, ValueError):
+                    ent_dur = 0
                 for f in ent.get("formats") or []:
                     if not f:
                         continue
-                    # video-only or combined with video
                     h = f.get("height")
                     vcodec = (f.get("vcodec") or "none").lower()
                     if h and vcodec != "none":
                         try:
-                            heights.add(int(h))
+                            hi = int(h)
                         except (TypeError, ValueError):
-                            pass
-                # top-level height
+                            continue
+                        heights.add(hi)
+                        sz = fmt_size(f, ent_dur)
+                        if sz > 0:
+                            size_by_h[hi] = max(size_by_h.get(hi, 0), sz)
                 if ent.get("height"):
                     try:
                         heights.add(int(ent["height"]))
                     except (TypeError, ValueError):
                         pass
 
-            # Map to UI labels (only buckets that exist). Skip tiny storyboard-like sizes.
             def label_for(h: int) -> str | None:
                 if h < 240:
                     return None
@@ -1060,34 +1141,64 @@ class Handler(BaseHTTPRequestHandler):
                     return "360p"
                 return "240p"
 
-            # Prefer one chip per bucket (highest height in that bucket kept for sorting)
             bucket_max: dict[str, int] = {}
+            bucket_size: dict[str, int] = {}
             for h in heights:
                 lab = label_for(h)
                 if not lab:
                     continue
-                bucket_max[lab] = max(bucket_max.get(lab, 0), h)
+                if h >= bucket_max.get(lab, 0):
+                    bucket_max[lab] = h
+                    if size_by_h.get(h):
+                        bucket_size[lab] = size_by_h[h]
 
             order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"]
             qualities = []
-            # "best" always first — means max available
             if bucket_max:
-                qualities.append(
-                    {
-                        "id": "best",
-                        "label": "최고",
-                        "height": max(bucket_max.values()),
-                    }
-                )
+                best_h = max(bucket_max.values())
+                best_sz = size_by_h.get(best_h) or max(bucket_size.values(), default=0)
+                q_best = {
+                    "id": "best",
+                    "label": "최고",
+                    "height": best_h,
+                }
+                if best_sz:
+                    q_best["estimatedSize"] = int(best_sz)
+                    q_best["approx"] = True
+                qualities.append(q_best)
             for lab in order:
                 if lab in bucket_max:
-                    qualities.append(
-                        {"id": lab, "label": lab, "height": bucket_max[lab]}
-                    )
-            # any odd heights not in buckets
+                    q = {"id": lab, "label": lab, "height": bucket_max[lab]}
+                    if bucket_size.get(lab):
+                        q["estimatedSize"] = int(bucket_size[lab])
+                        q["approx"] = True
+                    qualities.append(q)
             for lab, h in sorted(bucket_max.items(), key=lambda x: -x[1]):
                 if lab not in order and lab != "best":
-                    qualities.append({"id": lab, "label": lab, "height": h})
+                    q = {"id": lab, "label": lab, "height": h}
+                    if bucket_size.get(lab):
+                        q["estimatedSize"] = int(bucket_size[lab])
+                        q["approx"] = True
+                    qualities.append(q)
+
+            # Overall best estimate for card summary
+            overall_size = 0
+            if size_by_h:
+                overall_size = max(size_by_h.values())
+            elif primary.get("filesize") or primary.get("filesize_approx"):
+                try:
+                    overall_size = int(
+                        primary.get("filesize") or primary.get("filesize_approx") or 0
+                    )
+                except (TypeError, ValueError):
+                    overall_size = 0
+
+            thumb = (
+                primary.get("thumbnail")
+                or (primary.get("thumbnails") or [{}])[-1].get("url")
+                or info.get("thumbnail")
+                or ""
+            )
 
             send_json(
                 self,
@@ -1095,7 +1206,10 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": True,
                     "url": url,
-                    "title": info.get("title") or "",
+                    "title": primary.get("title") or info.get("title") or "",
+                    "duration": duration if duration >= 1 else 0,
+                    "estimatedSize": int(overall_size) if overall_size else 0,
+                    "thumbnail": thumb or "",
                     "heights": sorted(heights, reverse=True),
                     "qualities": qualities,
                 },

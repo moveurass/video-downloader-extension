@@ -24,6 +24,11 @@ const uiJobs = new Map();
 /** Max concurrent starts from this popup (SW can still hold more) */
 const MAX_CONCURRENT_STARTS = 6;
 let queuePollTimer = null;
+/** @type {object} */
+let uvdSettings = { ...(globalThis.UVD?.DEFAULT_SETTINGS || {}) };
+/** @type {Array<object>} */
+let historyItems = [];
+let activeTabName = "main";
 
 const $ = (sel) => document.querySelector(sel);
 const listEl = $("#list");
@@ -215,9 +220,14 @@ function buildLocalSiteItem(tab) {
 
 async function refreshHelperStatus(force = false) {
   if (!helperBar) return;
-  const need = isSitePage(currentTabUrl) || allItems.some((i) => i.isSiteDownload || i.site);
+  const need =
+    isSitePage(currentTabUrl) ||
+    allItems.some((i) => i.isSiteDownload || i.site) ||
+    !!$("#linkInput")?.value;
+  const fixBtn = $("#btnHelperFix");
   if (!need) {
     helperBar.classList.add("hidden");
+    fixBtn?.classList.add("hidden");
     return;
   }
   helperBar.classList.remove("hidden");
@@ -231,16 +241,19 @@ async function refreshHelperStatus(force = false) {
       helperText.textContent = `YT·TikTok·Instagram 준비됨${
         h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""
       }`;
+      fixBtn?.classList.add("hidden");
     } else {
       helperBar.classList.add("warn");
       helperText.textContent =
-        "도우미 꺼짐 — helper/install_autostart.command 실행 후 다시 열어 주세요";
+        "도우미 꺼짐 — helper/install_autostart.command 실행";
+      fixBtn?.classList.remove("hidden");
     }
   } catch {
     helperOk = false;
     helperBar.classList.add("warn");
     helperText.textContent =
-      "도우미 꺼짐 — helper/install_autostart.command 실행 후 다시 열어 주세요";
+      "도우미 꺼짐 — helper/install_autostart.command 실행";
+    fixBtn?.classList.remove("hidden");
   }
 }
 
@@ -293,10 +306,69 @@ function estimateSize(item) {
   return null;
 }
 
+/** Size estimate for currently selected quality chip */
+function estimateForSelectedQuality(item) {
+  const q = availableQualities.find((x) => x.id === selectedQuality);
+  if (q?.estimatedSize > 0) {
+    return { bytes: q.estimatedSize, approx: q.approx !== false };
+  }
+  // Scale rough estimate by height vs best when only overall size known
+  if (item.estimatedSize > 0 && q?.height && item._bestHeight) {
+    const ratio = Math.min(1.2, Math.max(0.25, (q.height / item._bestHeight) ** 1.4));
+    return { bytes: Math.round(item.estimatedSize * ratio), approx: true };
+  }
+  return estimateSize(item);
+}
+
+function estimateBarHtml(item, loading = false) {
+  if (loading) {
+    return `<div class="estimate-bar loading">
+      <span class="est-item"><span class="est-k">미리보기</span><span class="est-v">용량·길이 확인 중…</span></span>
+    </div>`;
+  }
+  const dur = formatDuration(item.duration);
+  const est = estimateForSelectedQuality(item);
+  const sizeText = est
+    ? est.approx
+      ? `약 ${formatSize(est.bytes)}`
+      : formatSize(est.bytes)
+    : null;
+  const qLabel =
+    selectedQuality === "best" ? "최고" : selectedQuality || item.quality || "";
+  const parts = [];
+  if (sizeText) {
+    parts.push(
+      `<span class="est-item"><span class="est-k">용량</span><span class="est-v">${escapeHtml(
+        sizeText
+      )}</span></span>`
+    );
+  }
+  if (dur) {
+    parts.push(
+      `<span class="est-item"><span class="est-k">길이</span><span class="est-v">${escapeHtml(
+        dur
+      )}</span></span>`
+    );
+  }
+  if (qLabel) {
+    parts.push(
+      `<span class="est-item"><span class="est-k">화질</span><span class="est-v">${escapeHtml(
+        qLabel
+      )}</span></span>`
+    );
+  }
+  if (!parts.length) {
+    return `<div class="estimate-bar loading">
+      <span class="est-item"><span class="est-k">미리보기</span><span class="est-v">받기 후 용량 확정</span></span>
+    </div>`;
+  }
+  return `<div class="estimate-bar">${parts.join("")}</div>`;
+}
+
 function metaRowsHtml(item) {
   const site = siteLabel(currentTabUrl, item);
   const dur = formatDuration(item.duration);
-  const est = estimateSize(item);
+  const est = estimateForSelectedQuality(item);
   const sizeText = est
     ? est.approx
       ? `약 ${formatSize(est.bytes)}`
@@ -433,38 +505,41 @@ function displayName(item) {
 }
 
 /**
- * 저장 파일명 — 제목으로 구분
- * 예: "SSIS-001 이복 여동생 이야기_720p.mp4"
+ * 저장 파일명 — 설정 템플릿 적용
+ * 예: "제목_720p.mp4"
  */
 function downloadFilename(item) {
-  let base = "";
+  let title = "";
   for (const c of [item.title, item.pageTitle, item.displayName]) {
     const cleaned = cleanTitleText(c);
-    if (cleaned && !isUglyName(cleaned) && cleaned.length > base.length) {
-      base = cleaned;
+    if (cleaned && !isUglyName(cleaned) && cleaned.length > title.length) {
+      title = cleaned;
     }
   }
-  if (!base || isUglyName(base)) base = "영상";
+  if (!title || isUglyName(title)) title = "영상";
 
-  if (base.length > 52) {
-    base = base.slice(0, 50).replace(/\s+\S*$/, "") || base.slice(0, 50);
-  }
-  base = base.replace(/[<>:"/\\|?*]/g, "").replace(/\s+/g, " ").trim();
-
-  // Prefer user-selected quality for filename (skip "best")
-  let qTag = "";
+  let quality = "";
   if (selectedQuality && !/^(best|all)$/i.test(selectedQuality)) {
-    qTag = `_${selectedQuality}`;
+    quality = selectedQuality;
   } else if (
     item.quality &&
     item.quality !== "unknown" &&
-    !/^(best|all|unknown|highest)$/i.test(item.quality) &&
-    !base.includes(item.quality)
+    !/^(best|all|unknown|highest)$/i.test(item.quality)
   ) {
-    qTag = `_${item.quality}`;
+    quality = item.quality;
   }
-  const ext = item.type === "audio" ? ".mp3" : ".mp4";
-  return `${base}${qTag}${ext}`;
+
+  const mediaMode = uvdSettings.mediaMode || "video";
+  const pageUrl = item.pageUrl || item.url || currentTabUrl || "";
+  const base = UVD.applyFilenameTemplate(uvdSettings.filenameTemplate, {
+    title,
+    quality,
+    site: UVD.siteFromUrl(pageUrl),
+    mediaMode
+  });
+  const ext =
+    mediaMode === "audio" || item.type === "audio" ? ".mp3" : ".mp4";
+  return base.endsWith(ext) ? base : `${base}${ext}`;
 }
 
 function qualityPickerHtml() {
@@ -485,7 +560,7 @@ function qualityPickerHtml() {
   }
   return `
     <div class="quality-picker">
-      <span class="quality-label">화질 <span class="quality-hint-inline">(이 영상에서 가능)</span></span>
+      <span class="quality-label">화질</span>
       <div class="quality-chips" role="group" aria-label="화질 선택">
         ${opts
           .map(
@@ -536,6 +611,30 @@ async function loadAvailableQualities(item) {
       }
     } else {
       availableQualities = [{ id: "best", label: "최고" }];
+    }
+
+    // Apply duration / size / title / thumb preview onto the card item
+    if (res?.ok && allItems[0]) {
+      const patch = { ...allItems[0] };
+      if (res.duration >= 1) patch.duration = res.duration;
+      if (res.estimatedSize > 0) {
+        patch.estimatedSize = res.estimatedSize;
+        patch._sizeApprox = true;
+      }
+      if (res.title && (!patch.title || /^(YouTube|TikTok|Instagram)/i.test(patch.title))) {
+        patch.title = res.title;
+        patch.pageTitle = res.title;
+        patch.displayName = res.title;
+      }
+      if (res.thumbnail && !patch.thumbnail) patch.thumbnail = res.thumbnail;
+      const bestQ = availableQualities.find((q) => q.id === "best") || availableQualities[0];
+      if (bestQ?.height) patch._bestHeight = bestQ.height;
+      // Per-quality sizes already on chips; also stash on item for "best"
+      if (bestQ?.estimatedSize) {
+        patch.estimatedSize = bestQ.estimatedSize;
+        patch._sizeApprox = true;
+      }
+      allItems[0] = patch;
     }
   } catch {
     availableQualities = [{ id: "best", label: "최고" }];
@@ -646,6 +745,20 @@ async function refreshJobsFromBackground() {
   }
 }
 
+/** Throttle full queue re-renders while many jobs tick */
+let queueRenderTimer = null;
+let queueDirty = false;
+function scheduleQueueRender() {
+  queueDirty = true;
+  if (queueRenderTimer) return;
+  queueRenderTimer = setTimeout(() => {
+    queueRenderTimer = null;
+    if (!queueDirty) return;
+    queueDirty = false;
+    renderDownloadQueue();
+  }, 180);
+}
+
 function upsertUiJob(job, opts = {}) {
   if (!job?.id && !job?.jobId) return;
   const id = job.id || job.jobId;
@@ -657,17 +770,34 @@ function upsertUiJob(job, opts = {}) {
       : job.phase === "error"
         ? "error"
         : prev.status || "running");
+
+  // Per-job monotonic percent (stops bar bouncing when events interleave)
+  let percent =
+    typeof job.percent === "number"
+      ? job.percent
+      : typeof prev.percent === "number"
+        ? prev.percent
+        : 0;
+  if (
+    status === "running" &&
+    prev.status === "running" &&
+    typeof prev.percent === "number" &&
+    typeof job.percent === "number" &&
+    job.percent < prev.percent - 0.5
+  ) {
+    // Allow reset only when clearly starting a new phase from near-zero
+    if (!(job.percent <= 8 && prev.percent >= 20 && /start|playlist|준비/i.test(job.message || job.phase || ""))) {
+      percent = prev.percent;
+    }
+  }
+  percent = Math.max(0, Math.min(100, percent));
+
   const next = {
     ...prev,
     ...job,
     id,
     status,
-    percent:
-      typeof job.percent === "number"
-        ? job.percent
-        : typeof prev.percent === "number"
-          ? prev.percent
-          : 0,
+    percent,
     message: job.message || prev.message || "",
     title: job.title || prev.title || job.filename || "영상",
     filename: job.filename || prev.filename || "",
@@ -677,10 +807,27 @@ function upsertUiJob(job, opts = {}) {
     updatedAt: job.updatedAt || Date.now(),
     startedAt: job.startedAt || prev.startedAt || Date.now()
   };
+
+  // Skip no-op updates (same % rounded + same message) to reduce flicker
+  if (
+    prev.status === next.status &&
+    Math.round(prev.percent || 0) === Math.round(next.percent || 0) &&
+    prev.message === next.message &&
+    status === "running" &&
+    opts.toast === false
+  ) {
+    uiJobs.set(id, next);
+    return;
+  }
+
   uiJobs.set(id, next);
   trackedJobIds.add(id);
   syncDownloadingFlag();
-  renderDownloadQueue();
+  if (status === "done" || status === "error") {
+    renderDownloadQueue();
+  } else {
+    scheduleQueueRender();
+  }
 
   if (opts.toast !== false) {
     if (status === "done" && !toastedJobIds.has(id) && !job._silentDone) {
@@ -775,6 +922,28 @@ function renderDownloadQueue() {
         st === "error"
           ? cleanJobMessage(j.error || j.message || "실패", "error")
           : cleanJobMessage(j.message, j.phase);
+      const errMeta =
+        st === "error"
+          ? UVD.classifyError(j.error || j.message || "")
+          : null;
+      const actionsHtml =
+        st === "error"
+          ? recoveryActionsHtml(errMeta, j.pageUrl, j)
+          : st === "done"
+            ? `<div class="dl-job-actions">
+                <button type="button" class="btn" data-act="show" data-path="${escapeAttr(
+                  j.result?.path || ""
+                )}" data-did="${escapeAttr(
+                  j.result?.downloadId ?? ""
+                )}">폴더</button>
+              </div>`
+            : "";
+      const errLine =
+        st === "error" && errMeta
+          ? `<div class="dl-job-err">${escapeHtml(errMeta.label)} — ${escapeHtml(
+              errMeta.hint
+            )}</div>`
+          : "";
       return `
         <div class="dl-job ${st === "done" ? "is-done" : ""} ${
           st === "error" ? "is-error" : ""
@@ -786,6 +955,7 @@ function renderDownloadQueue() {
                 j.title || j.filename || ""
               )}">${escapeHtml(shortJobTitle(j))}</div>
               <div class="dl-job-msg">${escapeHtml(msg)}</div>
+              ${errLine}
             </div>
             <span class="dl-job-pct">${escapeHtml(pctLabel)}</span>
           </div>
@@ -794,11 +964,376 @@ function renderDownloadQueue() {
               st === "error" ? 100 : pct
             }%"></div>
           </div>
+          ${actionsHtml}
         </div>`;
     })
     .join("");
 
+  bindRecoveryButtons(dlQueueList);
   syncDownloadingFlag();
+}
+
+function recoveryActionsHtml(errMeta, pageUrl, job) {
+  const acts = errMeta?.actions || ["retry"];
+  const buttons = [];
+  if (acts.includes("retry")) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="retry" data-url="${escapeAttr(
+        pageUrl || job?.pageUrl || ""
+      )}">다시 받기</button>`
+    );
+  }
+  if (acts.includes("open_page") && (pageUrl || job?.pageUrl)) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="open" data-url="${escapeAttr(
+        pageUrl || job.pageUrl
+      )}">페이지 열기</button>`
+    );
+  }
+  if (acts.includes("login") && (pageUrl || job?.pageUrl)) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="login" data-url="${escapeAttr(
+        pageUrl || job.pageUrl
+      )}">로그인</button>`
+    );
+  }
+  if (acts.includes("helper")) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="helper">도우미 안내</button>`
+    );
+  }
+  if (!buttons.length) return "";
+  return `<div class="dl-job-actions">${buttons.join("")}</div>`;
+}
+
+function bindRecoveryButtons(root) {
+  if (!root) return;
+  root.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const act = btn.getAttribute("data-act");
+      const url = btn.getAttribute("data-url") || "";
+      const path = btn.getAttribute("data-path") || "";
+      const did = btn.getAttribute("data-did");
+      try {
+        if (act === "retry" && url) {
+          await downloadByPastedLink(url);
+          return;
+        }
+        if (act === "open" && url) {
+          await chrome.runtime.sendMessage({ type: "OPEN_URL", url });
+          return;
+        }
+        if (act === "login" && url) {
+          let loginUrl = url;
+          try {
+            const u = new URL(url);
+            loginUrl = u.origin + "/";
+          } catch {
+            /* keep */
+          }
+          await chrome.runtime.sendMessage({ type: "OPEN_URL", url: loginUrl });
+          toast("로그인 후 다시 받아 주세요", "ok");
+          return;
+        }
+        if (act === "helper") {
+          showHelperHelp();
+          return;
+        }
+        if (act === "show") {
+          await chrome.runtime.sendMessage({
+            type: "SHOW_DOWNLOAD",
+            downloadId: did ? Number(did) : null,
+            path
+          });
+          return;
+        }
+      } catch (err) {
+        toast(userError(err?.message) || "실행 실패", "error");
+      }
+    });
+  });
+}
+
+function showHelperHelp() {
+  toast(
+    "helper/install_autostart.command 를 더블클릭해 도우미를 설치·실행하세요",
+    "error"
+  );
+  // Try open extension folder help via GitHub readme
+  chrome.runtime
+    .sendMessage({
+      type: "OPEN_URL",
+      url: "https://github.com/moveurass/video-downloader-extension#helper"
+    })
+    .catch(() => {});
+}
+
+/* ── Tabs / settings / history ─────────────────────────── */
+
+function switchTab(name) {
+  activeTabName = name;
+  document.querySelectorAll(".tab").forEach((t) => {
+    t.classList.toggle("active", t.getAttribute("data-tab") === name);
+  });
+  document.querySelectorAll(".tab-panel").forEach((p) => {
+    p.classList.toggle("hidden", p.id !== `tab-${name}`);
+  });
+  if (name === "history") loadHistoryUi();
+  if (name === "settings") fillSettingsForm();
+}
+
+async function loadSettings() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_SETTINGS" });
+    if (res?.settings) uvdSettings = res.settings;
+  } catch {
+    try {
+      uvdSettings = await UVD.getSettings();
+    } catch {
+      /* defaults */
+    }
+  }
+  applyModeChips();
+  updateFooterNote();
+}
+
+function applyModeChips() {
+  const mode = uvdSettings.mediaMode || "video";
+  document.querySelectorAll(".mode-chip").forEach((c) => {
+    c.classList.toggle("active", c.getAttribute("data-mode") === mode);
+  });
+}
+
+function updateFooterNote() {
+  const el = $("#footerNote");
+  if (!el) return;
+  const folder = uvdSettings.subfolder || "VideoDownloader";
+  const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.14`;
+}
+
+function fillSettingsForm() {
+  const sub = $("#setSubfolder");
+  const tpl = $("#setTemplate");
+  const mode = $("#setMediaMode");
+  const notify = $("#setNotify");
+  const clip = $("#setClipboard");
+  if (sub) sub.value = uvdSettings.subfolder || "VideoDownloader";
+  if (tpl) tpl.value = uvdSettings.filenameTemplate || "{title}_{quality}";
+  if (mode) mode.value = uvdSettings.mediaMode || "video";
+  if (notify) notify.checked = uvdSettings.notifyOnComplete !== false;
+  if (clip) clip.checked = !!uvdSettings.clipboardWatch;
+  updateSettingsPreview();
+}
+
+function updateSettingsPreview() {
+  const tpl =
+    $("#setTemplate")?.value ||
+    uvdSettings.filenameTemplate ||
+    "{title}_{quality}";
+  const mode = $("#setMediaMode")?.value || uvdSettings.mediaMode || "video";
+  const base = UVD.applyFilenameTemplate(tpl, {
+    title: "영상 제목",
+    quality: "1080p",
+    site: "youtube",
+    mediaMode: mode
+  });
+  const ext = mode === "audio" ? ".mp3" : ".mp4";
+  const prev = $("#setPreview");
+  if (prev) {
+    prev.textContent = `${uvdSettings.subfolder || $("#setSubfolder")?.value || "VideoDownloader"}/${base}${
+      base.endsWith(ext) ? "" : ext
+    }`;
+  }
+}
+
+async function saveSettingsFromForm() {
+  const patch = {
+    subfolder: $("#setSubfolder")?.value?.trim() || "VideoDownloader",
+    filenameTemplate: $("#setTemplate")?.value?.trim() || "{title}_{quality}",
+    mediaMode: $("#setMediaMode")?.value || "video",
+    notifyOnComplete: $("#setNotify")?.checked !== false,
+    clipboardWatch: !!$("#setClipboard")?.checked
+  };
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "SET_SETTINGS",
+      settings: patch
+    });
+    uvdSettings = res?.settings || patch;
+    applyModeChips();
+    updateFooterNote();
+    setupClipboardWatch();
+    toast("설정을 저장했습니다", "ok");
+    if (allItems[0]) render();
+  } catch (e) {
+    toast(userError(e?.message) || "설정 저장 실패", "error");
+  }
+}
+
+/* ── Clipboard watch (opt-in) ─────────────────────────── */
+let clipWatchTimer = null;
+let lastClipSeen = "";
+let dismissedClip = "";
+
+function showClipBanner(url) {
+  const ban = $("#clipBanner");
+  const urlEl = $("#clipBannerUrl");
+  if (!ban || !urlEl) return;
+  urlEl.textContent = url;
+  urlEl.title = url;
+  ban.dataset.url = url;
+  ban.classList.remove("hidden");
+}
+
+function hideClipBanner() {
+  $("#clipBanner")?.classList.add("hidden");
+}
+
+async function pollClipboardOnce() {
+  if (!uvdSettings.clipboardWatch) return;
+  try {
+    const text = await navigator.clipboard.readText();
+    const urls = UVD.parseUrlsFromText(text);
+    const link = urls.find(
+      (u) =>
+        isYoutubeUrl(u) ||
+        isTiktokUrl(u) ||
+        isInstagramUrl(u) ||
+        UVD.isPlaylistUrl(u)
+    );
+    if (!link) return;
+    if (link === lastClipSeen || link === dismissedClip) return;
+    if (($("#linkInput")?.value || "").includes(link)) return;
+    if (currentTabUrl && pageKey(currentTabUrl) === pageKey(link)) return;
+    lastClipSeen = link;
+    showClipBanner(link);
+  } catch {
+    /* permission denied — ignore silently */
+  }
+}
+
+function setupClipboardWatch() {
+  if (clipWatchTimer) {
+    clearInterval(clipWatchTimer);
+    clipWatchTimer = null;
+  }
+  if (!uvdSettings.clipboardWatch) {
+    hideClipBanner();
+    return;
+  }
+  pollClipboardOnce();
+  clipWatchTimer = setInterval(pollClipboardOnce, 2500);
+}
+
+async function loadHistoryUi() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_HISTORY" });
+    historyItems = res?.history || [];
+  } catch {
+    historyItems = await UVD.getHistory().catch(() => []);
+  }
+  renderHistory();
+}
+
+function formatTimeAgo(ts) {
+  const d = Date.now() - (ts || 0);
+  if (d < 60_000) return "방금";
+  if (d < 3600_000) return `${Math.floor(d / 60_000)}분 전`;
+  if (d < 86400_000) return `${Math.floor(d / 3600_000)}시간 전`;
+  return `${Math.floor(d / 86400_000)}일 전`;
+}
+
+function renderHistory() {
+  const root = $("#historyList");
+  if (!root) return;
+  if (!historyItems.length) {
+    root.innerHTML = `<div class="empty small"><p>기록이 없습니다.</p></div>`;
+    return;
+  }
+  root.innerHTML = historyItems
+    .map((h) => {
+      const ok = h.status === "done";
+      const errMeta = !ok ? UVD.classifyError(h.error || "") : null;
+      const sub = ok
+        ? `${formatTimeAgo(h.at)} · ${h.mediaMode === "audio" ? "오디오" : h.mediaMode === "video_subs" ? "영상+자막" : "영상"}${
+            h.size ? ` · ${(h.size / 1024 / 1024).toFixed(1)}MB` : ""
+          }`
+        : `${formatTimeAgo(h.at)} · ${errMeta?.label || "실패"}`;
+      const acts = [];
+      if (h.pageUrl || h.url) {
+        acts.push(
+          `<button type="button" class="btn" data-act="retry" data-url="${escapeAttr(
+            h.pageUrl || h.url
+          )}">다시 받기</button>`
+        );
+      }
+      if (ok) {
+        acts.push(
+          `<button type="button" class="btn" data-act="show" data-path="${escapeAttr(
+            h.path || ""
+          )}" data-did="${escapeAttr(h.downloadId ?? "")}">폴더</button>`
+        );
+      } else if (errMeta) {
+        if (errMeta.actions.includes("open_page") && (h.pageUrl || h.url)) {
+          acts.push(
+            `<button type="button" class="btn" data-act="open" data-url="${escapeAttr(
+              h.pageUrl || h.url
+            )}">페이지</button>`
+          );
+        }
+        if (errMeta.actions.includes("helper")) {
+          acts.push(
+            `<button type="button" class="btn" data-act="helper">도우미</button>`
+          );
+        }
+        if (errMeta.actions.includes("login") && (h.pageUrl || h.url)) {
+          acts.push(
+            `<button type="button" class="btn" data-act="login" data-url="${escapeAttr(
+              h.pageUrl || h.url
+            )}">로그인</button>`
+          );
+        }
+      }
+      return `
+        <div class="history-item ${ok ? "" : "is-error"}">
+          <div class="history-top">
+            <span class="history-status ${ok ? "done" : "error"}">${
+              ok ? "✓" : "!"
+            }</span>
+            <div class="history-meta">
+              <div class="history-title" title="${escapeAttr(
+                h.title || ""
+              )}">${escapeHtml(h.title || "영상")}</div>
+              <div class="history-sub">${escapeHtml(sub)}${
+                !ok && errMeta
+                  ? `<br>${escapeHtml(errMeta.hint)}`
+                  : ""
+              }</div>
+            </div>
+          </div>
+          <div class="history-actions">${acts.join("")}</div>
+        </div>`;
+    })
+    .join("");
+  bindRecoveryButtons(root);
+}
+
+function updateLinkCount() {
+  const text = $("#linkInput")?.value || "";
+  const urls = UVD.parseUrlsFromText(text);
+  const el = $("#linkCount");
+  if (el) {
+    el.textContent =
+      urls.length > 1
+        ? `${urls.length}개 링크 (일괄)`
+        : urls.length === 1
+          ? "1개 링크"
+          : "0개 링크";
+  }
+  return urls;
 }
 
 /** Legacy single bar — only if queue DOM missing */
@@ -827,16 +1362,13 @@ function applyJobProgress(jobOrProgress, opts = {}) {
   const p = jobOrProgress;
   const jobId = p.id || p.jobId;
   if (!jobId) {
-    // Unscoped progress — attach to newest running job
-    let latest = null;
-    for (const j of uiJobs.values()) {
-      if (j.status !== "running") continue;
-      if (!latest || (j.startedAt || 0) > (latest.startedAt || 0)) latest = j;
-    }
-    if (latest) {
+    // Unscoped progress with multiple jobs → ignore (was causing % thrash)
+    const running = [...uiJobs.values()].filter((j) => j.status === "running");
+    if (running.length > 1) return;
+    if (running.length === 1) {
       upsertUiJob(
         {
-          ...latest,
+          ...running[0],
           percent: p.percent,
           message: p.message,
           phase: p.phase,
@@ -1004,6 +1536,37 @@ function userError(err) {
   return clean || "다운로드에 실패했습니다";
 }
 
+/** Same-page check for thumbnails (watch?v= changes are different pages) */
+function pageKey(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    const path = u.pathname || "/";
+    if (host === "youtu.be") return `yt:${path.replace(/^\//, "").split("/")[0]}`;
+    if (host.includes("youtube")) {
+      const v = u.searchParams.get("v");
+      if (v) return `yt:${v}`;
+      const m = path.match(/\/(shorts|embed|live|clip)\/([^/?#]+)/i);
+      if (m) return `yt:${m[1]}:${m[2]}`;
+      return `yt:${path}`;
+    }
+    if (host.includes("tiktok")) {
+      const m = path.match(/\/@[^/]+\/video\/(\d+)/i);
+      if (m) return `tt:${m[1]}`;
+      return `tt:${path}`;
+    }
+    if (host.includes("instagram") || host.includes("instagr.am")) {
+      const m = path.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+      if (m) return `ig:${m[1]}:${m[2]}`;
+      return `ig:${path}`;
+    }
+    return `${host}${path}`;
+  } catch {
+    return String(url).slice(0, 120);
+  }
+}
+
 /** Keep YT/TT card alive even when background sends empty MEDIA_UPDATED */
 function ensureSiteItems(items, tabLike) {
   const list = Array.isArray(items) ? items.slice() : [];
@@ -1018,19 +1581,32 @@ function ensureSiteItems(items, tabLike) {
 
   // Replace CDN fragments with page-level download item
   const top = list[0];
+  const curKey = pageKey(url);
+  const topKey = pageKey(top.pageUrl || top.url || "");
+  const samePage = !topKey || !curKey || topKey === curKey;
+
+  // Never carry previous page's thumbnail onto a new video page
+  const thumb = samePage ? top.thumbnail || local.thumbnail : local.thumbnail;
+  const title = samePage
+    ? top.title || local.title
+    : local.title || top.title;
+  const pageTitle = samePage
+    ? top.pageTitle || local.pageTitle
+    : local.pageTitle || top.pageTitle;
+
   return [
     {
       ...local,
-      ...top,
+      ...(samePage ? top : {}),
       url: local.url,
       pageUrl: local.pageUrl,
       isSiteDownload: true,
       site: local.site,
-      title: top.title || local.title,
-      pageTitle: top.pageTitle || local.pageTitle,
-      displayName: top.displayName || local.displayName,
-      filename: top.filename || local.filename,
-      thumbnail: top.thumbnail || local.thumbnail
+      title,
+      pageTitle,
+      displayName: samePage ? top.displayName || local.displayName : local.displayName,
+      filename: samePage ? top.filename || local.filename : local.filename,
+      thumbnail: thumb || undefined
     }
   ];
 }
@@ -1077,7 +1653,7 @@ function render() {
   const site = siteLabel(currentTabUrl, item);
   const btnLabel = site ? `${site} 다운로드` : "다운로드";
 
-  // Layout: thumb | title+meta on one row; filename full-width below (no overlap)
+  // Download CTA first (no scroll) → estimate → quality → details
   card.innerHTML = `
     <div class="card-top">
       <div class="thumb" aria-hidden="true">${thumbHtml(item)}</div>
@@ -1086,14 +1662,18 @@ function render() {
         <div class="meta-grid">${metaRowsHtml(item)}</div>
       </div>
     </div>
-    <div class="filename-box" title="${escapeAttr(file)}">
-      <span class="filename-label">저장 이름</span>
-      <span class="filename-value">${escapeHtml(file)}</span>
-    </div>
-    ${qualityPickerHtml()}
+    ${estimateBarHtml(item, qualitiesLoading)}
     <div class="card-actions">
       <button type="button" class="btn primary btn-dl">${escapeHtml(btnLabel)}</button>
     </div>
+    ${qualityPickerHtml()}
+    <details class="card-details">
+      <summary class="card-details-sum">저장 이름 · 상세</summary>
+      <div class="filename-box" title="${escapeAttr(file)}">
+        <span class="filename-label">저장 이름</span>
+        <span class="filename-value">${escapeHtml(file)}</span>
+      </div>
+    </details>
   `;
 
   const img = card.querySelector(".thumb-img");
@@ -1358,33 +1938,67 @@ async function loadMedia() {
   }
   allItems = ensureSiteItems(Array.isArray(res?.items) ? res.items : [], tab);
 
-  // Ensure thumbnail / title from page when possible
+  // Ensure thumbnail / title from *current* page only (never keep previous video thumb)
   if (allItems[0]) {
     try {
       const meta = await chrome.tabs.sendMessage(tab.id, { type: "GET_PAGE_META" });
       if (meta?.thumbnail || meta?.title) {
-        allItems = allItems.map((i) => ({
-          ...i,
-          thumbnail: i.thumbnail || meta.thumbnail,
-          title: i.title && !/^YouTube|TikTok/i.test(i.title) ? i.title : meta.title || i.title,
-          pageTitle: meta.title || i.pageTitle
-        }));
+        const curKey = pageKey(currentTabUrl);
+        allItems = allItems.map((i) => {
+          const itemKey = pageKey(i.pageUrl || i.url || currentTabUrl);
+          const same = !itemKey || !curKey || itemKey === curKey;
+          return {
+            ...i,
+            // Prefer fresh page meta thumb; drop mismatched old thumbs
+            thumbnail: same
+              ? meta.thumbnail || i.thumbnail || undefined
+              : meta.thumbnail || undefined,
+            title:
+              meta.title ||
+              (i.title && !/^YouTube|TikTok|Instagram/i.test(i.title) ? i.title : "") ||
+              i.title,
+            pageTitle: meta.title || i.pageTitle
+          };
+        });
         chrome.runtime
           .sendMessage({
             type: "PAGE_META",
             tabId: currentTabId,
-            pageMeta: meta
+            pageUrl: currentTabUrl,
+            pageMeta: {
+              ...meta,
+              lastUrl: currentTabUrl,
+              // Clear if page has no thumb yet — don't leave previous
+              thumbnail: meta.thumbnail || undefined
+            }
           })
           .catch(() => {});
+      } else {
+        // No meta from page — strip thumbs that don't match current URL
+        const curKey = pageKey(currentTabUrl);
+        allItems = allItems.map((i) => {
+          const itemKey = pageKey(i.pageUrl || i.url || "");
+          if (itemKey && curKey && itemKey !== curKey) {
+            return { ...i, thumbnail: undefined };
+          }
+          return i;
+        });
       }
     } catch {
-      /* YouTube often blocks CS — use tab title */
+      /* YouTube often blocks CS — use tab title; clear foreign thumbs */
+      const curKey = pageKey(currentTabUrl);
+      if (allItems[0]) {
+        const itemKey = pageKey(allItems[0].pageUrl || allItems[0].url || "");
+        if (itemKey && curKey && itemKey !== curKey) {
+          allItems[0].thumbnail = undefined;
+        }
+      }
       if (tab.title && allItems[0]) {
         const t = tab.title.replace(/\s*[-–—|].*$/, "").trim();
         if (t && t.length > 2) {
-          allItems[0].title = allItems[0].title || t;
-          allItems[0].pageTitle = allItems[0].pageTitle || t;
-          allItems[0].displayName = allItems[0].displayName || t;
+          allItems[0].title = t;
+          allItems[0].pageTitle = t;
+          allItems[0].displayName = t;
         }
       }
     }
@@ -1441,15 +2055,17 @@ function updateQuickPageUi() {
   const btn = $("#btnThisPage");
   const hint = $("#quickHint");
   if (!box || !btn) return;
-  if (currentTabUrl && isSitePage(currentTabUrl)) {
+  // Card already has primary download — hide duplicate quick CTA when video card is shown
+  const hasCard = !!(allItems[0] && isSitePage(currentTabUrl));
+  if (currentTabUrl && isSitePage(currentTabUrl) && !hasCard) {
     box.classList.remove("hidden");
     const name = siteDisplayName(currentTabUrl);
     btn.textContent = `이 ${name} 영상 받기`;
     if (hint) {
       hint.textContent =
         name === "Instagram"
-          ? "로그인된 상태에서 가장 잘 받습니다 · Alt+Shift+D"
-          : `${name} 페이지를 바로 저장 · Alt+Shift+D`;
+          ? "로그인 후 가장 잘 받음 · Alt+Shift+D"
+          : `바로 저장 · Alt+Shift+D`;
     }
   } else {
     box.classList.add("hidden");
@@ -1497,15 +2113,99 @@ function normalizePastedUrl(raw) {
   }
 }
 
+function fnameBaseFromLink(link) {
+  try {
+    if (isTiktokUrl(link)) {
+      const m = link.match(/video\/(\d+)/);
+      return m ? `TikTok_${m[1]}` : "TikTok";
+    }
+    if (isYoutubeUrl(link)) {
+      const u = new URL(link);
+      const id = u.searchParams.get("v") || u.pathname.split("/").pop();
+      return id ? `YouTube_${id}` : "YouTube";
+    }
+    if (isInstagramUrl(link)) {
+      const m = link.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+      return m ? `Instagram_${m[2]}` : "Instagram";
+    }
+  } catch {
+    /* ignore */
+  }
+  return UVD.siteFromUrl(link) || "영상";
+}
+
 async function downloadByPastedLink(forcedUrl) {
+  const input = $("#linkInput");
+  const btn = $("#btnLinkDl");
+  const thisBtn = $("#btnThisPage");
+
+  // Multi-link batch when textarea has several URLs (and no single forcedUrl override list)
+  if (!forcedUrl) {
+    const urls = updateLinkCount().filter(
+      (u) =>
+        isYoutubeUrl(u) ||
+        isTiktokUrl(u) ||
+        isInstagramUrl(u) ||
+        looksLikeDirectMedia(u) ||
+        UVD.isPlaylistUrl(u)
+    );
+    if (urls.length > 1) {
+      if (runningJobCount() + urls.length > MAX_CONCURRENT_STARTS) {
+        toast(
+          `동시에 최대 ${MAX_CONCURRENT_STARTS}개까지 — 지금은 ${urls.length}개 중 일부만 시작합니다`,
+          "ok"
+        );
+      }
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "일괄…";
+      }
+      try {
+        await refreshHelperStatus(true);
+        const res = await chrome.runtime.sendMessage({
+          type: "DOWNLOAD_BATCH",
+          urls,
+          tabId: currentTabId,
+          preferQuality: selectedQuality || "best"
+        });
+        if (res?.ok) {
+          toast(
+            res.truncated
+              ? `${res.count}개 시작 (전체 ${res.total}개 중)`
+              : `${res.count}개 일괄 다운로드 시작`,
+            "ok"
+          );
+          if (input) input.value = "";
+          updateLinkCount();
+          ensureQueuePoll();
+          await refreshJobsFromBackground();
+        } else {
+          toast(userError(res?.error) || "일괄 다운로드 실패", "error");
+        }
+      } catch (e) {
+        toast(userError(e?.message) || "일괄 다운로드 실패", "error");
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "받기";
+        }
+        if (thisBtn) {
+          thisBtn.disabled = false;
+          updateQuickPageUi();
+        }
+      }
+      return;
+    }
+  }
+
   if (!canStartAnotherDownload()) {
     toast(`동시에 최대 ${MAX_CONCURRENT_STARTS}개까지 받을 수 있어요`, "error");
     return;
   }
-  const input = $("#linkInput");
-  const btn = $("#btnLinkDl");
-  const thisBtn = $("#btnThisPage");
-  const link = normalizePastedUrl(forcedUrl || input?.value || "");
+
+  const raw = forcedUrl || input?.value || "";
+  const parsed = UVD.parseUrlsFromText(raw);
+  const link = normalizePastedUrl(parsed[0] || raw);
   if (!link) {
     toast("유효한 링크를 붙여 넣어 주세요 (YouTube / TikTok / Instagram)", "error");
     input?.focus();
@@ -1515,45 +2215,30 @@ async function downloadByPastedLink(forcedUrl) {
     !isYoutubeUrl(link) &&
     !isTiktokUrl(link) &&
     !isInstagramUrl(link) &&
-    !looksLikeDirectMedia(link)
+    !looksLikeDirectMedia(link) &&
+    !UVD.isPlaylistUrl(link)
   ) {
     toast("YouTube, TikTok, Instagram 또는 직접 영상 링크만 지원합니다", "error");
     return;
   }
 
-  // Keep buttons usable so more links can be queued
   if (btn) {
     btn.disabled = true;
     btn.textContent = "추가…";
   }
 
   try {
-    const isPage = isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link);
-    const fnameBase = (() => {
-      try {
-        if (isTiktokUrl(link)) {
-          const m = link.match(/video\/(\d+)/);
-          return m ? `TikTok_${m[1]}` : "TikTok";
-        }
-        if (isYoutubeUrl(link)) {
-          const u = new URL(link);
-          const id = u.searchParams.get("v") || u.pathname.split("/").pop();
-          return id ? `YouTube_${id}` : "YouTube";
-        }
-        if (isInstagramUrl(link)) {
-          const m = link.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
-          return m ? `Instagram_${m[2]}` : "Instagram";
-        }
-      } catch {
-        /* ignore */
-      }
-      return "영상";
-    })();
-    const q =
-      selectedQuality && !/^(best|all)$/i.test(selectedQuality)
-        ? `_${selectedQuality}`
-        : "";
-    const filename = `${fnameBase}${q}.mp4`;
+    const isPage =
+      isYoutubeUrl(link) ||
+      isTiktokUrl(link) ||
+      isInstagramUrl(link) ||
+      UVD.isPlaylistUrl(link);
+    const fnameBase = fnameBaseFromLink(link);
+    const filename = downloadFilename({
+      title: fnameBase,
+      pageUrl: link,
+      type: uvdSettings.mediaMode === "audio" ? "audio" : "video"
+    });
 
     const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     upsertUiJob(
@@ -1622,8 +2307,10 @@ async function downloadByPastedLink(forcedUrl) {
           : "받기 시작 · 페이지를 이동해도 계속됩니다",
         "ok"
       );
-      // Clear input so next link is easy to paste
-      if (input && !forcedUrl) input.value = "";
+      if (input && !forcedUrl) {
+        input.value = "";
+        updateLinkCount();
+      }
       return;
     }
 
@@ -1639,7 +2326,7 @@ async function downloadByPastedLink(forcedUrl) {
       return;
     }
     if (res?.ok) {
-      toast("저장 완료 · 다운로드/VideoDownloader", "ok");
+      toast(`저장 완료 · 다운로드/${uvdSettings.subfolder || "VideoDownloader"}`, "ok");
     }
   } catch (e) {
     const msg = String(e?.message || e || "");
@@ -1675,22 +2362,91 @@ function looksLikeDirectMedia(url) {
 
 $("#btnLinkDl")?.addEventListener("click", () => downloadByPastedLink());
 $("#btnThisPage")?.addEventListener("click", () => downloadThisPage());
+$("#linkInput")?.addEventListener("input", () => updateLinkCount());
 $("#linkInput")?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
     e.preventDefault();
     downloadByPastedLink();
   }
 });
 
-// If clipboard has social link and input empty (and tab is not already social), fill it
+document.querySelectorAll(".tab").forEach((t) => {
+  t.addEventListener("click", () => switchTab(t.getAttribute("data-tab")));
+});
+document.querySelectorAll(".mode-chip").forEach((c) => {
+  c.addEventListener("click", async () => {
+    const mode = c.getAttribute("data-mode") || "video";
+    uvdSettings.mediaMode = mode;
+    applyModeChips();
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: "SET_SETTINGS",
+        settings: { mediaMode: mode }
+      });
+      if (res?.settings) uvdSettings = res.settings;
+    } catch {
+      /* local only */
+    }
+    updateFooterNote();
+    if (allItems[0]) render();
+    toast(
+      mode === "audio"
+        ? "오디오만 (MP3)으로 받습니다"
+        : mode === "video_subs"
+          ? "영상 + 자막으로 받습니다"
+          : "영상(MP4)으로 받습니다",
+      "ok"
+    );
+  });
+});
+$("#btnSaveSettings")?.addEventListener("click", () => saveSettingsFromForm());
+$("#setTemplate")?.addEventListener("input", updateSettingsPreview);
+$("#setSubfolder")?.addEventListener("input", () => {
+  uvdSettings.subfolder = $("#setSubfolder").value;
+  updateSettingsPreview();
+});
+$("#setMediaMode")?.addEventListener("change", updateSettingsPreview);
+$("#btnClearHistory")?.addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "CLEAR_HISTORY" }).catch(() => {});
+  historyItems = [];
+  renderHistory();
+  toast("기록을 비웠습니다", "ok");
+});
+$("#btnHelperFix")?.addEventListener("click", () => showHelperHelp());
+
+$("#btnClipApply")?.addEventListener("click", () => {
+  const url = $("#clipBanner")?.dataset?.url || $("#clipBannerUrl")?.textContent || "";
+  if (!url || url === "—") return;
+  if ($("#linkInput")) {
+    $("#linkInput").value = url;
+    updateLinkCount();
+  }
+  hideClipBanner();
+  toast("링크를 적용했습니다 · 받기를 누르세요", "ok");
+  switchTab("main");
+});
+$("#btnClipDismiss")?.addEventListener("click", () => {
+  dismissedClip = $("#clipBanner")?.dataset?.url || lastClipSeen || "";
+  hideClipBanner();
+});
+
+// One-shot autofill when clipboard watch is OFF (legacy convenience)
 (async () => {
   try {
+    if (uvdSettings.clipboardWatch) return; // watch handles suggestions instead
     if ($("#linkInput")?.value) return;
     if (currentTabUrl && isSitePage(currentTabUrl)) return;
     const text = await navigator.clipboard.readText();
-    const link = normalizePastedUrl(text);
+    const urls = UVD.parseUrlsFromText(text);
+    if (urls.length > 1) {
+      $("#linkInput").value = urls.join("\n");
+      updateLinkCount();
+      return;
+    }
+    const link = normalizePastedUrl(urls[0] || text);
     if (link && (isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link))) {
       $("#linkInput").value = link;
+      updateLinkCount();
     }
   } catch {
     /* clipboard permission may be denied */
@@ -1700,9 +2456,21 @@ $("#linkInput")?.addEventListener("keydown", (e) => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "MEDIA_UPDATED" && msg.tabId === currentTabId) {
     // Do NOT wipe YT/TT card with empty network updates
-    allItems = ensureSiteItems(msg.items || [], {
+    // Filter out items whose pageUrl identity doesn't match current tab
+    const curKey = pageKey(currentTabUrl);
+    const items = (msg.items || []).map((i) => {
+      const k = pageKey(i.pageUrl || i.url || "");
+      if (curKey && k && k !== curKey && i.isSiteDownload) {
+        return { ...i, thumbnail: undefined, url: currentTabUrl, pageUrl: currentTabUrl };
+      }
+      if (curKey && k && k !== curKey) {
+        return { ...i, thumbnail: undefined };
+      }
+      return i;
+    });
+    allItems = ensureSiteItems(items, {
       url: currentTabUrl,
-      title: (msg.items && msg.items[0] && msg.items[0].title) || ""
+      title: (items[0] && items[0].title) || ""
     });
     render();
     refreshHelperStatus();
@@ -1742,10 +2510,18 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (p.jobId) trackedJobIds.add(p.jobId);
     applyJobProgress(p);
   }
+
+  if (msg.type === "HISTORY_UPDATED" && Array.isArray(msg.history)) {
+    historyItems = msg.history;
+    if (activeTabName === "history") renderHistory();
+  }
 });
 
-// Restore in-flight downloads first, then load page media
+// Restore settings + in-flight downloads, then load page media
 (async () => {
+  await loadSettings();
+  setupClipboardWatch();
   await restoreActiveDownloads();
   await loadMedia();
+  updateLinkCount();
 })();

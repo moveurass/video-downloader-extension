@@ -99,12 +99,14 @@ const YtDlp = (() => {
         continue;
       }
       const pct = typeof job.percent === "number" ? job.percent : 0;
+      // Pass helper job id for debugging; percent already monotonic on server
       onProgress?.({
         percent: pct,
         message: job.message || job.status,
         status: job.status,
         outDir: job.outDir || started.outDir,
-        path: job.path
+        path: job.path,
+        helperJobId: jobId
       });
       if (job.status === "done") {
         return {
