@@ -28,6 +28,10 @@ let queuePollTimer = null;
 let uvdSettings = { ...(globalThis.UVD?.DEFAULT_SETTINGS || {}) };
 /** @type {Array<object>} */
 let historyItems = [];
+/** @type {Array<object>} */
+let watchlistItems = [];
+/** @type {Array<object>} */
+let recentItems = [];
 let activeTabName = "main";
 
 const $ = (sel) => document.querySelector(sel);
@@ -1122,7 +1126,9 @@ function switchTab(name) {
     p.classList.toggle("hidden", p.id !== `tab-${name}`);
   });
   if (name === "history") loadHistoryUi();
+  if (name === "watch") loadWatchlistUi();
   if (name === "settings") fillSettingsForm();
+  if (name === "main") loadRecentStrip();
 }
 
 async function loadSettings() {
@@ -1152,7 +1158,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.15`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.16`;
 }
 
 function fillSettingsForm() {
@@ -1176,6 +1182,8 @@ function fillSettingsForm() {
   if (notify) notify.checked = uvdSettings.notifyOnComplete !== false;
   if (clip) clip.checked = !!uvdSettings.clipboardWatch;
   if (warnDup) warnDup.checked = uvdSettings.warnDuplicates !== false;
+  const saveThumb = $("#setSaveThumb");
+  if (saveThumb) saveThumb.checked = uvdSettings.saveThumbnail !== false;
   const setSel = (id, val) => {
     const el = $(id);
     if (!el) return;
@@ -1223,6 +1231,7 @@ async function saveSettingsFromForm() {
     notifyOnComplete: $("#setNotify")?.checked !== false,
     clipboardWatch: !!$("#setClipboard")?.checked,
     warnDuplicates: $("#setWarnDup")?.checked !== false,
+    saveThumbnail: $("#setSaveThumb")?.checked !== false,
     qualityBySite: {
       default: $("#setQDefault")?.value || "best",
       youtube: $("#setQYoutube")?.value || "1080p",
@@ -1322,6 +1331,198 @@ function updateRetryFailedButton() {
   ).length;
   btn.disabled = n === 0;
   btn.textContent = n > 0 ? `실패만 재시도 (${n})` : "실패만 재시도";
+}
+
+/* ── Recent files ─────────────────────────────── */
+async function loadRecentStrip() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_RECENT_DONE", limit: 3 });
+    recentItems = res?.items || [];
+  } catch {
+    recentItems = await UVD.getRecentDone(3).catch(() => []);
+  }
+  renderRecentStrip();
+}
+
+function renderRecentStrip() {
+  const strip = $("#recentStrip");
+  const list = $("#recentList");
+  if (!strip || !list) return;
+  if (!recentItems.length) {
+    strip.classList.add("hidden");
+    list.innerHTML = "";
+    return;
+  }
+  strip.classList.remove("hidden");
+  list.innerHTML = recentItems
+    .map((h) => {
+      const title = (h.title || h.filename || "영상").slice(0, 48);
+      return `
+        <div class="recent-item">
+          <span class="recent-item-title" title="${escapeAttr(h.title || "")}">${escapeHtml(
+            title
+          )}</span>
+          <button type="button" class="btn" data-act="show" data-path="${escapeAttr(
+            h.path || ""
+          )}" data-did="${escapeAttr(h.downloadId ?? "")}">폴더</button>
+        </div>`;
+    })
+    .join("");
+  bindRecoveryButtons(list);
+}
+
+/* ── Watchlist ────────────────────────────────── */
+async function loadWatchlistUi() {
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_WATCHLIST" });
+    watchlistItems = res?.watchlist || [];
+  } catch {
+    watchlistItems = await UVD.getWatchlist().catch(() => []);
+  }
+  renderWatchlist();
+}
+
+function renderWatchlist() {
+  const root = $("#watchList");
+  if (!root) return;
+  if (!watchlistItems.length) {
+    root.innerHTML = `
+      <div class="empty small">
+        <p>비어 있습니다.</p>
+        <p class="hint">링크 옆 「나중」또는 카드에서 추가하세요.</p>
+      </div>`;
+    return;
+  }
+  root.innerHTML = watchlistItems
+    .map((w) => {
+      const title = w.title || "나중에 받을 영상";
+      return `
+        <div class="history-item" data-watch-id="${escapeAttr(w.id)}">
+          <div class="history-top">
+            <span class="history-status done">☆</span>
+            <div class="history-meta">
+              <div class="history-title" title="${escapeAttr(title)}">${escapeHtml(
+                title
+              )}</div>
+              <div class="history-sub">${escapeHtml(
+                formatTimeAgo(w.at)
+              )} · ${escapeHtml(w.site || UVD.siteFromUrl(w.url) || "")}</div>
+            </div>
+          </div>
+          <div class="history-actions">
+            <button type="button" class="btn" data-act="watch-dl" data-url="${escapeAttr(
+              w.url || w.pageUrl || ""
+            )}" data-id="${escapeAttr(w.id)}">받기</button>
+            <button type="button" class="btn" data-act="watch-rm" data-id="${escapeAttr(
+              w.id
+            )}">삭제</button>
+          </div>
+        </div>`;
+    })
+    .join("");
+  root.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const act = btn.getAttribute("data-act");
+      const id = btn.getAttribute("data-id") || "";
+      const url = btn.getAttribute("data-url") || "";
+      if (act === "watch-dl" && url) {
+        await downloadByPastedLink(url, { skipDupCheck: false });
+        await chrome.runtime
+          .sendMessage({ type: "REMOVE_WATCHLIST", id })
+          .catch(() => {});
+        await loadWatchlistUi();
+        return;
+      }
+      if (act === "watch-rm" && id) {
+        await chrome.runtime
+          .sendMessage({ type: "REMOVE_WATCHLIST", id })
+          .catch(() => {});
+        await loadWatchlistUi();
+      }
+    });
+  });
+}
+
+async function addCurrentToWatchlist(forcedUrl) {
+  let url = forcedUrl || "";
+  if (!url) {
+    const fromInput = UVD.parseUrlsFromText($("#linkInput")?.value || "")[0];
+    url = fromInput || currentTabUrl || "";
+  }
+  if (!/^https?:/i.test(url)) {
+    toast("추가할 링크가 없습니다", "error");
+    return;
+  }
+  if (
+    !isYoutubeUrl(url) &&
+    !isTiktokUrl(url) &&
+    !isInstagramUrl(url) &&
+    !UVD.isPlaylistUrl(url) &&
+    !looksLikeDirectMedia(url)
+  ) {
+    toast("지원 사이트 링크만 추가할 수 있습니다", "error");
+    return;
+  }
+  const title =
+    (allItems[0] &&
+      pageKey(allItems[0].pageUrl || allItems[0].url || "") === pageKey(url) &&
+      (allItems[0].title || allItems[0].pageTitle)) ||
+    fnameBaseFromLink(url) ||
+    "나중에 받을 영상";
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "ADD_WATCHLIST",
+      item: {
+        url,
+        pageUrl: url,
+        title: cleanTitleText(title) || title,
+        thumbnail: allItems[0]?.thumbnail || "",
+        quality: selectedQuality || "",
+        site: UVD.siteFromUrl(url)
+      }
+    });
+    watchlistItems = res?.watchlist || [];
+    toast("나중 받기에 추가했습니다", "ok");
+    if (activeTabName === "watch") renderWatchlist();
+  } catch (e) {
+    toast(userError(e?.message) || "추가 실패", "error");
+  }
+}
+
+async function downloadAllWatchlist() {
+  if (!watchlistItems.length) {
+    toast("나중 받기 목록이 비어 있습니다", "ok");
+    return;
+  }
+  const urls = watchlistItems.map((w) => w.url || w.pageUrl).filter((u) => /^https?:/i.test(u));
+  if (!urls.length) return;
+  switchTab("main");
+  toast(`${urls.length}개 나중 받기 시작…`, "ok");
+  try {
+    await refreshHelperStatus(true);
+    const res = await chrome.runtime.sendMessage({
+      type: "DOWNLOAD_BATCH",
+      urls: urls.slice(0, MAX_CONCURRENT_STARTS),
+      tabId: currentTabId,
+      preferQuality: selectedQuality || "best"
+    });
+    if (res?.ok) {
+      // Remove started items from watchlist
+      for (const u of urls.slice(0, res.count || urls.length)) {
+        await chrome.runtime
+          .sendMessage({ type: "REMOVE_WATCHLIST", id: u })
+          .catch(() => {});
+      }
+      toast(`${res.count || urls.length}개 다운로드 시작`, "ok");
+      ensureQueuePoll();
+      await refreshJobsFromBackground();
+      await loadWatchlistUi();
+    } else {
+      toast(userError(res?.error) || "시작 실패", "error");
+    }
+  } catch (e) {
+    toast(userError(e?.message) || "시작 실패", "error");
+  }
 }
 
 /**
@@ -1878,8 +2079,9 @@ function render() {
       </div>
     </div>
     ${estimateBarHtml(item, qualitiesLoading)}
-    <div class="card-actions">
+    <div class="card-actions card-actions-row">
       <button type="button" class="btn primary btn-dl">${escapeHtml(btnLabel)}</button>
+      <button type="button" class="btn btn-watch" title="나중에 받기">나중</button>
     </div>
     ${qualityPickerHtml()}
     <details class="card-details">
@@ -1929,6 +2131,11 @@ function render() {
         btn.textContent = prev || "다운로드";
       }, 600);
     }
+  });
+
+  card.querySelector(".btn-watch")?.addEventListener("click", async () => {
+    const url = item.pageUrl || item.url || currentTabUrl;
+    await addCurrentToWatchlist(url);
   });
 
   listEl.appendChild(card);
@@ -2680,6 +2887,14 @@ $("#btnClearHistory")?.addEventListener("click", async () => {
 });
 $("#btnRetryFailed")?.addEventListener("click", () => retryFailedDownloads());
 $("#btnHelperFix")?.addEventListener("click", () => showHelperHelp());
+$("#btnAddWatch")?.addEventListener("click", () => addCurrentToWatchlist());
+$("#btnWatchDlAll")?.addEventListener("click", () => downloadAllWatchlist());
+$("#btnClearWatch")?.addEventListener("click", async () => {
+  await chrome.runtime.sendMessage({ type: "CLEAR_WATCHLIST" }).catch(() => {});
+  watchlistItems = [];
+  renderWatchlist();
+  toast("나중 받기를 비웠습니다", "ok");
+});
 
 $("#btnClipApply")?.addEventListener("click", () => {
   const url = $("#clipBanner")?.dataset?.url || $("#clipBannerUrl")?.textContent || "";
@@ -2759,6 +2974,7 @@ chrome.runtime.onMessage.addListener((msg) => {
       thisBtn.disabled = false;
       updateQuickPageUi();
     }
+    if (job.status === "done") loadRecentStrip();
     return;
   }
 
@@ -2780,12 +2996,17 @@ chrome.runtime.onMessage.addListener((msg) => {
 
   if (msg.type === "HISTORY_UPDATED" && Array.isArray(msg.history)) {
     historyItems = msg.history;
+    loadRecentStrip();
     if (activeTabName === "history") {
       renderHistory();
       updateRetryFailedButton();
     } else {
       updateRetryFailedButton();
     }
+  }
+  if (msg.type === "WATCHLIST_UPDATED" && Array.isArray(msg.watchlist)) {
+    watchlistItems = msg.watchlist;
+    if (activeTabName === "watch") renderWatchlist();
   }
 });
 
@@ -2796,4 +3017,5 @@ chrome.runtime.onMessage.addListener((msg) => {
   await restoreActiveDownloads();
   await loadMedia();
   updateLinkCount();
+  await loadRecentStrip();
 })();

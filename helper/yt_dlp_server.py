@@ -656,6 +656,7 @@ def run_download(job_id: str, payload: dict) -> None:
         payload.get("writeSubs")
         or payload.get("mediaMode") in ("video_subs", "video+subs", "subs")
     )
+    write_thumbnail = bool(payload.get("writeThumbnail")) and not audio_only
     yes_playlist = bool(payload.get("yesPlaylist") or payload.get("playlist"))
 
     def build_cmd(format_str: str, merge: str, extra: list[str] | None = None) -> list[str]:
@@ -711,6 +712,14 @@ def run_download(job_id: str, payload: dict) -> None:
                     "--convert-subs",
                     "srt",
                     "--embed-subs",
+                ]
+            )
+        if write_thumbnail:
+            c.extend(
+                [
+                    "--write-thumbnail",
+                    "--convert-thumbnails",
+                    "jpg",
                 ]
             )
 

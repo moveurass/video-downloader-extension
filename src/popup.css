@@ -385,6 +385,87 @@ body {
   border: 1px solid var(--border);
 }
 
+/* Recent files strip */
+.recent-strip {
+  margin: 0 10px 8px;
+  padding: 7px 8px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.recent-strip.hidden {
+  display: none;
+}
+
+.recent-head {
+  margin-bottom: 5px;
+}
+
+.recent-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.recent-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px;
+  min-width: 0;
+}
+
+.recent-item-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-item .btn {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  font-size: 10px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.card-actions-row {
+  display: flex;
+  gap: 6px;
+}
+
+.card-actions-row .btn-dl {
+  flex: 1;
+}
+
+.card-actions-row .btn-watch {
+  flex: 0 0 auto;
+  padding: 11px 12px;
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.card-actions-row .btn-watch:hover {
+  border-color: var(--muted);
+}
+
 .history-list {
   padding: 4px 10px 12px;
   display: flex;

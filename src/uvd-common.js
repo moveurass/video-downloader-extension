@@ -24,11 +24,14 @@ const UVD = (() => {
       youtube: "1080p",
       tiktok: "best",
       instagram: "best"
-    }
+    },
+    /** Save cover image as .jpg next to the video */
+    saveThumbnail: true
   };
 
   const HISTORY_KEY = "uvdHistory";
   const SETTINGS_KEY = "uvdSettings";
+  const WATCHLIST_KEY = "uvdWatchlist";
 
   function mergeSettings(raw) {
     const next = { ...DEFAULT_SETTINGS, ...(raw || {}) };
@@ -72,6 +75,7 @@ const UVD = (() => {
     next.notifyOnComplete = next.notifyOnComplete !== false;
     next.clipboardWatch = !!next.clipboardWatch;
     next.warnDuplicates = next.warnDuplicates !== false;
+    next.saveThumbnail = next.saveThumbnail !== false;
     const qbs = next.qualityBySite && typeof next.qualityBySite === "object"
       ? next.qualityBySite
       : {};
@@ -116,6 +120,7 @@ const UVD = (() => {
       quality: entry.quality || "",
       mediaMode: entry.mediaMode || "video",
       site: entry.site || "",
+      thumbnail: entry.thumbnail || "",
       at: entry.at || Date.now()
     };
     const next = [item, ...list.filter((x) => x.id !== item.id)].slice(
@@ -135,6 +140,78 @@ const UVD = (() => {
 
   async function clearHistory() {
     await chrome.storage.local.set({ [HISTORY_KEY]: [] });
+    return [];
+  }
+
+  /** Last N successful downloads (for quick strip) */
+  async function getRecentDone(limit = 3) {
+    const list = await getHistory();
+    return list.filter((h) => h && h.status === "done").slice(0, Math.max(1, limit));
+  }
+
+  async function getWatchlist() {
+    try {
+      const data = await chrome.storage.local.get(WATCHLIST_KEY);
+      return Array.isArray(data[WATCHLIST_KEY]) ? data[WATCHLIST_KEY] : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async function addWatchlist(entry) {
+    const url = entry?.url || entry?.pageUrl || "";
+    if (!/^https?:/i.test(url)) throw new Error("유효한 링크가 아닙니다");
+    const list = await getWatchlist();
+    const key = normalizeUrlKey(url);
+    const filtered = list.filter((x) => normalizeUrlKey(x.url || x.pageUrl || "") !== key);
+    const item = {
+      id: entry.id || `w_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      title: entry.title || entry.filename || "나중에 받을 영상",
+      url,
+      pageUrl: entry.pageUrl || url,
+      thumbnail: entry.thumbnail || "",
+      quality: entry.quality || "",
+      site: entry.site || siteFromUrl(url),
+      at: entry.at || Date.now()
+    };
+    const next = [item, ...filtered].slice(0, 100);
+    await chrome.storage.local.set({ [WATCHLIST_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "WATCHLIST_UPDATED", watchlist: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+
+  async function removeWatchlist(idOrUrl) {
+    const list = await getWatchlist();
+    const key = normalizeUrlKey(idOrUrl);
+    const next = list.filter(
+      (x) => x.id !== idOrUrl && normalizeUrlKey(x.url || x.pageUrl || "") !== key
+    );
+    await chrome.storage.local.set({ [WATCHLIST_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "WATCHLIST_UPDATED", watchlist: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+
+  async function clearWatchlist() {
+    await chrome.storage.local.set({ [WATCHLIST_KEY]: [] });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "WATCHLIST_UPDATED", watchlist: [] })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
     return [];
   }
 
@@ -465,11 +542,17 @@ const UVD = (() => {
     DEFAULT_SETTINGS,
     HISTORY_KEY,
     SETTINGS_KEY,
+    WATCHLIST_KEY,
     getSettings,
     setSettings,
     getHistory,
     appendHistory,
     clearHistory,
+    getRecentDone,
+    getWatchlist,
+    addWatchlist,
+    removeWatchlist,
+    clearWatchlist,
     applyFilenameTemplate,
     isGenericSaveName,
     downloadRelPath,

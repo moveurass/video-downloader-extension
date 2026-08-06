@@ -442,10 +442,82 @@ async function ytdlpExtraFromSettings(pageUrl) {
   return {
     audioOnly: s.mediaMode === "audio",
     writeSubs: s.mediaMode === "video_subs",
+    writeThumbnail: s.saveThumbnail !== false && s.mediaMode !== "audio",
     mediaMode: s.mediaMode,
     yesPlaylist: UVD.isPlaylistUrl(pageUrl),
     subfolder: s.subfolder
   };
+}
+
+/**
+ * Download cover image next to the video file (same basename .jpg).
+ * Best-effort — never fails the main download.
+ */
+async function saveCompanionThumbnail(job, result) {
+  try {
+    const settings = await UVD.getSettings();
+    if (settings.saveThumbnail === false) return;
+    if ((job?.mediaMode || settings.mediaMode) === "audio") return;
+    // yt-dlp already wrote thumb when writeThumbnail was set
+    if (result?.method === "yt-dlp" || result?.ytdlp) {
+      // Still try if we have a URL and helper didn't (some extractors skip thumbs)
+    }
+    let thumbUrl = job?.thumbnail || "";
+    if (!thumbUrl && job?.tabId != null && job.tabId >= 0) {
+      thumbUrl = tabMeta.get(job.tabId)?.thumbnail || "";
+    }
+    if (!thumbUrl || !/^https?:/i.test(thumbUrl)) return;
+
+    const videoName =
+      result?.filename ||
+      job?.filename ||
+      (result?.path ? String(result.path).split(/[/\\]/).pop() : "") ||
+      "영상.mp4";
+    let base = String(videoName).replace(/\.[a-z0-9]{2,5}$/i, "");
+    if (!base || UVD.isGenericSaveName(base)) {
+      base = (job?.title || "영상")
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 60) || "영상";
+    }
+    const jpgName = safeDownloadName(`${base}.jpg`, "image/jpeg");
+    const rel = await relDownloadPath(jpgName);
+
+    // Prefer chrome.downloads direct URL (simple, no blob memory)
+    try {
+      await startChromeDownload(thumbUrl, rel);
+      return;
+    } catch {
+      /* fall through to fetch */
+    }
+    try {
+      const res = await fetch(thumbUrl, {
+        credentials: "omit",
+        cache: "no-store",
+        headers: job?.pageUrl ? { Referer: job.pageUrl } : {}
+      });
+      if (!res.ok) return;
+      const blob = await res.blob();
+      if (!blob.size || blob.size < 500) return;
+      // small image via data URL
+      const buf = await blob.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      const chunk = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+      }
+      const b64 = btoa(binary);
+      const mime = blob.type && blob.type.startsWith("image/") ? blob.type : "image/jpeg";
+      const dataUrl = `data:${mime};base64,${b64}`;
+      await startChromeDownload(dataUrl, rel);
+    } catch (e) {
+      console.warn("[UVD] thumb save", e);
+    }
+  } catch (e) {
+    console.warn("[UVD] saveCompanionThumbnail", e);
+  }
 }
 
 function persistJobs() {
@@ -493,9 +565,15 @@ function createDownloadJob({
   pageUrl,
   filename,
   mediaMode,
-  quality
+  quality,
+  thumbnail
 } = {}) {
   const id = `dl_${Date.now()}_${++jobSeq}`;
+  // Resolve thumbnail from tab meta if not provided
+  let thumb = thumbnail || "";
+  if (!thumb && tabId != null && tabId >= 0) {
+    thumb = tabMeta.get(tabId)?.thumbnail || "";
+  }
   const job = {
     id,
     tabId: tabId != null ? tabId : -1,
@@ -504,6 +582,7 @@ function createDownloadJob({
     filename: filename || "",
     mediaMode: mediaMode || "video",
     quality: quality || "",
+    thumbnail: thumb || "",
     status: "running",
     percent: 2,
     message: "백그라운드에서 받는 중…",
@@ -662,10 +741,16 @@ function finishDownloadJob(jobId, result, error) {
       quality: job.quality || "",
       mediaMode: job.mediaMode || "video",
       site: UVD.siteFromUrl(job.pageUrl || ""),
+      thumbnail: job.thumbnail || "",
       at: Date.now()
     }).catch(() => {});
   } catch {
     /* ignore */
+  }
+
+  // Companion thumbnail (best-effort, success only)
+  if (!error && job.status === "done") {
+    saveCompanionThumbnail(job, result).catch(() => {});
   }
 
   // OS notification (works even when popup is closed)
@@ -3546,6 +3631,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
       return true;
     }
+    case "GET_RECENT_DONE": {
+      UVD.getRecentDone(msg.limit || 3)
+        .then((items) => sendResponse({ ok: true, items }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "GET_WATCHLIST": {
+      UVD.getWatchlist()
+        .then((watchlist) => sendResponse({ ok: true, watchlist }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "ADD_WATCHLIST": {
+      UVD.addWatchlist(msg.item || msg)
+        .then((watchlist) => sendResponse({ ok: true, watchlist }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "REMOVE_WATCHLIST": {
+      UVD.removeWatchlist(msg.id || msg.url || "")
+        .then((watchlist) => sendResponse({ ok: true, watchlist }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "CLEAR_WATCHLIST": {
+      UVD.clearWatchlist()
+        .then(() => sendResponse({ ok: true, watchlist: [] }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
     case "SHOW_DOWNLOAD": {
       (async () => {
         try {
@@ -3670,7 +3785,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.15.0" });
+      sendResponse({ ok: true, version: "1.16.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;

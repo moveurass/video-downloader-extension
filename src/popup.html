@@ -23,6 +23,7 @@
 
   <nav class="tabs" role="tablist">
     <button type="button" class="tab active" data-tab="main" role="tab">받기</button>
+    <button type="button" class="tab" data-tab="watch" role="tab">나중</button>
     <button type="button" class="tab" data-tab="history" role="tab">기록</button>
     <button type="button" class="tab" data-tab="settings" role="tab">설정</button>
   </nav>
@@ -103,9 +104,35 @@
       </div>
       <div class="link-row link-row-actions">
         <span id="linkCount" class="link-count">0개 링크</span>
-        <span class="link-hint inline">재생목록·여러 링크 지원</span>
+        <button type="button" id="btnAddWatch" class="btn ghost tiny">나중</button>
+        <span class="link-hint inline">재생목록·여러 링크</span>
       </div>
     </section>
+
+    <!-- Recent successful downloads -->
+    <section id="recentStrip" class="recent-strip hidden">
+      <div class="recent-head">
+        <span class="recent-title">최근 파일</span>
+      </div>
+      <div id="recentList" class="recent-list"></div>
+    </section>
+  </div>
+
+  <!-- ═══════ WATCHLIST TAB ═══════ -->
+  <div id="tab-watch" class="tab-panel hidden">
+    <div class="panel-toolbar">
+      <span class="panel-title">나중에 받기</span>
+      <div class="panel-toolbar-actions">
+        <button type="button" id="btnWatchDlAll" class="btn primary tiny">모두 받기</button>
+        <button type="button" id="btnClearWatch" class="btn ghost tiny">비우기</button>
+      </div>
+    </div>
+    <div id="watchList" class="history-list">
+      <div class="empty small">
+        <p>비어 있습니다.</p>
+        <p class="hint">링크 옆 「나중」또는 카드에서 추가하세요.</p>
+      </div>
+    </div>
   </div>
 
   <!-- ═══════ HISTORY TAB ═══════ -->
@@ -191,6 +218,13 @@
           <span class="field-hint">이미 저장한 영상이면 확인 후 받기</span>
         </span>
       </label>
+      <label class="field check-field">
+        <input type="checkbox" id="setSaveThumb" checked />
+        <span>
+          <span class="field-label">썸네일 같이 저장</span>
+          <span class="field-hint">영상과 같은 이름으로 .jpg 저장</span>
+        </span>
+      </label>
       <div class="field">
         <span class="field-label">사이트별 기본 화질</span>
         <div class="site-quality-grid">
@@ -245,7 +279,7 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.14</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.16</p>
   </footer>
 
   <script src="uvd-common.js"></script>
