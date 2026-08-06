@@ -16,17 +16,17 @@ const UVD = (() => {
     /** Warn when the same video URL was already downloaded */
     warnDuplicates: true,
     /**
-     * Per-site default quality id (best | 4K | 1080p | …)
-     * Applied when available for that video.
+     * Per-site default quality id — always "best" (최고).
+     * User can still pick another chip per download.
      */
     qualityBySite: {
       default: "best",
-      youtube: "1080p",
+      youtube: "best",
       tiktok: "best",
       instagram: "best",
       x: "best",
       facebook: "best",
-      bilibili: "1080p"
+      bilibili: "best"
     },
     /**
      * Codec preference for yt-dlp format selection:
@@ -47,12 +47,28 @@ const UVD = (() => {
 
   function mergeSettings(raw) {
     const next = { ...DEFAULT_SETTINGS, ...(raw || {}) };
-    // Migrate previous default template to readable legacy style
+    // Always use readable legacy filenames (title + optional _quality)
     if (
       !next.filenameTemplate ||
-      next.filenameTemplate === "{title}_{quality}"
+      next.filenameTemplate === "{title}_{quality}" ||
+      next.filenameTemplate === "{title}" ||
+      String(next.filenameTemplate).includes("{id}")
     ) {
       next.filenameTemplate = "legacy";
+    }
+    // One-time: default quality is always highest (chips still change per download)
+    if (next._qualityDefaultVer !== 3) {
+      const qbs = {
+        ...(next.qualityBySite && typeof next.qualityBySite === "object"
+          ? next.qualityBySite
+          : {})
+      };
+      for (const k of Object.keys(DEFAULT_SETTINGS.qualityBySite)) {
+        qbs[k] = "best";
+      }
+      qbs.default = "best";
+      next.qualityBySite = qbs;
+      next._qualityDefaultVer = 3;
     }
     return next;
   }
@@ -60,9 +76,23 @@ const UVD = (() => {
   async function getSettings() {
     try {
       const data = await chrome.storage.local.get(SETTINGS_KEY);
-      return mergeSettings(data[SETTINGS_KEY]);
+      const raw = data[SETTINGS_KEY];
+      const next = mergeSettings(raw);
+      // Persist one-time quality/filename migrations
+      if (
+        raw &&
+        (raw._qualityDefaultVer !== next._qualityDefaultVer ||
+          raw.filenameTemplate !== next.filenameTemplate)
+      ) {
+        try {
+          await chrome.storage.local.set({ [SETTINGS_KEY]: next });
+        } catch {
+          /* ignore */
+        }
+      }
+      return next;
     } catch {
-      return { ...DEFAULT_SETTINGS };
+      return { ...DEFAULT_SETTINGS, _qualityDefaultVer: 3 };
     }
   }
 
@@ -180,11 +210,15 @@ const UVD = (() => {
     const list = await getWatchlist();
     const key = normalizeUrlKey(url);
     const filtered = list.filter((x) => normalizeUrlKey(x.url || x.pageUrl || "") !== key);
+    const mediaUrl =
+      entry.mediaUrl && /^https?:/i.test(entry.mediaUrl) ? entry.mediaUrl : "";
     const item = {
       id: entry.id || `w_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       title: entry.title || entry.filename || "나중에 받을 영상",
       url,
       pageUrl: entry.pageUrl || url,
+      // Captured m3u8/mp4 so 123av 등 일반 사이트도 나중 받기 가능
+      mediaUrl: mediaUrl || "",
       thumbnail: entry.thumbnail || "",
       quality: entry.quality || "",
       site: entry.site || siteFromUrl(url),
@@ -258,8 +292,12 @@ const UVD = (() => {
       .trim();
     if (!s || s.length < 2) return true;
     if (/^(영상|동영상|video|media|audio|file|download)$/i.test(s)) return true;
-    // YouTube_xxxx, TikTok_123, Instagram_AbCd
-    if (/^(YouTube|TikTok|Instagram|YT|TT|IG)([_-][A-Za-z0-9_-]+)?$/i.test(s)) {
+    // Site_id junk: YouTube_xxxx, TikTok_123, X_123, Bilibili_BVxx …
+    if (
+      /^(YouTube|TikTok|Instagram|Facebook|Bilibili|X|Twitter|YT|TT|IG|FB)([_-][A-Za-z0-9_-]+)?$/i.test(
+        s
+      )
+    ) {
       return true;
     }
     // bare YouTube-style ids only (not product codes like SSIS-001)
@@ -547,12 +585,16 @@ const UVD = (() => {
     }
   }
 
-  /** Preferred quality id for a page URL from settings.qualityBySite */
+  /**
+   * Preferred quality id for a page URL.
+   * Default product behavior: always highest ("best").
+   * Per-site map still honored if user set something other than best.
+   */
   function qualityForSite(settings, url) {
     const map = (settings && settings.qualityBySite) || DEFAULT_SETTINGS.qualityBySite;
     const site = siteFromUrl(url);
     const q = (site && map[site]) || map.default || "best";
-    return String(q || "best");
+    return String(q || "best") || "best";
   }
 
   /**

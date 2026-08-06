@@ -897,7 +897,13 @@
               .sendMessage({
                 type: "HLS_PROGRESS",
                 tabId: msg.tabId,
-                progress: p
+                progress: {
+                  ...p,
+                  // Bind to tracked download job (stops bar thrash across retries)
+                  jobId: msg.jobId || p.jobId || null,
+                  percent:
+                    typeof p.percent === "number" ? p.percent : undefined
+                }
               })
               .catch(() => {});
           }

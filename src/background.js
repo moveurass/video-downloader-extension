@@ -475,7 +475,8 @@ async function buildSaveFilename({
   const s = await UVD.getSettings();
   const mode = mediaMode || s.mediaMode || "video";
   const cleanTitle = UVD.isGenericSaveName(title) ? "" : title || "";
-  const base = UVD.applyFilenameTemplate(s.filenameTemplate || "legacy", {
+  // Always legacy readable names (title + optional _quality)
+  const base = UVD.applyFilenameTemplate("legacy", {
     title: cleanTitle,
     quality: quality || "",
     site: UVD.siteFromUrl(pageUrl || ""),
@@ -652,10 +653,22 @@ function createDownloadJob({
   if (!thumb && tabId != null && tabId >= 0) {
     thumb = tabMeta.get(tabId)?.thumbnail || "";
   }
+  let niceTitle = String(title || "").trim();
+  if (niceTitle && typeof Naming !== "undefined" && Naming.cleanPageTitle) {
+    niceTitle = Naming.cleanPageTitle(niceTitle) || niceTitle;
+  }
+  if (!niceTitle || UVD.isGenericSaveName(niceTitle)) {
+    const fromFile = String(filename || "")
+      .replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+      .trim();
+    if (fromFile && !UVD.isGenericSaveName(fromFile)) niceTitle = fromFile;
+  }
+  if (!niceTitle) niceTitle = "영상";
+
   const job = {
     id,
     tabId: tabId != null ? tabId : -1,
-    title: title || filename || "영상",
+    title: niceTitle,
     pageUrl: pageUrl || "",
     filename: filename || "",
     mediaMode: mediaMode || "video",
@@ -663,7 +676,7 @@ function createDownloadJob({
     thumbnail: thumb || "",
     status: "running",
     percent: 2,
-    message: "백그라운드에서 받는 중…",
+    message: niceTitle !== "영상" ? `받는 중 · ${niceTitle.slice(0, 40)}` : "백그라운드에서 받는 중…",
     phase: "start",
     error: null,
     errorCode: null,
@@ -751,19 +764,12 @@ function updateDownloadJob(jobId, patch) {
     return job;
   }
   const next = { ...patch };
-  // Monotonic percent while running — prevents up/down thrash from mixed events
-  if (
-    job.status === "running" &&
-    typeof next.percent === "number" &&
-    typeof job.percent === "number"
-  ) {
-    const sameOrEarlierPhase =
-      phaseRank(next.phase || job.phase) <= phaseRank(job.phase);
-    if (sameOrEarlierPhase && next.percent < job.percent) {
-      next.percent = job.percent;
-    }
-    // Cap tiny noise: don't jump backwards more than 0 (already clamped)
-    next.percent = Math.max(0, Math.min(100, next.percent));
+  // Strict monotonic percent while running.
+  // Method retries (page HLS → SW HLS), playlist re-parse, and content-script
+  // progress without floors used to make the bar jump up/down.
+  if (job.status === "running" && typeof next.percent === "number") {
+    const prevP = typeof job.percent === "number" ? job.percent : 0;
+    next.percent = Math.max(prevP, Math.min(100, next.percent));
   }
   Object.assign(job, next, { updatedAt: Date.now() });
   persistJobs();
@@ -787,10 +793,30 @@ function finishDownloadJob(jobId, result, error) {
     job.status = "done";
     job.phase = "done";
     job.percent = 100;
-    job.message = "저장 완료";
     job.result = result || null;
     job.error = null;
     job.errorCode = null;
+    // Surface the real saved name so the popup can show what finished
+    const savedName =
+      result?.filename ||
+      (result?.path ? String(result.path).split(/[/\\]/).pop() : "") ||
+      job.filename ||
+      "";
+    if (savedName) {
+      job.filename = savedName;
+      const base = String(savedName).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
+      if (
+        base &&
+        (!job.title ||
+          job.title === "영상" ||
+          UVD.isGenericSaveName(job.title))
+      ) {
+        job.title = base;
+      }
+      job.message = `저장 완료 · ${savedName}`;
+    } else {
+      job.message = "저장 완료";
+    }
   }
   job.updatedAt = Date.now();
   // Detach from tab map so navigation cleanup is harmless
@@ -1008,8 +1034,12 @@ function emitDownloadProgress(tabId, percent, message, phase = "download", jobId
     phase === "done" ? "done" : phase === "error" ? "error" : "running";
   // Don't mark done/error here — finishDownloadJob owns terminal states
   if (status === "running") {
+    // Floor against current job % so retries never publish a lower value
+    const floor = typeof job.percent === "number" ? job.percent : 0;
+    const pct =
+      typeof percent === "number" ? Math.max(floor, Math.min(100, percent)) : floor;
     updateDownloadJob(job.id, {
-      percent,
+      percent: pct,
       message,
       phase,
       status: "running"
@@ -2366,12 +2396,99 @@ chrome.runtime.onInstalled.addListener(setupContextMenus);
 chrome.runtime.onStartup.addListener(setupContextMenus);
 setupContextMenus();
 
+function sameVideoPage(a, b) {
+  if (!a || !b) return false;
+  try {
+    const ua = new URL(a);
+    const ub = new URL(b);
+    const ha = ua.hostname.replace(/^www\./i, "").toLowerCase();
+    const hb = ub.hostname.replace(/^www\./i, "").toLowerCase();
+    if (ha !== hb) return false;
+    const pa = (ua.pathname || "/").replace(/\/+$/, "") || "/";
+    const pb = (ub.pathname || "/").replace(/\/+$/, "") || "/";
+    return pa === pb;
+  } catch {
+    return a === b;
+  }
+}
+
+async function waitTabComplete(tabId, timeoutMs = 45000) {
+  try {
+    const t = await chrome.tabs.get(tabId);
+    if (t?.status === "complete") return;
+  } catch {
+    /* ignore */
+  }
+  await new Promise((resolve) => {
+    const onUp = (id, info) => {
+      if (id !== tabId) return;
+      if (info.status === "complete") {
+        cleanup();
+        resolve();
+      }
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, timeoutMs);
+    function cleanup() {
+      clearTimeout(timer);
+      try {
+        chrome.tabs.onUpdated.removeListener(onUp);
+      } catch {
+        /* ignore */
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUp);
+  });
+}
+
+/**
+ * Find an open tab for pageUrl, or open one in the background.
+ * @returns {Promise<{ tabId: number, opened: boolean }>}
+ */
+async function findOrOpenTabForPage(pageUrl, preferredTabId) {
+  if (preferredTabId != null && preferredTabId >= 0) {
+    try {
+      const t = await chrome.tabs.get(preferredTabId);
+      if (t?.url && sameVideoPage(t.url, pageUrl)) {
+        return { tabId: preferredTabId, opened: false };
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    const tabs = await chrome.tabs.query({});
+    for (const t of tabs) {
+      if (t?.id != null && t.url && sameVideoPage(t.url, pageUrl)) {
+        return { tabId: t.id, opened: false };
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  const tab = await chrome.tabs.create({ url: pageUrl, active: false });
+  if (tab?.id == null) throw new Error("페이지 탭을 열 수 없습니다");
+  emitDownloadProgress(
+    tab.id,
+    4,
+    "영상 페이지 여는 중…",
+    "start",
+    currentJobContext
+  );
+  await waitTabComplete(tab.id, 50000);
+  // Give player/scripts time to register m3u8 (123av / missav style)
+  await new Promise((r) => setTimeout(r, 1500));
+  return { tabId: tab.id, opened: true };
+}
+
 /**
  * @param {number} tabId
  * @param {string} pageUrl
  * @param {string} [preferQuality]
  * @param {string|null} [jobId]
- * @param {{ mediaMode?: string, preferQuality?: string }} [forceOpts] one-shot overrides (shortcuts)
+ * @param {{ mediaMode?: string, preferQuality?: string, mediaUrl?: string, title?: string }} [forceOpts]
  */
 async function downloadPageFromUi(
   tabId,
@@ -2387,14 +2504,13 @@ async function downloadPageFromUi(
   const kind = siteKind(pageUrl, pageUrl);
   const settings = await UVD.getSettings();
   const mediaMode = forceOpts.mediaMode || settings.mediaMode || "video";
-  const quality =
-    forceOpts.preferQuality || preferQuality || "best";
+  const quality = forceOpts.preferQuality || preferQuality || "best";
 
   // Prefer tab title / meta (readable). Never force YouTube_id style names.
   let fname = "";
   try {
     const meta = tabId != null ? tabMeta.get(tabId) : null;
-    let tabTitle = meta?.title || "";
+    let tabTitle = meta?.title || forceOpts.title || "";
     if (!tabTitle && tabId != null) {
       try {
         const tab = await chrome.tabs.get(tabId);
@@ -2404,7 +2520,7 @@ async function downloadPageFromUi(
       }
     }
     fname = await buildSaveFilename({
-      title: tabTitle,
+      title: tabTitle || forceOpts.title || "",
       quality,
       pageUrl,
       mediaMode
@@ -2412,9 +2528,8 @@ async function downloadPageFromUi(
   } catch {
     fname = "";
   }
-  // empty fname → yt-dlp uses real video title
 
-  // Social sites → dedicated path; others → scan + best item
+  // Social sites → dedicated yt-dlp path
   if (kind) {
     return downloadViaYtDlp(
       tabId,
@@ -2427,26 +2542,120 @@ async function downloadPageFromUi(
     );
   }
 
-  try {
-    if (tabId != null) {
-      await chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" });
+  // ── Generic sites (123av, missav, jable, …) ──
+  // Need the real page open so content script can sniff m3u8 / cookies work.
+  let workTabId = tabId;
+  let openedTab = false;
+  let best = null;
+
+  const tryScan = async (tid) => {
+    if (tid == null || tid < 0) return null;
+    try {
+      await ensureContentScripts(tid);
+    } catch {
+      /* ignore */
     }
-  } catch {
-    /* ignore */
+    try {
+      await chrome.tabs.sendMessage(tid, { type: "SCAN_NOW" }).catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    await new Promise((r) => setTimeout(r, 800));
+    const items = await getMediaForTabAsync(tid, { pageUrl });
+    return items?.[0] || null;
+  };
+
+  if (tabId != null && tabId >= 0) {
+    try {
+      const t = await chrome.tabs.get(tabId);
+      if (t?.url && sameVideoPage(t.url, pageUrl)) {
+        best = await tryScan(tabId);
+        workTabId = tabId;
+      }
+    } catch {
+      /* ignore */
+    }
   }
-  await new Promise((r) => setTimeout(r, 600));
-  const items = tabId != null ? await getMediaForTabAsync(tabId, { pageUrl }) : [];
-  const best = items[0];
-  if (!best?.url) throw new Error("감지된 영상이 없습니다. 재생 후 다시 시도해 주세요");
-  return downloadSmart(
-    tabId,
-    best.url,
-    best.filename || fname,
-    quality,
-    mediaMode === "audio" ? "audio" : best.type || "video",
-    best,
-    { pageUrl, jobId: jid, forceMediaMode: mediaMode }
-  );
+
+  if (!best?.url) {
+    emitDownloadProgress(
+      tabId ?? -1,
+      5,
+      "영상 페이지에서 스트림 찾는 중…",
+      "start",
+      jid
+    );
+    const found = await findOrOpenTabForPage(pageUrl, tabId);
+    workTabId = found.tabId;
+    openedTab = found.opened;
+    for (let i = 0; i < 4 && !best?.url; i++) {
+      best = await tryScan(workTabId);
+      if (!best?.url) await new Promise((r) => setTimeout(r, 900));
+    }
+  }
+
+  if (!best?.url && forceOpts.mediaUrl && /^https?:/i.test(forceOpts.mediaUrl)) {
+    best = {
+      url: forceOpts.mediaUrl,
+      type: /\.m3u8/i.test(forceOpts.mediaUrl) ? "stream" : "video",
+      isHls: /\.m3u8/i.test(forceOpts.mediaUrl),
+      pageUrl,
+      title: forceOpts.title || "",
+      filename: fname
+    };
+  }
+
+  if (!best?.url) {
+    if (openedTab && workTabId != null) {
+      try {
+        await chrome.tabs.remove(workTabId);
+      } catch {
+        /* ignore */
+      }
+    }
+    throw new Error(
+      "감지된 영상이 없습니다. 해당 페이지를 연 뒤 재생을 한 번 시작하고 다시 「나중」에 추가하거나 받아 주세요"
+    );
+  }
+
+  if ((!fname || UVD.isGenericSaveName(fname)) && workTabId != null) {
+    try {
+      const t = await chrome.tabs.get(workTabId);
+      const tt = Naming.cleanPageTitle(t?.title || "");
+      if (tt) {
+        fname =
+          (await buildSaveFilename({
+            title: tt,
+            quality,
+            pageUrl,
+            mediaMode
+          })) || fname;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  try {
+    return await downloadSmart(
+      workTabId,
+      best.url,
+      best.filename || fname,
+      quality,
+      mediaMode === "audio" ? "audio" : best.type || "video",
+      best,
+      { pageUrl, jobId: jid, forceMediaMode: mediaMode }
+    );
+  } finally {
+    if (openedTab && workTabId != null) {
+      try {
+        await new Promise((r) => setTimeout(r, 400));
+        await chrome.tabs.remove(workTabId);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 }
 
 function updateSocialBadge(tabId, url) {
@@ -2602,19 +2811,25 @@ chrome.commands?.onCommand?.addListener(async (command) => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab?.id || !tab.url) throw new Error("탭 없음");
     const settings = await UVD.getSettings();
-    const quality =
-      force.preferQuality ||
-      UVD.qualityForSite(settings, tab.url) ||
-      "best";
+    // Default always highest quality (shortcut B forces best too)
+    const quality = force.preferQuality || "best";
     const mediaMode = force.mediaMode || settings.mediaMode || "video";
     const title =
       Naming.cleanPageTitle(tab.title || "") || tab.title || force.label || "영상";
+    // Prefer human page title as save name (legacy readable style)
+    const fname =
+      (await buildSaveFilename({
+        title,
+        quality: quality === "best" ? "" : quality,
+        pageUrl: tab.url,
+        mediaMode
+      })) || "";
     await runTrackedDownloadAsync(
       {
         tabId: tab.id,
         title,
         pageUrl: tab.url,
-        filename: "",
+        filename: fname,
         mediaMode,
         quality,
         thumbnail: tabMeta.get(tab.id)?.thumbnail || ""
@@ -3254,20 +3469,35 @@ async function runHlsDownload(
     (await resolvePageUrl(tabId, "")) ||
     "";
 
+  // Floor so a second HLS attempt (after page-HLS fail) doesn't drop the bar
+  const jobFloor = () => {
+    if (!jid) return 0;
+    const j = activeDownloads.get(jid);
+    return typeof j?.percent === "number" ? j.percent : 0;
+  };
+
   const setProg = (p) => {
-    const progress = { ...p, jobId: jid || undefined, global: true };
+    const floor = jobFloor();
+    const raw =
+      typeof p.percent === "number" && p.percent > 0 ? p.percent : 10;
+    const percent = Math.max(floor, Math.min(99, raw));
+    const progress = { ...p, percent, jobId: jid || undefined, global: true };
     hlsProgress.set(key, progress);
     if (jid) hlsProgress.set(jid, progress);
     emitDownloadProgress(
       tabId,
-      p.percent || 10,
+      percent,
       p.message || "받는 중…",
       p.phase || "download",
       jid
     );
   };
 
-  setProg({ phase: "start", message: "준비 중…", percent: 2 });
+  setProg({
+    phase: "start",
+    message: "준비 중…",
+    percent: Math.max(2, jobFloor())
+  });
 
   const result = await HLS.downloadAndMerge(url, {
     preferQuality: preferQuality || "best",
@@ -3280,16 +3510,19 @@ async function runHlsDownload(
     },
     allowPartial: true,
     onProgress: (p) => {
-      let percent = 3;
+      const floor = jobFloor();
+      // Map segment progress into [floor .. 93] so retries continue upward
+      const span = Math.max(10, 93 - floor);
+      let percent = Math.max(floor, 3);
       let message = "준비 중…";
       if (p.phase === "segments" && p.total) {
-        percent = Math.round((p.current / p.total) * 88) + 5;
+        percent = Math.round(floor + (p.current / p.total) * span);
         message = p.message || `받는 중… ${percent}%`;
       } else if (p.phase === "merge") {
-        percent = 94;
+        percent = Math.max(floor, 94);
         message = "파일 만드는 중…";
-      } else if (p.phase === "playlist") {
-        percent = 5;
+      } else if (p.phase === "playlist" || p.phase === "init") {
+        percent = Math.max(floor, Math.min(floor + 2, 8));
         message = p.message || "준비 중…";
       }
       setProg({ ...p, percent, message });
@@ -3356,7 +3589,13 @@ async function pageDownloadAllFrames(tabId, payload) {
   await ensureContentScripts(tabId);
   try {
     const r = await withTimeout(
-      chrome.tabs.sendMessage(tabId, { type: "SMART_DOWNLOAD", ...payload }),
+      chrome.tabs.sendMessage(tabId, {
+        type: "SMART_DOWNLOAD",
+        ...payload,
+        // So page-side HLS progress binds to the right queue row
+        jobId: payload.jobId || currentJobContext || null,
+        tabId
+      }),
       25 * 60 * 1000,
       "다운로드 시간 초과"
     );
@@ -3448,9 +3687,10 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
     emitDownloadProgress(tabId, 6, "스트림 받는 중…", "playlist", jid);
     // Prefer page-context first on sites that often 403 extension SW fetches
     // (page has real cookies + referer of the player).
-    const tryPageFirst = /surrit|javplayer|missav|njav|jable|avgle|hanime|hls|cdn/i.test(
-      workUrl + pageUrl
-    );
+    const tryPageFirst =
+      /surrit|javplayer|missav|njav|jable|avgle|hanime|hls|cdn|123av|thisav|netflav|supjav|spankbang/i.test(
+        workUrl + (pageUrl || "")
+      );
 
     const runSwHls = async () => {
       const result = await withTimeout(
@@ -3479,14 +3719,22 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
     };
 
     const runPageHls = async () => {
-      emitDownloadProgress(tabId, 8, "페이지에서 조각 받는 중…", "download", jid);
+      const keep = jid ? activeDownloads.get(jid)?.percent || 8 : 8;
+      emitDownloadProgress(
+        tabId,
+        Math.max(8, keep),
+        "페이지에서 조각 받는 중…",
+        "download",
+        jid
+      );
       const pageResult = await pageDownloadAllFrames(tabId, {
         url: workUrl,
         filename,
         preferQuality,
         mediaType: "stream",
         tabId,
-        pageUrl
+        pageUrl,
+        jobId: jid
       });
       if (
         pageResult?.ok &&
@@ -3510,11 +3758,14 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
       } catch (e) {
         const msg = friendlyFetchError(e);
         errors.push(msg);
-        // If 403 and we have another method, continue
+        // Keep current % (do not drop to 10) when switching methods
+        const keepPct = jid
+          ? activeDownloads.get(jid)?.percent || 10
+          : 10;
         if (i + 1 < order.length && /403|401|접근 거부|Segment HTTP/i.test(msg)) {
           emitDownloadProgress(
             tabId,
-            10,
+            keepPct,
             "접근 제한 — 다른 방법으로 재시도…",
             "download",
             jid
@@ -3522,7 +3773,13 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
           continue;
         }
         if (i + 1 < order.length) {
-          emitDownloadProgress(tabId, 10, "다른 방법으로 시도…", "download", jid);
+          emitDownloadProgress(
+            tabId,
+            keepPct,
+            "다른 방법으로 시도…",
+            "download",
+            jid
+          );
           continue;
         }
       }
@@ -3794,7 +4051,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case "DOWNLOAD_PAGE": {
-      // Download by page URL (YouTube/TikTok) — survives page leave / popup close
+      // Download by page URL — social via yt-dlp, others open+scan (123av etc.)
       const tid = msg.tabId ?? tabId;
       const pageUrl = msg.pageUrl || msg.url;
       if (!pageUrl) {
@@ -3832,13 +4089,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             quality: msg.preferQuality || "best"
           },
           async (jobId) => {
-            const r = await downloadViaYtDlp(
+            const r = await downloadPageFromUi(
               tid,
               pageUrl,
-              pageUrl,
-              fname || undefined,
               msg.preferQuality || "best",
-              jobId
+              jobId,
+              {
+                mediaMode: settings.mediaMode,
+                mediaUrl: msg.mediaUrl || "",
+                title: msg.title || displayTitle
+              }
             );
             if (r?.ok === false) {
               throw new Error(r.error || "다운로드 실패");
@@ -4028,7 +4288,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.18.0" });
+      sendResponse({ ok: true, version: "1.18.2" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;
@@ -4090,7 +4350,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case "DOWNLOAD":
     case "DOWNLOAD_HLS": {
       const url = msg.url;
-      const tid = msg.tabId ?? tabId;
+      let tid = msg.tabId ?? tabId;
+      const pageUrl = msg.pageUrl || url;
       const item = tid != null ? getTabMap(tid).get(url) : null;
       const fname = safeDownloadName(
         msg.filename ||
@@ -4109,39 +4370,74 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const preferYtDlp =
         msg.preferYtDlp === true ||
         item?.isSiteDownload ||
-        needsYtDlpHelper(url, msg.pageUrl || item?.pageUrl);
+        needsYtDlpHelper(url, pageUrl || item?.pageUrl);
 
       return runTrackedDownload(
         {
           tabId: tid,
           title: msg.title || item?.title || fname,
-          pageUrl: msg.pageUrl || item?.pageUrl || url,
-          filename: fname
+          pageUrl: pageUrl || item?.pageUrl || url,
+          filename: fname,
+          quality: msg.preferQuality || "best"
         },
         async (jobId) => {
-          const r = await downloadSmart(
-            tid,
-            url,
-            fname,
-            msg.preferQuality || "best",
-            mediaType,
-            item,
-            {
-              pageUrl: msg.pageUrl || item?.pageUrl,
-              preferYtDlp,
-              jobId
+          let workTab = tid;
+          let opened = false;
+          // For HLS from watchlist: open the original page so Referer/cookies work (123av etc.)
+          if (
+            msg.openPageIfNeeded &&
+            pageUrl &&
+            /^https?:/i.test(pageUrl) &&
+            (isHlsUrl(url) || mediaType === "stream")
+          ) {
+            try {
+              const found = await findOrOpenTabForPage(pageUrl, tid);
+              workTab = found.tabId;
+              opened = found.opened;
+            } catch {
+              /* continue with original tab */
             }
-          );
-          if (r?.method === "yt-dlp" || r?.ytdlp) {
-            return { ...r, filename: r.filename || fname };
           }
-          if (r == null || r.downloadId == null) {
-            throw new Error(
-              r?.error ||
-                "파일이 저장되지 않았습니다. chrome://downloads 를 확인해 주세요"
+          try {
+            const r = await downloadSmart(
+              workTab,
+              url,
+              fname,
+              msg.preferQuality || "best",
+              mediaType,
+              item || {
+                url,
+                type: mediaType,
+                isHls: isHlsUrl(url),
+                pageUrl,
+                title: msg.title
+              },
+              {
+                pageUrl,
+                preferYtDlp,
+                jobId
+              }
             );
+            if (r?.method === "yt-dlp" || r?.ytdlp) {
+              return { ...r, filename: r.filename || fname };
+            }
+            if (r == null || r.downloadId == null) {
+              throw new Error(
+                r?.error ||
+                  "파일이 저장되지 않았습니다. chrome://downloads 를 확인해 주세요"
+              );
+            }
+            return { ...r, filename: r.filename || fname };
+          } finally {
+            if (opened && workTab != null) {
+              try {
+                await new Promise((r) => setTimeout(r, 400));
+                await chrome.tabs.remove(workTab);
+              } catch {
+                /* ignore */
+              }
+            }
           }
-          return { ...r, filename: r.filename || fname };
         },
         sendResponse
       );

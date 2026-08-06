@@ -90,6 +90,18 @@
       </div>
     </section>
 
+    <!-- Global quality chips (link paste / when card has no picker yet) -->
+    <section class="quality-box" id="qualityBox" aria-label="화질 선택">
+      <span class="quality-label">화질 선택</span>
+      <div class="quality-chips" id="globalQualityChips" role="group">
+        <button type="button" class="q-chip active" data-quality="best">최고</button>
+        <button type="button" class="q-chip" data-quality="4K">4K</button>
+        <button type="button" class="q-chip" data-quality="1080p">1080p</button>
+        <button type="button" class="q-chip" data-quality="720p">720p</button>
+        <button type="button" class="q-chip" data-quality="480p">480p</button>
+      </div>
+    </section>
+
     <section class="link-box compact" id="linkBox">
       <div class="link-row">
         <textarea
@@ -137,13 +149,15 @@
 
   <!-- ═══════ HISTORY TAB ═══════ -->
   <div id="tab-history" class="tab-panel hidden">
-    <div class="panel-toolbar">
+    <div class="panel-toolbar history-toolbar">
       <span class="panel-title">최근 다운로드</span>
       <div class="panel-toolbar-actions">
         <button type="button" id="btnRetryFailed" class="btn ghost tiny" title="실패한 항목만 다시 받기">
-          실패만 재시도
+          실패 재시도
         </button>
-        <button type="button" id="btnClearHistory" class="btn ghost tiny">비우기</button>
+        <button type="button" id="btnClearHistory" class="btn ghost tiny" title="기록 전체 비우기">
+          비우기
+        </button>
       </div>
     </div>
     <div id="historyList" class="history-list">
@@ -183,7 +197,7 @@
           type="text"
           placeholder="{title}_{quality}"
         />
-        <span class="field-hint">legacy = 읽기 쉬운 제목 (권장) · 또는 {title} {quality} {site} {date}</span>
+        <span class="field-hint">기본: 영상 제목_화질 (예: SSIS-001 이야기_1080p) · 읽기 쉬운 이름</span>
       </label>
       <label class="field">
         <span class="field-label">미리보기</span>
@@ -266,10 +280,10 @@
           <label class="sq-row">
             <span>YouTube</span>
             <select id="setQYoutube" class="field-input sq-select">
-              <option value="best">최고</option>
+              <option value="best" selected>최고</option>
               <option value="4K">4K</option>
               <option value="1440p">1440p</option>
-              <option value="1080p" selected>1080p</option>
+              <option value="1080p">1080p</option>
               <option value="720p">720p</option>
               <option value="480p">480p</option>
             </select>
@@ -313,15 +327,15 @@
           <label class="sq-row">
             <span>Bilibili</span>
             <select id="setQBilibili" class="field-input sq-select">
-              <option value="best">최고</option>
+              <option value="best" selected>최고</option>
               <option value="4K">4K</option>
-              <option value="1080p" selected>1080p</option>
+              <option value="1080p">1080p</option>
               <option value="720p">720p</option>
               <option value="480p">480p</option>
             </select>
           </label>
         </div>
-        <span class="field-hint">해당 화질이 없으면 가능한 가장 가까운 화질을 고릅니다</span>
+        <span class="field-hint">기본은 항상 최고 화질 · 받기 전 화질 칩으로 바꿀 수 있습니다</span>
       </div>
       <button type="button" id="btnSaveSettings" class="btn primary settings-save">
         설정 저장
@@ -331,7 +345,7 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.18</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.18.2</p>
   </footer>
 
   <script src="uvd-common.js"></script>

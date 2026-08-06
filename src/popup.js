@@ -11,7 +11,13 @@ let helperOk = false;
 /** Selected download quality id (best | 4K | 1080p | …) */
 let selectedQuality = "best";
 /** Only qualities that exist for the current video */
-let availableQualities = [{ id: "best", label: "최고" }];
+let availableQualities = [
+  { id: "best", label: "최고" },
+  { id: "4K", label: "4K" },
+  { id: "1080p", label: "1080p" },
+  { id: "720p", label: "720p" },
+  { id: "480p", label: "480p" }
+];
 let qualitiesLoading = false;
 /** Background job ids tracked by this popup session */
 let trackedJobIds = new Set();
@@ -586,7 +592,7 @@ function displayName(item) {
 /**
  * 저장 파일명 — 예전 방식: 읽기 쉬운 제목 + (선택) 화질
  * 예: "SSIS-001 이복 여동생 이야기_720p.mp4"
- * 제목을 모를 때는 빈 문자열 → yt-dlp가 실제 제목 사용
+ * 제목을 모를 때는 빈 문자열 → yt-dlp가 실제 제목(유니코드·공백 유지) 사용
  */
 function downloadFilename(item) {
   let title = "";
@@ -615,7 +621,8 @@ function downloadFilename(item) {
 
   const mediaMode = uvdSettings.mediaMode || "video";
   const pageUrl = item.pageUrl || item.url || currentTabUrl || "";
-  let base = UVD.applyFilenameTemplate(uvdSettings.filenameTemplate || "legacy", {
+  // Always legacy-style readable names (ignore custom templates that strip meaning)
+  let base = UVD.applyFilenameTemplate("legacy", {
     title,
     quality,
     site: UVD.siteFromUrl(pageUrl),
@@ -636,25 +643,65 @@ function downloadFilename(item) {
   return base.endsWith(ext) ? base : `${base}${ext}`;
 }
 
+/** Always-available quality choices (yt-dlp maps height caps) */
+const STANDARD_QUALITY_CHIPS = [
+  { id: "best", label: "최고" },
+  { id: "4K", label: "4K" },
+  { id: "1440p", label: "1440p" },
+  { id: "1080p", label: "1080p" },
+  { id: "720p", label: "720p" },
+  { id: "480p", label: "480p" }
+];
+
+function ensureQualityChoices(list) {
+  const cleaned = (Array.isArray(list) ? list : [])
+    .filter(
+      (q) =>
+        q &&
+        q.id &&
+        !/unsupported|error|fail|http/i.test(String(q.label || "")) &&
+        !/unsupported|error/i.test(String(q.id))
+    )
+    .map((q) => ({
+      ...q,
+      label: q.label || q.id
+    }));
+  // Need at least a few options so the user can actually pick a quality
+  if (cleaned.length >= 2) return cleaned;
+  if (cleaned.length === 1 && cleaned[0].id === "best") {
+    return STANDARD_QUALITY_CHIPS.map((s) =>
+      s.id === "best" ? { ...s, ...cleaned[0], label: cleaned[0].label || s.label } : { ...s }
+    );
+  }
+  return STANDARD_QUALITY_CHIPS.map((s) => ({ ...s }));
+}
+
 function qualityPickerHtml() {
   if (qualitiesLoading) {
     return `
-      <div class="quality-picker">
-        <span class="quality-label">화질</span>
+      <div class="quality-picker" id="qualityPicker">
+        <span class="quality-label">화질 선택</span>
         <p class="quality-hint">가능한 화질 확인 중…</p>
+        <div class="quality-chips" role="group" aria-label="화질 선택">
+          ${STANDARD_QUALITY_CHIPS.map(
+            (q) =>
+              `<button type="button" class="q-chip${
+                selectedQuality === q.id ? " active" : ""
+              }" data-quality="${escapeAttr(q.id)}" disabled>${escapeHtml(
+                q.label
+              )}</button>`
+          ).join("")}
+        </div>
       </div>`;
   }
-  const opts =
-    availableQualities?.length > 0
-      ? availableQualities
-      : [{ id: "best", label: "최고" }];
+  const opts = ensureQualityChoices(availableQualities);
   // Ensure selection is still valid
   if (!opts.some((q) => q.id === selectedQuality)) {
     selectedQuality = opts[0].id;
   }
   return `
-    <div class="quality-picker">
-      <span class="quality-label">화질 <span class="quality-hint-inline">용량·코덱</span></span>
+    <div class="quality-picker" id="qualityPicker">
+      <span class="quality-label">화질 선택 <span class="quality-hint-inline">탭해서 변경</span></span>
       <div class="quality-chips" role="group" aria-label="화질 선택">
         ${opts
           .map((q) => {
@@ -683,28 +730,31 @@ function qualityPickerHtml() {
 /** Chip text: "1080p · 180MB · h264" (already often in q.label from helper) */
 function formatQualityChipLabel(q) {
   if (!q) return "최고";
-  // Helper already builds rich labels; keep if present
-  if (q.label && (q.label.includes("·") || q.label.includes("MB"))) {
-    return q.label;
-  }
-  const parts = [q.label || q.id || "최고"];
+  // Prefer short id-style on crowded chips; keep rich label if not too long
+  const rich = q.label && (q.label.includes("·") || q.label.includes("MB"));
+  if (rich && String(q.label).length <= 22) return q.label;
+  // Compact: "1080p" or "1080p · 180MB"
+  const id = q.id === "best" ? "최고" : q.id || q.label || "최고";
   if (q.estimatedSize > 0) {
     const mb = q.estimatedSize / (1024 * 1024);
-    parts.push(mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`);
+    const sizeStr = mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
+    return `${id} · ${sizeStr}`;
   }
-  if (q.codec) parts.push(q.codec);
-  return parts.join(" · ");
+  if (q.codec && q.id !== "best") return `${id} · ${q.codec}`;
+  return id;
 }
 
 async function loadAvailableQualities(item) {
   qualitiesLoading = true;
-  availableQualities = [{ id: "best", label: "최고" }];
+  availableQualities = STANDARD_QUALITY_CHIPS.map((s) => ({ ...s }));
   const pageUrl = currentTabUrl || item?.pageUrl || item?.url || "";
   const mediaUrl = item?.url || pageUrl;
 
   // Don't probe homepage/profile — yt-dlp returns "Unsupported URL"
+  // Still keep standard chips so the user can pick before paste/download
   if (!isDownloadableSiteVideo(mediaUrl) && !isDownloadableSiteVideo(pageUrl)) {
-    availableQualities = [{ id: "best", label: "최고" }];
+    availableQualities = ensureQualityChoices(STANDARD_QUALITY_CHIPS);
+    applySiteDefaultQuality(pageUrl || mediaUrl);
     qualitiesLoading = false;
     return;
   }
@@ -719,20 +769,9 @@ async function loadAvailableQualities(item) {
       forceYtDlp: !!(item?.isSiteDownload || isDownloadableSiteVideo(pageUrl))
     });
     if (res?.ok && res.qualities?.length) {
-      // Drop any junk labels (errors must never become chips)
-      availableQualities = res.qualities.filter(
-        (q) =>
-          q &&
-          q.id &&
-          q.label &&
-          !/unsupported|error|fail|http/i.test(String(q.label)) &&
-          !/unsupported|error/i.test(String(q.id))
-      );
-      if (!availableQualities.length) {
-        availableQualities = [{ id: "best", label: "최고" }];
-      }
+      availableQualities = ensureQualityChoices(res.qualities);
     } else {
-      availableQualities = [{ id: "best", label: "최고" }];
+      availableQualities = ensureQualityChoices(STANDARD_QUALITY_CHIPS);
     }
 
     // Apply duration / size / title / thumb preview onto the card item
@@ -759,38 +798,72 @@ async function loadAvailableQualities(item) {
       allItems[0] = patch;
     }
   } catch {
-    availableQualities = [{ id: "best", label: "최고" }];
+    availableQualities = ensureQualityChoices(STANDARD_QUALITY_CHIPS);
   }
-  // Prefer per-site default quality when available
   applySiteDefaultQuality(pageUrl || mediaUrl);
   if (!availableQualities.some((q) => q.id === selectedQuality)) {
     selectedQuality = availableQualities[0]?.id || "best";
   }
   qualitiesLoading = false;
+  // Keep global bar in sync if no card is showing chips
+  const hasCard = !!(allItems[0] && isSitePage(currentTabUrl));
+  syncGlobalQualityBox(hasCard);
 }
 
-/** Pick site default quality (or nearest lower) from available chips */
+/**
+ * Auto-select quality when chips load.
+ * Default: always 최고 (best). User can still tap another chip before download.
+ */
 function applySiteDefaultQuality(pageUrl) {
+  if (availableQualities.some((q) => q.id === "best")) {
+    selectedQuality = "best";
+    return;
+  }
   const pref = UVD.qualityForSite(uvdSettings, pageUrl || currentTabUrl || "");
-  if (!pref) return;
-  if (availableQualities.some((q) => q.id === pref)) {
+  if (pref && availableQualities.some((q) => q.id === pref)) {
     selectedQuality = pref;
     return;
   }
-  // Prefer nearest lower resolution if exact missing (e.g. want 1080 but only 720)
-  const order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"];
-  const prefIdx = order.indexOf(pref);
-  if (prefIdx >= 0) {
-    for (let i = prefIdx; i < order.length; i++) {
-      if (availableQualities.some((q) => q.id === order[i])) {
-        selectedQuality = order[i];
-        return;
-      }
-    }
+  selectedQuality = availableQualities[0]?.id || "best";
+}
+
+/**
+ * Sync global quality bar (link-paste path).
+ * Hide when the video card already shows chips (avoid double pickers).
+ */
+function syncGlobalQualityBox(hasCardPicker = false) {
+  const box = $("#qualityBox");
+  const root = $("#globalQualityChips");
+  if (!box || !root) return;
+
+  if (hasCardPicker) {
+    box.classList.add("hidden");
+    return;
   }
-  if (availableQualities.some((q) => q.id === "best")) {
-    selectedQuality = "best";
+  box.classList.remove("hidden");
+
+  const opts = ensureQualityChoices(availableQualities);
+  if (!opts.some((q) => q.id === selectedQuality)) {
+    selectedQuality = opts[0]?.id || "best";
   }
+  root.innerHTML = opts
+    .map((q) => {
+      const chip = formatQualityChipLabel(q);
+      return `<button type="button" class="q-chip${
+        selectedQuality === q.id ? " active" : ""
+      }" data-quality="${escapeAttr(q.id)}" ${
+        qualitiesLoading ? "disabled" : ""
+      }>${escapeHtml(chip)}</button>`;
+    })
+    .join("");
+
+  root.querySelectorAll(".q-chip").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (btn.disabled) return;
+      selectedQuality = btn.getAttribute("data-quality") || "best";
+      syncGlobalQualityBox(false);
+    });
+  });
 }
 
 function thumbHtml(item) {
@@ -813,18 +886,85 @@ function canStartAnotherDownload() {
   return runningJobCount() < MAX_CONCURRENT_STARTS;
 }
 
+/**
+ * Human-readable name for a queue row — what file is being saved.
+ * Prefers real title → filename → site host, never bare "영상" if we can do better.
+ */
+function jobDisplayInfo(job) {
+  const pathName = (p) => {
+    if (!p) return "";
+    const s = String(p).split(/[/\\]/).pop() || "";
+    return s.replace(/\.(mp4|webm|mkv|mp3|m4a|ts)$/i, "").trim();
+  };
+
+  let file =
+    pathName(job?.result?.filename) ||
+    pathName(job?.result?.path) ||
+    pathName(job?.filename) ||
+    pathName(job?.path) ||
+    "";
+
+  let title = "";
+  for (const c of [job?.title, job?.pageTitle, job?.displayName, file]) {
+    const cleaned = cleanTitleText(c);
+    if (
+      cleaned &&
+      !isUglyName(cleaned) &&
+      !(typeof UVD !== "undefined" && UVD.isGenericSaveName?.(cleaned)) &&
+      cleaned.length > title.length
+    ) {
+      title = cleaned;
+    }
+  }
+
+  if (!title && file && !(typeof UVD !== "undefined" && UVD.isGenericSaveName?.(file))) {
+    title = file;
+  }
+
+  if (!title && job?.pageUrl) {
+    const site = siteLabel(job.pageUrl, job);
+    try {
+      const u = new URL(job.pageUrl);
+      const host = u.hostname.replace(/^www\./, "");
+      title = site ? `${site} 영상` : host;
+    } catch {
+      title = site || "영상";
+    }
+  }
+  if (!title) title = "영상";
+
+  // Show final file name if different from title
+  let fileLabel = "";
+  if (file && file !== title && !title.includes(file.slice(0, 20))) {
+    fileLabel = file.length > 48 ? file.slice(0, 46) + "…" : file;
+    const ext =
+      (job?.result?.filename || job?.filename || "").match(
+        /\.(mp4|webm|mkv|mp3|m4a)$/i
+      )?.[0] || "";
+    if (ext && !fileLabel.endsWith(ext)) fileLabel += ext;
+  } else if (file && file === title) {
+    const ext =
+      (job?.result?.filename || job?.filename || "").match(
+        /\.(mp4|webm|mkv|mp3|m4a)$/i
+      )?.[0] || ".mp4";
+    fileLabel = `${file.length > 40 ? file.slice(0, 38) + "…" : file}${
+      file.endsWith(ext) ? "" : ext
+    }`;
+  }
+
+  const quality =
+    job?.quality && !/^(best|all|unknown)$/i.test(String(job.quality))
+      ? String(job.quality)
+      : "";
+  const site = siteLabel(job?.pageUrl, job) || "";
+
+  return { title, fileLabel, quality, site };
+}
+
 function shortJobTitle(job) {
-  const raw =
-    job?.title ||
-    job?.filename ||
-    job?.pageUrl ||
-    "영상";
-  let t = String(raw)
-    .replace(/^https?:\/\/(www\.)?/i, "")
-    .replace(/\.mp4$/i, "")
-    .trim();
-  if (t.length > 36) t = t.slice(0, 34) + "…";
-  return t || "영상";
+  const { title } = jobDisplayInfo(job);
+  if (title.length > 48) return title.slice(0, 46) + "…";
+  return title;
 }
 
 function cleanJobMessage(msg, phase) {
@@ -837,7 +977,13 @@ function cleanJobMessage(msg, phase) {
   if (/ERROR/i.test(text)) return text.slice(0, 48);
   if (phase === "merge" || /만들|합치|Merg/i.test(text)) return "파일 만드는 중…";
   if (phase === "save" || /^저장/i.test(text)) return "저장 중…";
-  if (text.length > 42) text = text.slice(0, 40) + "…";
+  // Keep Destination / file path snippets as "저장 중 · name"
+  const dest = text.match(/(?:Destination|Merging into|to:\s*)(.+\.(?:mp4|mkv|webm|mp3))/i);
+  if (dest) {
+    const name = dest[1].split(/[/\\]/).pop();
+    return `저장 중 · ${name.length > 28 ? name.slice(0, 26) + "…" : name}`;
+  }
+  if (text.length > 48) text = text.slice(0, 46) + "…";
   return text;
 }
 
@@ -919,7 +1065,7 @@ function upsertUiJob(job, opts = {}) {
         ? "error"
         : prev.status || "running");
 
-  // Per-job monotonic percent (stops bar bouncing when events interleave)
+  // Strict monotonic % while running (page HLS retry / playlist re-parse / mixed events)
   let percent =
     typeof job.percent === "number"
       ? job.percent
@@ -929,17 +1075,28 @@ function upsertUiJob(job, opts = {}) {
   if (
     status === "running" &&
     prev.status === "running" &&
-    typeof prev.percent === "number" &&
-    typeof job.percent === "number" &&
-    job.percent < prev.percent - 0.5
+    typeof prev.percent === "number"
   ) {
-    // Allow reset only when clearly starting a new phase from near-zero
-    if (!(job.percent <= 8 && prev.percent >= 20 && /start|playlist|준비/i.test(job.message || job.phase || ""))) {
-      percent = prev.percent;
-    }
+    percent = Math.max(prev.percent, typeof job.percent === "number" ? job.percent : 0);
   }
+  if (status === "done") percent = 100;
   percent = Math.max(0, Math.min(100, percent));
 
+  // Prefer richer title/filename from new event, keep previous if empty/generic
+  const pickTitle = (...cands) => {
+    for (const c of cands) {
+      const t = String(c || "").trim();
+      if (!t) continue;
+      if (typeof UVD !== "undefined" && UVD.isGenericSaveName?.(t)) continue;
+      if (/^(영상|동영상|video)$/i.test(t)) continue;
+      return t;
+    }
+    return cands.find((c) => String(c || "").trim()) || "영상";
+  };
+  const resultName =
+    job.result?.filename ||
+    (job.result?.path ? String(job.result.path).split(/[/\\]/).pop() : "") ||
+    "";
   const next = {
     ...prev,
     ...job,
@@ -947,20 +1104,38 @@ function upsertUiJob(job, opts = {}) {
     status,
     percent,
     message: job.message || prev.message || "",
-    title: job.title || prev.title || job.filename || "영상",
-    filename: job.filename || prev.filename || "",
+    title: pickTitle(job.title, prev.title, job.filename, prev.filename, resultName),
+    filename:
+      job.filename ||
+      prev.filename ||
+      resultName ||
+      "",
+    quality: job.quality || prev.quality || "",
     pageUrl: job.pageUrl || prev.pageUrl || "",
     error: job.error || (status === "error" ? job.message : prev.error) || null,
     result: job.result || prev.result || null,
     updatedAt: job.updatedAt || Date.now(),
     startedAt: job.startedAt || prev.startedAt || Date.now()
   };
+  // After finish, adopt real saved name into title/filename for display
+  if (status === "done" && resultName) {
+    next.filename = resultName;
+    if (
+      !next.title ||
+      next.title === "영상" ||
+      (typeof UVD !== "undefined" && UVD.isGenericSaveName?.(next.title))
+    ) {
+      next.title = resultName.replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
+    }
+  }
 
   // Skip no-op updates (same % rounded + same message) to reduce flicker
   if (
     prev.status === next.status &&
     Math.round(prev.percent || 0) === Math.round(next.percent || 0) &&
     prev.message === next.message &&
+    prev.title === next.title &&
+    prev.filename === next.filename &&
     status === "running" &&
     opts.toast === false
   ) {
@@ -980,14 +1155,18 @@ function upsertUiJob(job, opts = {}) {
   if (opts.toast !== false) {
     if (status === "done" && !toastedJobIds.has(id) && !job._silentDone) {
       toastedJobIds.add(id);
-      const path = next.result?.path || next.path || "";
-      const where = path
-        ? String(path).split(/[/\\]/).slice(-2).join("/")
-        : "다운로드/VideoDownloader";
-      toast(`저장 완료 · ${where}`, "ok");
+      const info = jobDisplayInfo(next);
+      const name =
+        info.title.length > 24 ? info.title.slice(0, 22) + "…" : info.title;
+      toast(`저장 완료 · ${name}`, "ok");
     } else if (status === "error" && !toastedJobIds.has(id)) {
       toastedJobIds.add(id);
-      toast(userError(next.error || next.message || "다운로드 실패"), "error");
+      const name = shortJobTitle(next);
+      toast(
+        userError(next.error || next.message || "다운로드 실패") +
+          (name && name !== "영상" ? ` · ${name}` : ""),
+        "error"
+      );
     }
   }
 
@@ -1049,13 +1228,30 @@ function renderDownloadQueue() {
 
   if (dlQueueSub) {
     if (running.length > 1) {
-      dlQueueSub.textContent = `${running.length}개 동시 다운로드 진행 중 · 페이지 이동 OK`;
+      const names = running
+        .slice(0, 2)
+        .map((j) => shortJobTitle(j))
+        .join(" · ");
+      dlQueueSub.textContent = `${running.length}개 동시 · ${names}${
+        running.length > 2 ? " …" : ""
+      }`;
+      dlQueueSub.title = running.map((j) => shortJobTitle(j)).join("\n");
     } else if (running.length === 1) {
-      dlQueueSub.textContent = "백그라운드에서 받는 중 · 추가로 더 받을 수 있어요";
+      const info = jobDisplayInfo(running[0]);
+      dlQueueSub.textContent = `받는 중 · ${info.title}`;
+      dlQueueSub.title = [
+        info.title,
+        info.fileLabel ? `파일: ${info.fileLabel}` : "",
+        info.quality ? `화질: ${info.quality}` : ""
+      ]
+        .filter(Boolean)
+        .join("\n");
     } else if (done.length) {
       dlQueueSub.textContent = "저장 위치: 다운로드/VideoDownloader";
+      dlQueueSub.title = "";
     } else {
       dlQueueSub.textContent = "다시 시도해 주세요";
+      dlQueueSub.title = "";
     }
   }
 
@@ -1066,6 +1262,7 @@ function renderDownloadQueue() {
       const icon = st === "done" ? "✓" : st === "error" ? "!" : "↓";
       const pctLabel =
         st === "done" ? "완료" : st === "error" ? "실패" : `${pct}%`;
+      const info = jobDisplayInfo(j);
       const msg =
         st === "error"
           ? cleanJobMessage(j.error || j.message || "실패", "error")
@@ -1092,16 +1289,30 @@ function renderDownloadQueue() {
               errMeta.hint
             )}</div>`
           : "";
+      const tags = [info.site, info.quality].filter(Boolean);
+      const tagsHtml = tags.length
+        ? `<div class="dl-job-tags">${tags
+            .map((t) => `<span class="dl-job-tag">${escapeHtml(t)}</span>`)
+            .join("")}</div>`
+        : "";
+      const fileHtml = info.fileLabel
+        ? `<div class="dl-job-file" title="${escapeAttr(info.fileLabel)}">📄 ${escapeHtml(
+            info.fileLabel
+          )}</div>`
+        : "";
+      const tip = [info.title, info.fileLabel, j.pageUrl].filter(Boolean).join("\n");
       return `
         <div class="dl-job ${st === "done" ? "is-done" : ""} ${
           st === "error" ? "is-error" : ""
-        }" data-job-id="${escapeAttr(j.id)}">
+        } ${st === "running" ? "is-running" : ""}" data-job-id="${escapeAttr(j.id)}">
           <div class="dl-job-top">
             <span class="dl-job-status ${escapeAttr(st)}" aria-hidden="true">${icon}</span>
             <div class="dl-job-meta">
-              <div class="dl-job-title" title="${escapeAttr(
-                j.title || j.filename || ""
-              )}">${escapeHtml(shortJobTitle(j))}</div>
+              <div class="dl-job-title" title="${escapeAttr(tip)}">${escapeHtml(
+                info.title.length > 60 ? info.title.slice(0, 58) + "…" : info.title
+              )}</div>
+              ${fileHtml}
+              ${tagsHtml}
               <div class="dl-job-msg">${escapeHtml(msg)}</div>
               ${errLine}
             </div>
@@ -1266,7 +1477,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.18`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.18.2`;
 }
 
 function fillSettingsForm() {
@@ -1279,12 +1490,8 @@ function fillSettingsForm() {
   const qbs = uvdSettings.qualityBySite || {};
   if (sub) sub.value = uvdSettings.subfolder || "VideoDownloader";
   if (tpl) {
-    tpl.value =
-      !uvdSettings.filenameTemplate ||
-      uvdSettings.filenameTemplate === "legacy" ||
-      uvdSettings.filenameTemplate === "{title}_{quality}"
-        ? "legacy"
-        : uvdSettings.filenameTemplate;
+    // Always show/use readable legacy names
+    tpl.value = "legacy";
   }
   if (mode) mode.value = uvdSettings.mediaMode || "video";
   if (notify) notify.checked = uvdSettings.notifyOnComplete !== false;
@@ -1339,9 +1546,8 @@ function updateSettingsPreview() {
 }
 
 async function saveSettingsFromForm() {
-  let tpl = $("#setTemplate")?.value?.trim() || "legacy";
-  // Treat empty / old default as readable legacy style
-  if (!tpl || tpl === "{title}_{quality}") tpl = "legacy";
+  // Always readable legacy filenames (title + optional quality)
+  const tpl = "legacy";
   const patch = {
     subfolder: $("#setSubfolder")?.value?.trim() || "VideoDownloader",
     filenameTemplate: tpl,
@@ -1457,7 +1663,10 @@ function updateRetryFailedButton() {
     (h) => h?.status === "error" && /^https?:/i.test(h.pageUrl || h.url || "")
   ).length;
   btn.disabled = n === 0;
-  btn.textContent = n > 0 ? `실패만 재시도 (${n})` : "실패만 재시도";
+  // Short labels so toolbar fits next to 「비우기」
+  btn.textContent = n > 0 ? `실패 재시도 · ${n}` : "실패 재시도";
+  btn.title =
+    n > 0 ? `실패한 ${n}개 다시 받기` : "재시도할 실패 항목이 없습니다";
 }
 
 /* ── Recent files ─────────────────────────────── */
@@ -1523,6 +1732,8 @@ function renderWatchlist() {
   root.innerHTML = watchlistItems
     .map((w) => {
       const title = w.title || "나중에 받을 영상";
+      const site = w.site || UVD.siteFromUrl(w.url || w.pageUrl) || "";
+      const hasMedia = !!(w.mediaUrl && /^https?:/i.test(w.mediaUrl));
       return `
         <div class="history-item" data-watch-id="${escapeAttr(w.id)}">
           <div class="history-top">
@@ -1533,13 +1744,17 @@ function renderWatchlist() {
               )}</div>
               <div class="history-sub">${escapeHtml(
                 formatTimeAgo(w.at)
-              )} · ${escapeHtml(w.site || UVD.siteFromUrl(w.url) || "")}</div>
+              )} · ${escapeHtml(site)}${hasMedia ? " · 스트림 저장됨" : ""}</div>
             </div>
           </div>
           <div class="history-actions">
-            <button type="button" class="btn" data-act="watch-dl" data-url="${escapeAttr(
-              w.url || w.pageUrl || ""
-            )}" data-id="${escapeAttr(w.id)}">받기</button>
+            <button type="button" class="btn" data-act="watch-dl"
+              data-url="${escapeAttr(w.url || w.pageUrl || "")}"
+              data-page-url="${escapeAttr(w.pageUrl || w.url || "")}"
+              data-media-url="${escapeAttr(w.mediaUrl || "")}"
+              data-title="${escapeAttr(title)}"
+              data-quality="${escapeAttr(w.quality || "")}"
+              data-id="${escapeAttr(w.id)}">받기</button>
             <button type="button" class="btn" data-act="watch-rm" data-id="${escapeAttr(
               w.id
             )}">삭제</button>
@@ -1553,7 +1768,13 @@ function renderWatchlist() {
       const id = btn.getAttribute("data-id") || "";
       const url = btn.getAttribute("data-url") || "";
       if (act === "watch-dl" && url) {
-        await downloadByPastedLink(url, { skipDupCheck: false });
+        await downloadByPastedLink(url, {
+          skipDupCheck: false,
+          mediaUrl: btn.getAttribute("data-media-url") || "",
+          pageUrl: btn.getAttribute("data-page-url") || url,
+          title: btn.getAttribute("data-title") || "",
+          quality: btn.getAttribute("data-quality") || selectedQuality || "best"
+        });
         await chrome.runtime
           .sendMessage({ type: "REMOVE_WATCHLIST", id })
           .catch(() => {});
@@ -1570,49 +1791,147 @@ function renderWatchlist() {
   });
 }
 
-async function addCurrentToWatchlist(forcedUrl) {
-  let url = forcedUrl || "";
-  if (!url) {
-    const fromInput = UVD.parseUrlsFromText($("#linkInput")?.value || "")[0];
-    url = fromInput || currentTabUrl || "";
-  }
-  if (!/^https?:/i.test(url)) {
-    toast("추가할 링크가 없습니다", "error");
-    return;
-  }
+/** Any http(s) link we can try to download later (not chrome:// etc.) */
+function isWatchlistableUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  let href = url.trim();
+  if (!href) return false;
+  // bare social hosts without scheme
   if (
-    !isYoutubeUrl(url) &&
-    !isTiktokUrl(url) &&
-    !isInstagramUrl(url) &&
-    !isXUrl(url) &&
-    !isFacebookUrl(url) &&
-    !isBilibiliUrl(url) &&
-    !UVD.isPlaylistUrl(url) &&
-    !looksLikeDirectMedia(url)
+    !/^https?:\/\//i.test(href) &&
+    /^(www\.)?(youtube|youtu\.be|tiktok|instagram|x\.com|twitter|facebook|fb\.watch|bilibili|b23\.tv)/i.test(
+      href
+    )
   ) {
-    toast("지원 사이트 링크만 추가할 수 있습니다", "error");
+    href = "https://" + href;
+  }
+  if (!/^https?:\/\//i.test(href)) return false;
+  try {
+    const u = new URL(href);
+    if (!/^https?:$/i.test(u.protocol)) return false;
+    const h = (u.hostname || "").toLowerCase();
+    if (!h || h === "localhost") return false;
+    if (/^(chrome|chrome-extension|edge|about|devtools|brave)/i.test(u.protocol)) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pick best URL for watchlist: real video page > media stream > tab.
+ */
+function resolveWatchlistUrl(forcedUrl) {
+  const fromInput = normalizePastedUrl(
+    UVD.parseUrlsFromText($("#linkInput")?.value || "")[0] || ""
+  );
+  const item = allItems[0];
+  const candidates = [
+    forcedUrl,
+    fromInput,
+    item?.pageUrl,
+    // Direct media / HLS only if page URL missing
+    item?.url,
+    currentTabUrl
+  ]
+    .map((u) => String(u || "").trim())
+    .filter(Boolean);
+
+  // Prefer known social/video pages over raw CDN/m3u8 when both exist
+  for (const u of candidates) {
+    if (
+      isDownloadableSiteVideo(u) ||
+      isYoutubeUrl(u) ||
+      isTiktokUrl(u) ||
+      isInstagramUrl(u) ||
+      isXUrl(u) ||
+      isFacebookUrl(u) ||
+      isBilibiliUrl(u) ||
+      UVD.isPlaylistUrl(u)
+    ) {
+      return u;
+    }
+  }
+  for (const u of candidates) {
+    if (isWatchlistableUrl(u)) return u;
+  }
+  return candidates[0] || "";
+}
+
+async function addCurrentToWatchlist(forcedUrl) {
+  let url = resolveWatchlistUrl(forcedUrl);
+  if (url && !/^https?:\/\//i.test(url)) {
+    url = normalizePastedUrl(url) || url;
+  }
+  if (!url || !/^https?:/i.test(url)) {
+    toast("추가할 링크가 없습니다 · 영상 페이지를 열거나 링크를 붙여 넣으세요", "error");
     return;
   }
+  if (!isWatchlistableUrl(url)) {
+    toast("http(s) 링크만 추가할 수 있습니다", "error");
+    return;
+  }
+
+  // Instagram: only real posts (home/profile can't be downloaded later either)
+  if (isInstagramHost(url) && !isInstagramPostUrl(url)) {
+    toast("Instagram은 게시물·릴스 링크만 추가할 수 있습니다", "error");
+    return;
+  }
+
+  const item = allItems[0];
+  const sameCard =
+    item &&
+    (pageKey(item.pageUrl || item.url || "") === pageKey(url) ||
+      pageKey(item.url || "") === pageKey(url));
   const title =
-    (allItems[0] &&
-      pageKey(allItems[0].pageUrl || allItems[0].url || "") === pageKey(url) &&
-      (allItems[0].title || allItems[0].pageTitle)) ||
+    (sameCard && (item.title || item.pageTitle || item.displayName)) ||
+    (item && isSitePage(currentTabUrl) && (item.title || item.pageTitle)) ||
     fnameBaseFromLink(url) ||
+    cleanTitleText(document?.title) ||
     "나중에 받을 영상";
+  // Capture stream URL when available (123av / HLS sites need this for later download)
+  let mediaUrl = "";
+  if (sameCard && item?.url && item.url !== url) {
+    if (isHlsItem(item) || looksLikeDirectMedia(item.url) || /\.m3u8|\/playlist/i.test(item.url)) {
+      mediaUrl = item.url;
+    }
+  } else if (item?.url && (isHlsItem(item) || looksLikeDirectMedia(item.url))) {
+    // Card media on current page even if URL key slightly differs
+    try {
+      const pageHost = new URL(url).hostname.replace(/^www\./, "");
+      const curHost = currentTabUrl
+        ? new URL(currentTabUrl).hostname.replace(/^www\./, "")
+        : "";
+      if (pageHost && (pageHost === curHost || !curHost)) {
+        mediaUrl = item.url;
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   try {
     const res = await chrome.runtime.sendMessage({
       type: "ADD_WATCHLIST",
       item: {
         url,
-        pageUrl: url,
-        title: cleanTitleText(title) || title,
-        thumbnail: allItems[0]?.thumbnail || "",
+        pageUrl: item?.pageUrl || url,
+        mediaUrl: mediaUrl || "",
+        title: cleanTitleText(title) || title || "나중에 받을 영상",
+        thumbnail: (sameCard && item?.thumbnail) || item?.thumbnail || "",
         quality: selectedQuality || "",
-        site: UVD.siteFromUrl(url)
+        site: UVD.siteFromUrl(url) || item?.site || ""
       }
     });
     watchlistItems = res?.watchlist || [];
-    toast("나중 받기에 추가했습니다", "ok");
+    toast(
+      mediaUrl
+        ? "나중 받기에 추가했습니다 (스트림 포함)"
+        : "나중 받기에 추가했습니다",
+      "ok"
+    );
     if (activeTabName === "watch") renderWatchlist();
   } catch (e) {
     toast(userError(e?.message) || "추가 실패", "error");
@@ -1912,12 +2231,19 @@ function applyJobProgress(jobOrProgress, opts = {}) {
     const running = [...uiJobs.values()].filter((j) => j.status === "running");
     if (running.length > 1) return;
     if (running.length === 1) {
+      const prev = running[0];
+      const raw = typeof p.percent === "number" ? p.percent : prev.percent || 0;
+      // Never lower a running job's bar from unscoped page events
+      const percent =
+        prev.status === "running"
+          ? Math.max(prev.percent || 0, raw)
+          : raw;
       upsertUiJob(
         {
-          ...running[0],
-          percent: p.percent,
-          message: p.message,
-          phase: p.phase,
+          ...prev,
+          percent,
+          message: p.message || prev.message,
+          phase: p.phase || prev.phase,
           status:
             p.phase === "done"
               ? "done"
@@ -1932,11 +2258,17 @@ function applyJobProgress(jobOrProgress, opts = {}) {
     }
     return;
   }
+  const prev = uiJobs.get(jobId);
+  const raw = typeof p.percent === "number" ? p.percent : prev?.percent || 0;
+  const percent =
+    prev?.status === "running" && typeof prev.percent === "number"
+      ? Math.max(prev.percent, raw)
+      : raw;
   upsertUiJob(
     {
       id: jobId,
       title: p.title,
-      percent: p.percent,
+      percent,
       message: p.message || p.error,
       phase: p.phase,
       status:
@@ -1946,6 +2278,7 @@ function applyJobProgress(jobOrProgress, opts = {}) {
       result: p.result,
       path: p.path,
       filename: p.filename,
+      quality: p.quality,
       pageUrl: p.pageUrl,
       startedAt: p.startedAt,
       updatedAt: p.updatedAt || Date.now(),
@@ -2164,6 +2497,8 @@ function render() {
   listEl.innerHTML = "";
 
   if (!items.length) {
+    // No card — show global quality chips for link paste
+    syncGlobalQualityBox(false);
     let title = "받을 영상이 없습니다.";
     let hint = "페이지를 열거나 위에 게시물 링크를 붙여 넣으세요.";
     if (isInstagramHost(currentTabUrl) && !isInstagramPostUrl(currentTabUrl)) {
@@ -2225,7 +2560,7 @@ function render() {
   const site = siteLabel(currentTabUrl, item);
   const btnLabel = site ? `${site} 다운로드` : "다운로드";
 
-  // Download CTA first (no scroll) → estimate → quality → details
+  // Order: info → quality chips (always visible) → download CTA
   card.innerHTML = `
     <div class="card-top">
       <div class="thumb" aria-hidden="true">${thumbHtml(item)}</div>
@@ -2235,11 +2570,11 @@ function render() {
       </div>
     </div>
     ${estimateBarHtml(item, qualitiesLoading)}
+    ${qualityPickerHtml()}
     <div class="card-actions card-actions-row">
       <button type="button" class="btn primary btn-dl">${escapeHtml(btnLabel)}</button>
       <button type="button" class="btn btn-watch" title="나중에 받기">나중</button>
     </div>
-    ${qualityPickerHtml()}
     <details class="card-details">
       <summary class="card-details-sum">저장 이름 · 상세</summary>
       <div class="filename-box" title="${escapeAttr(file)}">
@@ -2290,11 +2625,19 @@ function render() {
   });
 
   card.querySelector(".btn-watch")?.addEventListener("click", async () => {
-    const url = item.pageUrl || item.url || currentTabUrl;
+    // Prefer page URL for sites; fall back to media URL (HLS/mp4)
+    const url =
+      (item.pageUrl && isWatchlistableUrl(item.pageUrl) && item.pageUrl) ||
+      (item.url && isWatchlistableUrl(item.url) && item.url) ||
+      currentTabUrl ||
+      item.pageUrl ||
+      item.url;
     await addCurrentToWatchlist(url);
   });
 
   listEl.appendChild(card);
+  // Card already has quality chips — hide the global bar
+  syncGlobalQualityBox(true);
 }
 
 async function downloadItem(item, opts = {}) {
@@ -2349,7 +2692,11 @@ async function downloadItem(item, opts = {}) {
       quality: selectedQuality === "best" ? item.quality : selectedQuality
     });
     item._saveAs = saveName;
-    const title = item.title || item.pageTitle || saveName;
+    const title =
+      cleanTitleText(item.title || item.pageTitle || item.displayName || "") ||
+      cleanTitleText(saveName) ||
+      displayName(item) ||
+      "영상";
 
     // Optimistic row so the user sees concurrency immediately
     const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -2357,8 +2704,9 @@ async function downloadItem(item, opts = {}) {
       {
         id: tempId,
         title,
-        filename: saveName,
+        filename: saveName || title,
         pageUrl,
+        quality: selectedQuality || "",
         status: "running",
         percent: 3,
         message: "대기열에 추가됨…",
@@ -2393,8 +2741,9 @@ async function downloadItem(item, opts = {}) {
         {
           id: res.jobId,
           title,
-          filename: saveName,
+          filename: saveName || title,
           pageUrl,
+          quality: selectedQuality || "",
           status: "running",
           percent: 4,
           message: "백그라운드에서 받는 중…",
@@ -2405,10 +2754,12 @@ async function downloadItem(item, opts = {}) {
       );
       ensureQueuePoll();
       const n = runningJobCount();
+      const short =
+        title.length > 28 ? title.slice(0, 26) + "…" : title;
       toast(
         n > 1
-          ? `다운로드 ${n}개 동시 진행 중`
-          : "받기 시작 · 페이지를 이동해도 계속됩니다",
+          ? `받는 중 ${n}개 · ${short}`
+          : `받는 중 · ${short}`,
         "ok"
       );
       return;
@@ -2759,15 +3110,7 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
   // Multi-link batch when textarea has several URLs (and no single forcedUrl override list)
   if (!forcedUrl) {
     const urls = updateLinkCount().filter(
-      (u) =>
-        isYoutubeUrl(u) ||
-        isTiktokUrl(u) ||
-        isInstagramUrl(u) ||
-        isXUrl(u) ||
-        isFacebookUrl(u) ||
-        isBilibiliUrl(u) ||
-        looksLikeDirectMedia(u) ||
-        UVD.isPlaylistUrl(u)
+      (u) => isWatchlistableUrl(u) || looksLikeDirectMedia(u)
     );
     if (urls.length > 1) {
       // Filter out known duplicates (unless user forced)
@@ -2805,7 +3148,7 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
       try {
         await refreshHelperStatus(true);
         // Use first URL's site default quality for batch
-        const batchQ = UVD.qualityForSite(uvdSettings, toStart[0]) || selectedQuality || "best";
+        const batchQ = selectedQuality || "best";
         const res = await chrome.runtime.sendMessage({
           type: "DOWNLOAD_BATCH",
           urls: toStart,
@@ -2863,20 +3206,8 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
 
   // Apply site default quality for this link when chips not yet loaded
   applySiteDefaultQuality(link);
-  if (
-    !isYoutubeUrl(link) &&
-    !isTiktokUrl(link) &&
-    !isInstagramUrl(link) &&
-    !isXUrl(link) &&
-    !isFacebookUrl(link) &&
-    !isBilibiliUrl(link) &&
-    !looksLikeDirectMedia(link) &&
-    !UVD.isPlaylistUrl(link)
-  ) {
-    toast(
-      "YouTube / TikTok / Instagram / X / Facebook / Bilibili 링크만 지원합니다",
-      "error"
-    );
+  if (!isWatchlistableUrl(link) && !looksLikeDirectMedia(link)) {
+    toast("유효한 http(s) 링크가 필요합니다", "error");
     return;
   }
 
@@ -2886,7 +3217,9 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
   }
 
   try {
-    const isPage =
+    const mediaUrl = opts.mediaUrl || "";
+    const pageUrlHint = opts.pageUrl || link;
+    const isSocial =
       isYoutubeUrl(link) ||
       isTiktokUrl(link) ||
       isInstagramUrl(link) ||
@@ -2894,22 +3227,31 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
       isFacebookUrl(link) ||
       isBilibiliUrl(link) ||
       UVD.isPlaylistUrl(link);
-    // Prefer real title from current card when it's the same video page
+    const isDirectMedia =
+      looksLikeDirectMedia(link) ||
+      /\.m3u8(\?|$|#)/i.test(link) ||
+      looksLikeDirectMedia(mediaUrl) ||
+      /\.m3u8(\?|$|#)/i.test(mediaUrl || "");
+    // Prefer real title from current card / opts when available
     const sameAsCard =
       allItems[0] &&
       pageKey(allItems[0].pageUrl || allItems[0].url || "") === pageKey(link);
-    const realTitle = sameAsCard
-      ? allItems[0].title || allItems[0].pageTitle || allItems[0].displayName
-      : "";
+    const realTitle =
+      (opts.title && cleanTitleText(opts.title)) ||
+      (sameAsCard
+        ? allItems[0].title || allItems[0].pageTitle || allItems[0].displayName
+        : "");
     const displayLabel =
       (realTitle && !UVD.isGenericSaveName(realTitle) && cleanTitleText(realTitle)) ||
-      fnameBaseFromLink(link);
+      fnameBaseFromLink(link) ||
+      "영상";
+    const preferQ = opts.quality || selectedQuality || "best";
     // Empty filename → helper uses yt-dlp video title (readable)
     const filename = downloadFilename({
       title: realTitle || "",
       pageTitle: realTitle || "",
       displayName: realTitle || "",
-      pageUrl: link,
+      pageUrl: pageUrlHint,
       type: uvdSettings.mediaMode === "audio" ? "audio" : "video"
     });
 
@@ -2919,7 +3261,8 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
         id: tempId,
         title: displayLabel,
         filename: filename || displayLabel,
-        pageUrl: link,
+        pageUrl: pageUrlHint,
+        quality: preferQ,
         status: "running",
         percent: 3,
         message: "대기열에 추가됨…",
@@ -2930,7 +3273,7 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
     );
 
     let res;
-    if (isPage) {
+    if (isSocial) {
       await refreshHelperStatus(true);
       res = await chrome.runtime.sendMessage({
         type: "DOWNLOAD_CURRENT_PAGE",
@@ -2939,19 +3282,34 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
         // Only force name when we have a real human title
         filename: filename || undefined,
         tabId: currentTabId,
-        preferQuality: selectedQuality || "best",
+        preferQuality: preferQ,
         title: realTitle && !UVD.isGenericSaveName(realTitle) ? realTitle : undefined
       });
-    } else {
+    } else if (mediaUrl || (isDirectMedia && /\.(m3u8|mp4|webm|mkv)/i.test(mediaUrl || link))) {
+      // 123av 등: 저장된 스트림 또는 직접 미디어 URL
+      const stream = mediaUrl || link;
+      const isHls = /\.m3u8(\?|$|#)/i.test(stream);
       res = await chrome.runtime.sendMessage({
-        type: "DOWNLOAD",
-        url: link,
-        pageUrl: currentTabUrl || link,
+        type: isHls ? "DOWNLOAD_HLS" : "DOWNLOAD",
+        url: stream,
+        pageUrl: pageUrlHint,
         filename: filename || undefined,
         tabId: currentTabId,
-        preferQuality: selectedQuality || "best",
-        mediaType: "video",
+        preferQuality: preferQ,
+        mediaType: isHls ? "stream" : "video",
         preferYtDlp: false,
+        openPageIfNeeded: true,
+        title: realTitle || displayLabel
+      });
+    } else {
+      // Generic video page (123av / missav / jable …) — open & scan if needed
+      res = await chrome.runtime.sendMessage({
+        type: "DOWNLOAD_PAGE",
+        url: link,
+        pageUrl: link,
+        filename: filename || undefined,
+        tabId: currentTabId,
+        preferQuality: preferQ,
         title: realTitle || displayLabel
       });
     }
@@ -3031,7 +3389,11 @@ async function downloadThisPage() {
 }
 
 function looksLikeDirectMedia(url) {
-  return /\.(mp4|webm|mov|m4v|mkv)(\?|$)/i.test(url || "") || /mime_type=video/i.test(url || "");
+  return (
+    /\.(mp4|webm|mov|m4v|mkv|m3u8|mpd)(\?|$|#)/i.test(url || "") ||
+    /mime_type=video/i.test(url || "") ||
+    /\/videoplayback/i.test(url || "")
+  );
 }
 
 $("#btnLinkDl")?.addEventListener("click", () => downloadByPastedLink());

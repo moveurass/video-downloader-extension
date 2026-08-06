@@ -546,11 +546,13 @@ def run_download(job_id: str, payload: dict) -> None:
 
     if title_hint:
         safe = clean_name(title_hint)
+        # Readable old-style names: keep spaces + unicode (no restrict-filenames)
         outtmpl = str(OUT_DIR / f"{safe}.%(ext)s")
     else:
-        # yt-dlp title; still strip leading (N) via output template filter is limited,
-        # so use plain title and rely on post-rename if needed
-        outtmpl = str(OUT_DIR / "%(title).80B.%(ext)s")
+        # Real video title from extractor — keep spaces/unicode so names stay readable
+        # (e.g. "SSIS-001 이복 여동생 이야기.mp4")
+        # Use .s (chars) not .B (bytes) so Korean titles are not cut mid-glyph.
+        outtmpl = str(OUT_DIR / "%(title).100s.%(ext)s")
 
     site = (payload.get("site") or "").lower()
     host = ""
@@ -800,8 +802,10 @@ def run_download(job_id: str, payload: dict) -> None:
                 ]
             )
 
+        # Windows-safe only (keeps Korean/spaces). Never --restrict-filenames
+        # which strips non-ASCII and makes unreadable names like "SSIS_001.mp4".
         if not title_hint:
-            c.append("--restrict-filenames")
+            c.append("--windows-filenames")
         if referer:
             c.extend(["--add-header", f"Referer:{referer}"])
             try:
@@ -978,6 +982,24 @@ def run_download(job_id: str, payload: dict) -> None:
                 final_path = str(candidates[0])
 
         if final_path and Path(final_path).is_file():
+            # Make sure saved name is human-readable (strip "(2) " counters etc.)
+            try:
+                p = Path(final_path)
+                stem = p.stem
+                cleaned = clean_name(stem)
+                # Drop trailing _best/_all noise
+                cleaned = re.sub(r"[_\s-]+(best|all)$", "", cleaned, flags=re.I).strip(" ._-" )
+                if cleaned and cleaned != stem and len(cleaned) >= 2:
+                    dest = p.with_name(f"{cleaned}{p.suffix}")
+                    n = 1
+                    while dest.exists() and dest != p:
+                        dest = p.with_name(f"{cleaned}_{n}{p.suffix}")
+                        n += 1
+                    if dest != p:
+                        p.rename(dest)
+                        final_path = str(dest)
+            except Exception as e:
+                print(f"[uvd-helper] rename cleanup: {e}", file=sys.stderr)
             final_size = Path(final_path).stat().st_size
 
         with jobs_lock:
