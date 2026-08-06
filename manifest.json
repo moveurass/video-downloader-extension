@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.14.0",
-  "description": "완료 알림 · 용량 미리보기 · 클립보드 감시",
+  "version": "1.15.0",
+  "description": "실패 재시도 · 중복 경고 · 사이트별 화질",
   "permissions": [
     "downloads",
     "storage",

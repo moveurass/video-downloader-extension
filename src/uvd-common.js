@@ -5,20 +5,41 @@
 const UVD = (() => {
   const DEFAULT_SETTINGS = {
     subfolder: "VideoDownloader",
-    filenameTemplate: "{title}_{quality}",
+    // "legacy" = human title + optional _quality (readable old style)
+    filenameTemplate: "legacy",
     mediaMode: "video", // video | audio | video_subs
     maxHistory: 50,
     /** Show OS notification when a download finishes (default on) */
     notifyOnComplete: true,
-    /** Opt-in: watch clipboard for YT/TT/IG links while popup is open */
-    clipboardWatch: false
+    /** Opt-in: watch clipboard for social links while popup is open */
+    clipboardWatch: false,
+    /** Warn when the same video URL was already downloaded */
+    warnDuplicates: true,
+    /**
+     * Per-site default quality id (best | 4K | 1080p | …)
+     * Applied when available for that video.
+     */
+    qualityBySite: {
+      default: "best",
+      youtube: "1080p",
+      tiktok: "best",
+      instagram: "best"
+    }
   };
 
   const HISTORY_KEY = "uvdHistory";
   const SETTINGS_KEY = "uvdSettings";
 
   function mergeSettings(raw) {
-    return { ...DEFAULT_SETTINGS, ...(raw || {}) };
+    const next = { ...DEFAULT_SETTINGS, ...(raw || {}) };
+    // Migrate previous default template to readable legacy style
+    if (
+      !next.filenameTemplate ||
+      next.filenameTemplate === "{title}_{quality}"
+    ) {
+      next.filenameTemplate = "legacy";
+    }
+    return next;
   }
 
   async function getSettings() {
@@ -39,13 +60,30 @@ const UVD = (() => {
       .replace(/^\/+|\/+$/g, "")
       .replace(/\.\./g, "")
       .slice(0, 80) || "VideoDownloader";
-    next.filenameTemplate = String(next.filenameTemplate || "{title}_{quality}").slice(0, 80);
+    next.filenameTemplate = String(
+      next.filenameTemplate != null && next.filenameTemplate !== ""
+        ? next.filenameTemplate
+        : "legacy"
+    ).slice(0, 80);
     if (!["video", "audio", "video_subs"].includes(next.mediaMode)) {
       next.mediaMode = "video";
     }
     next.maxHistory = Math.min(100, Math.max(10, Number(next.maxHistory) || 50));
     next.notifyOnComplete = next.notifyOnComplete !== false;
     next.clipboardWatch = !!next.clipboardWatch;
+    next.warnDuplicates = next.warnDuplicates !== false;
+    const qbs = next.qualityBySite && typeof next.qualityBySite === "object"
+      ? next.qualityBySite
+      : {};
+    next.qualityBySite = {
+      ...DEFAULT_SETTINGS.qualityBySite,
+      ...qbs
+    };
+    // sanitize quality ids
+    for (const k of Object.keys(next.qualityBySite)) {
+      const v = String(next.qualityBySite[k] || "best").trim();
+      next.qualityBySite[k] = v || "best";
+    }
     await chrome.storage.local.set({ [SETTINGS_KEY]: next });
     return next;
   }
@@ -118,13 +156,60 @@ const UVD = (() => {
   }
 
   /**
-   * Apply filename template. Placeholders: {title} {quality} {site} {date} {mode}
-   * Extension is NOT included in template — caller adds .mp4/.mp3
+   * Generic / unreadable save names that should NOT be forced onto yt-dlp
+   * (let extractor use the real video title instead).
+   */
+  function isGenericSaveName(name) {
+    const s = String(name || "")
+      .replace(/\.(mp4|webm|mkv|mp3|m4a|ts)$/i, "")
+      .trim();
+    if (!s || s.length < 2) return true;
+    if (/^(영상|동영상|video|media|audio|file|download)$/i.test(s)) return true;
+    // YouTube_xxxx, TikTok_123, Instagram_AbCd
+    if (/^(YouTube|TikTok|Instagram|YT|TT|IG)([_-][A-Za-z0-9_-]+)?$/i.test(s)) {
+      return true;
+    }
+    // bare YouTube-style ids only (not product codes like SSIS-001)
+    if (
+      /^[A-Za-z0-9_-]{11}$/.test(s) &&
+      !/[가-힣]/.test(s) &&
+      !/\s/.test(s) &&
+      !/[A-Za-z]{2,}-\d{2,}/i.test(s)
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Human-readable filename base (no extension).
+   * Default "legacy": "영상 제목_1080p" — spaces kept so names are readable.
+   * Custom templates: {title} {quality} {site} {date} {mode}
    */
   function applyFilenameTemplate(template, ctx = {}) {
-    const tpl = template || DEFAULT_SETTINGS.filenameTemplate;
     const quality =
-      ctx.quality && !/^(best|all|unknown)$/i.test(ctx.quality) ? ctx.quality : "";
+      ctx.quality && !/^(best|all|unknown)$/i.test(String(ctx.quality))
+        ? String(ctx.quality)
+        : "";
+    let title = String(ctx.title || "").trim();
+    if (isGenericSaveName(title)) title = "";
+
+    const tpl = (template || "legacy").trim();
+    // Old readable style (preferred default)
+    if (!tpl || /^legacy$/i.test(tpl) || tpl === "{title}_{quality}") {
+      // Keep spaces in title for readability (old behavior)
+      let base = title
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (base.length > 70) {
+        base = base.slice(0, 68).replace(/\s+\S*$/, "") || base.slice(0, 68);
+      }
+      if (!base) return ""; // signal: let yt-dlp pick real title
+      if (quality && !base.includes(quality)) base = `${base}_${quality}`;
+      return base;
+    }
+
     const mode =
       ctx.mediaMode === "audio"
         ? "audio"
@@ -132,17 +217,17 @@ const UVD = (() => {
           ? "subs"
           : "";
     let name = tpl
-      .replace(/\{title\}/gi, sanitizeNamePart(ctx.title || "영상", 52))
+      .replace(/\{title\}/gi, sanitizeNamePart(title || "영상", 70))
       .replace(/\{quality\}/gi, quality)
       .replace(/\{site\}/gi, sanitizeNamePart(ctx.site || "", 20))
       .replace(/\{date\}/gi, formatDate())
       .replace(/\{mode\}/gi, mode);
-    // collapse empty underscore/space leftovers
     name = name
       .replace(/[_\s.-]{2,}/g, "_")
       .replace(/^[_\s.-]+|[_\s.-]+$/g, "")
       .replace(/[<>:"/\\|?*]/g, "");
-    return sanitizeNamePart(name || "video", 90);
+    if (isGenericSaveName(name)) return "";
+    return sanitizeNamePart(name || "", 90);
   }
 
   function downloadRelPath(subfolder, filename) {
@@ -285,6 +370,91 @@ const UVD = (() => {
     }
   }
 
+  /**
+   * Stable key for "same video" checks (dedupe).
+   * Strips tracking params; keeps v= / reel id / tiktok video id.
+   */
+  function normalizeUrlKey(url) {
+    if (!url || typeof url !== "string") return "";
+    try {
+      const u = new URL(url);
+      const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+      const path = (u.pathname || "/").replace(/\/+$/, "") || "/";
+
+      if (host === "youtu.be") {
+        const id = path.replace(/^\//, "").split("/")[0];
+        return id ? `yt:${id}` : `yt:${path}`;
+      }
+      if (host.includes("youtube") || host.includes("youtube-nocookie")) {
+        const v = u.searchParams.get("v");
+        if (v) return `yt:${v}`;
+        const m = path.match(/\/(shorts|embed|live|clip)\/([^/?#]+)/i);
+        if (m) return `yt:${m[1]}:${m[2]}`;
+        const list = u.searchParams.get("list");
+        if (list) return `yt:list:${list}`;
+        return `yt:${path}`;
+      }
+      if (host.includes("tiktok")) {
+        const m = path.match(/\/@[^/]+\/video\/(\d+)/i);
+        if (m) return `tt:${m[1]}`;
+        const t = path.match(/\/t\/([^/?#]+)/i);
+        if (t) return `tt:t:${t[1]}`;
+        return `tt:${path}`;
+      }
+      if (host.includes("instagram") || host.includes("instagr.am")) {
+        const m = path.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+        if (m) return `ig:${m[1]}:${m[2]}`;
+        return `ig:${path}`;
+      }
+      return `${host}${path}`.toLowerCase();
+    } catch {
+      return String(url).trim().toLowerCase().slice(0, 200);
+    }
+  }
+
+  /** Preferred quality id for a page URL from settings.qualityBySite */
+  function qualityForSite(settings, url) {
+    const map = (settings && settings.qualityBySite) || DEFAULT_SETTINGS.qualityBySite;
+    const site = siteFromUrl(url);
+    const q = (site && map[site]) || map.default || "best";
+    return String(q || "best");
+  }
+
+  /**
+   * Find a successful history entry for the same video URL.
+   * @returns {object|null}
+   */
+  async function findDuplicateDone(url) {
+    const key = normalizeUrlKey(url);
+    if (!key) return null;
+    const list = await getHistory();
+    return (
+      list.find(
+        (h) =>
+          h &&
+          h.status === "done" &&
+          normalizeUrlKey(h.pageUrl || h.url || "") === key
+      ) || null
+    );
+  }
+
+  /** Failed history items that still have a retryable URL */
+  async function getFailedRetryable() {
+    const list = await getHistory();
+    const seen = new Set();
+    const out = [];
+    for (const h of list) {
+      if (!h || h.status !== "error") continue;
+      const u = h.pageUrl || h.url || "";
+      if (!/^https?:/i.test(u)) continue;
+      const key = normalizeUrlKey(u);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      out.push(h);
+    }
+    return out;
+  }
+
   function mediaModeLabel(mode) {
     if (mode === "audio") return "오디오";
     if (mode === "video_subs") return "영상+자막";
@@ -301,11 +471,16 @@ const UVD = (() => {
     appendHistory,
     clearHistory,
     applyFilenameTemplate,
+    isGenericSaveName,
     downloadRelPath,
     parseUrlsFromText,
     isPlaylistUrl,
     classifyError,
     siteFromUrl,
+    normalizeUrlKey,
+    qualityForSite,
+    findDuplicateDone,
+    getFailedRetryable,
     mediaModeLabel,
     sanitizeNamePart,
     formatDate

@@ -393,7 +393,10 @@ async function relDownloadPath(filename) {
   return UVD.downloadRelPath(s.subfolder, filename);
 }
 
-/** Build human filename from template + settings */
+/**
+ * Build human-readable filename. Empty string = let yt-dlp use real page title.
+ * Avoids forcing YouTube_xxxx / TikTok_123 junk names.
+ */
 async function buildSaveFilename({
   title,
   quality,
@@ -403,15 +406,35 @@ async function buildSaveFilename({
 } = {}) {
   const s = await UVD.getSettings();
   const mode = mediaMode || s.mediaMode || "video";
-  const base = UVD.applyFilenameTemplate(s.filenameTemplate, {
-    title: title || "영상",
+  const cleanTitle = UVD.isGenericSaveName(title) ? "" : title || "";
+  const base = UVD.applyFilenameTemplate(s.filenameTemplate || "legacy", {
+    title: cleanTitle,
     quality: quality || "",
     site: UVD.siteFromUrl(pageUrl || ""),
     mediaMode: mode
   });
+  if (!base || UVD.isGenericSaveName(base)) return "";
   const ext =
     mode === "audio" || mediaType === "audio" ? ".mp3" : ".mp4";
-  return safeDownloadName(base.endsWith(ext) ? base : base + ext, mode === "audio" ? "audio/mp3" : "video/mp4");
+  return safeDownloadName(
+    base.endsWith(ext) ? base : base + ext,
+    mode === "audio" ? "audio/mp3" : "video/mp4"
+  );
+}
+
+/** Only pass a forced name to yt-dlp when it's a real human title */
+function ytdlpFilenameHint(filename, title) {
+  const candidates = [filename, title].filter(Boolean);
+  for (const c of candidates) {
+    const base = String(c).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
+    if (base && !UVD.isGenericSaveName(base) && base.length >= 2) {
+      return safeDownloadName(
+        /\.[a-z0-9]{2,5}$/i.test(c) ? c : `${base}.mp4`,
+        "video/mp4"
+      );
+    }
+  }
+  return undefined; // yt-dlp %(title)s
 }
 
 async function ytdlpExtraFromSettings(pageUrl) {
@@ -1660,12 +1683,13 @@ async function downloadTikTok(tabId, pageUrl, filename, preferQuality, jobId = n
 
   try {
     const extra = await ytdlpExtraFromSettings(targetPage);
+    const nameHint = ytdlpFilenameHint(filename);
     const result = await YtDlp.downloadAndWait(
       {
         url: targetPage,
         pageUrl: targetPage,
-        filename: filename || undefined,
-        title: filename || undefined,
+        filename: nameHint || undefined,
+        title: nameHint || undefined,
         quality: preferQuality || "best",
         site: "tiktok",
         cookieHeader: cookieHeader || undefined,
@@ -1742,12 +1766,14 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jo
     emitDownloadProgress(tabId, 5, "영상+자막 받는 중…", "start", jid);
   }
 
+  const nameHint = ytdlpFilenameHint(filename);
   const result = await YtDlp.downloadAndWait(
     {
       url: targetPage,
       pageUrl: targetPage,
-      filename: filename || undefined,
-      title: filename || undefined,
+      // Only force name when readable — otherwise yt-dlp uses real video title
+      filename: nameHint || undefined,
+      title: nameHint || undefined,
       quality: preferQuality || "best",
       site: kind || undefined,
       cookieHeader: cookieHeader || undefined,
@@ -1772,7 +1798,7 @@ async function downloadViaYtDlp(tabId, url, pageUrl, filename, preferQuality, jo
     ytdlp: true,
     path: result.path || result.outDir || "",
     outDir: result.outDir || "",
-    filename: result.filename || filename,
+    filename: result.filename || nameHint || filename,
     size: result.size || 0
   };
 }
@@ -1864,12 +1890,13 @@ async function downloadInstagram(tabId, pageUrl, filename, preferQuality, jobId 
 
   try {
     const extra = await ytdlpExtraFromSettings(targetPage);
+    const nameHint = ytdlpFilenameHint(filename);
     const result = await YtDlp.downloadAndWait(
       {
         url: targetPage,
         pageUrl: targetPage,
-        filename: filename || undefined,
-        title: filename || undefined,
+        filename: nameHint || undefined,
+        title: nameHint || undefined,
         quality: preferQuality || "best",
         site: "instagram",
         cookieHeader: cookieHeader || undefined,
@@ -2097,29 +2124,34 @@ async function downloadPageFromUi(tabId, pageUrl, preferQuality = "best", jobId 
     throw new Error("받을 페이지 주소가 없습니다");
   }
   const kind = siteKind(pageUrl, pageUrl);
-  let fname = "영상.mp4";
+
+  // Prefer tab title / meta (readable). Never force YouTube_id style names.
+  let fname = "";
   try {
-    if (kind === "instagram") {
-      const m = pageUrl.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
-      fname = m ? `Instagram_${m[2]}.mp4` : "Instagram.mp4";
-    } else if (kind === "tiktok") {
-      const m = pageUrl.match(/video\/(\d+)/);
-      fname = m ? `TikTok_${m[1]}.mp4` : "TikTok.mp4";
-    } else if (kind === "youtube") {
-      const u = new URL(pageUrl);
-      const id = u.searchParams.get("v") || u.pathname.split("/").filter(Boolean).pop();
-      fname = id ? `YouTube_${id}.mp4` : "YouTube.mp4";
-    } else {
-      fname = resolveFilename(tabId, { pageTitle: "" }, pageUrl);
+    const meta = tabId != null ? tabMeta.get(tabId) : null;
+    let tabTitle = meta?.title || "";
+    if (!tabTitle && tabId != null) {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        tabTitle = Naming.cleanPageTitle(tab?.title || "") || "";
+      } catch {
+        /* ignore */
+      }
     }
+    fname = await buildSaveFilename({
+      title: tabTitle,
+      quality: preferQuality,
+      pageUrl,
+      mediaMode: (await UVD.getSettings()).mediaMode
+    });
   } catch {
-    /* keep default */
+    fname = "";
   }
-  fname = safeDownloadName(fname, "video/mp4");
+  // empty fname → yt-dlp uses real video title
 
   // Social sites → dedicated path; others → scan + best item
   if (kind) {
-    return downloadViaYtDlp(tabId, pageUrl, pageUrl, fname, preferQuality, jid);
+    return downloadViaYtDlp(tabId, pageUrl, pageUrl, fname || undefined, preferQuality, jid);
   }
 
   try {
@@ -3447,20 +3479,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       (async () => {
         const settings = await UVD.getSettings();
-        const fname =
-          msg.filename ||
-          (await buildSaveFilename({
-            title: msg.title || resolveFilename(tid, { title: msg.title }, pageUrl),
-            quality: msg.preferQuality,
-            pageUrl,
-            mediaMode: settings.mediaMode
-          }));
+        let fname = msg.filename || "";
+        if (UVD.isGenericSaveName(fname)) fname = "";
+        if (!fname) {
+          fname =
+            (await buildSaveFilename({
+              title: msg.title || "",
+              quality: msg.preferQuality,
+              pageUrl,
+              mediaMode: settings.mediaMode
+            })) || "";
+        }
+        const displayTitle =
+          (msg.title && !UVD.isGenericSaveName(msg.title) && msg.title) ||
+          fname ||
+          "영상";
         runTrackedDownload(
           {
             tabId: tid,
-            title: msg.title || fname,
+            title: displayTitle,
             pageUrl,
-            filename: fname,
+            filename: fname || displayTitle,
             mediaMode: settings.mediaMode,
             quality: msg.preferQuality || "best"
           },
@@ -3469,7 +3508,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               tid,
               pageUrl,
               pageUrl,
-              fname,
+              fname || undefined,
               msg.preferQuality || "best",
               jobId
             );
@@ -3631,31 +3670,39 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.14.0" });
+      sendResponse({ ok: true, version: "1.15.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;
       const pageUrl = msg.pageUrl || msg.url;
       (async () => {
         const settings = await UVD.getSettings();
-        const fname =
-          msg.filename ||
-          (await buildSaveFilename({
-            title: msg.title || resolveFilename(tid, { title: msg.title }, pageUrl),
-            quality: msg.preferQuality,
-            pageUrl,
-            mediaMode: settings.mediaMode
-          }));
+        let fname = msg.filename || "";
+        if (UVD.isGenericSaveName(fname)) fname = "";
+        if (!fname) {
+          fname =
+            (await buildSaveFilename({
+              title: msg.title || "",
+              quality: msg.preferQuality,
+              pageUrl,
+              mediaMode: settings.mediaMode
+            })) || "";
+        }
+        const displayTitle =
+          (msg.title && !UVD.isGenericSaveName(msg.title) && msg.title) ||
+          fname ||
+          "영상";
         runTrackedDownload(
           {
             tabId: tid,
-            title: msg.title || fname,
+            title: displayTitle,
             pageUrl,
-            filename: fname,
+            filename: fname || displayTitle,
             mediaMode: settings.mediaMode,
             quality: msg.preferQuality || "best"
           },
           async (jobId) => {
+            // Resolves human title from tab / yt-dlp (not YouTube_id)
             const r = await downloadPageFromUi(
               tid,
               pageUrl,

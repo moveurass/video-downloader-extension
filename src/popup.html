@@ -112,11 +112,30 @@
   <div id="tab-history" class="tab-panel hidden">
     <div class="panel-toolbar">
       <span class="panel-title">최근 다운로드</span>
-      <button type="button" id="btnClearHistory" class="btn ghost tiny">비우기</button>
+      <div class="panel-toolbar-actions">
+        <button type="button" id="btnRetryFailed" class="btn ghost tiny" title="실패한 항목만 다시 받기">
+          실패만 재시도
+        </button>
+        <button type="button" id="btnClearHistory" class="btn ghost tiny">비우기</button>
+      </div>
     </div>
     <div id="historyList" class="history-list">
       <div class="empty small">
         <p>기록이 없습니다.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Duplicate confirm modal -->
+  <div id="dupModal" class="modal hidden" role="dialog" aria-modal="true">
+    <div class="modal-card">
+      <h2 class="modal-title">이미 받은 영상</h2>
+      <p id="dupModalText" class="modal-text">이 링크는 이전에 저장한 적이 있습니다.</p>
+      <p id="dupModalMeta" class="modal-meta"></p>
+      <div class="modal-actions">
+        <button type="button" id="btnDupFolder" class="btn secondary">폴더 열기</button>
+        <button type="button" id="btnDupForce" class="btn primary">그래도 받기</button>
+        <button type="button" id="btnDupCancel" class="btn ghost">취소</button>
       </div>
     </div>
   </div>
@@ -137,7 +156,7 @@
           type="text"
           placeholder="{title}_{quality}"
         />
-        <span class="field-hint">{title} {quality} {site} {date} {mode}</span>
+        <span class="field-hint">legacy = 읽기 쉬운 제목 (권장) · 또는 {title} {quality} {site} {date}</span>
       </label>
       <label class="field">
         <span class="field-label">미리보기</span>
@@ -165,6 +184,59 @@
           <span class="field-hint">팝업이 열린 동안 복사한 YT/TT/IG 링크 제안 (선택)</span>
         </span>
       </label>
+      <label class="field check-field">
+        <input type="checkbox" id="setWarnDup" checked />
+        <span>
+          <span class="field-label">중복 받기 경고</span>
+          <span class="field-hint">이미 저장한 영상이면 확인 후 받기</span>
+        </span>
+      </label>
+      <div class="field">
+        <span class="field-label">사이트별 기본 화질</span>
+        <div class="site-quality-grid">
+          <label class="sq-row">
+            <span>기본</span>
+            <select id="setQDefault" class="field-input sq-select">
+              <option value="best">최고</option>
+              <option value="4K">4K</option>
+              <option value="1440p">1440p</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
+          <label class="sq-row">
+            <span>YouTube</span>
+            <select id="setQYoutube" class="field-input sq-select">
+              <option value="best">최고</option>
+              <option value="4K">4K</option>
+              <option value="1440p">1440p</option>
+              <option value="1080p" selected>1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
+          <label class="sq-row">
+            <span>TikTok</span>
+            <select id="setQTiktok" class="field-input sq-select">
+              <option value="best" selected>최고</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
+          <label class="sq-row">
+            <span>Instagram</span>
+            <select id="setQInstagram" class="field-input sq-select">
+              <option value="best" selected>최고</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
+        </div>
+        <span class="field-hint">해당 화질이 없으면 가능한 가장 가까운 화질을 고릅니다</span>
+      </div>
       <button type="button" id="btnSaveSettings" class="btn primary settings-save">
         설정 저장
       </button>
