@@ -236,6 +236,62 @@ function sniffIsVideo(uint8) {
   return false;
 }
 
+/** X (Twitter) status pages */
+function isXUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h === "t.co") return true;
+    if (h === "x.com" || h.endsWith(".x.com") || h === "twitter.com" || h.endsWith(".twitter.com")) {
+      return /\/status\/\d+/i.test(u.pathname || "") || /\/i\/status\/\d+/i.test(u.pathname || "");
+    }
+  } catch {
+    /* fall through */
+  }
+  return /(?:x|twitter)\.com\/.+\/status\/\d+/i.test(url);
+}
+
+/** Facebook watch / reel / video pages */
+function isFacebookUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h === "fb.watch" || h === "fb.com" || h.endsWith(".fb.com")) return true;
+    if (h.includes("facebook.com")) {
+      return (
+        /\/(watch|reel|reels|videos|share|story\.php)/i.test(u.pathname || "") ||
+        u.searchParams.has("v") ||
+        /\/posts\//i.test(u.pathname || "")
+      );
+    }
+  } catch {
+    /* fall through */
+  }
+  return /facebook\.com\/(watch|reel|videos)|fb\.watch\//i.test(url);
+}
+
+/** Bilibili video pages */
+function isBilibiliUrl(url) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h === "b23.tv") return true;
+    if (h.includes("bilibili.com") || h.includes("bilibili.tv")) {
+      return (
+        /\/video\/(BV|av)/i.test(u.pathname || "") ||
+        /\/bangumi\//i.test(u.pathname || "") ||
+        /\/play\//i.test(u.pathname || "")
+      );
+    }
+  } catch {
+    /* fall through */
+  }
+  return /bilibili\.com\/video\/|b23\.tv\//i.test(url);
+}
+
 /** Sites that need local yt-dlp helper for reliable full-quality download */
 function needsYtDlpHelper(url, pageUrl) {
   // Direct CDN files never need the page extractor
@@ -247,7 +303,13 @@ function needsYtDlpHelper(url, pageUrl) {
     isTiktokUrl(url) ||
     isTiktokUrl(pageUrl) ||
     isInstagramPostUrl(url) ||
-    isInstagramPostUrl(pageUrl)
+    isInstagramPostUrl(pageUrl) ||
+    isXUrl(url) ||
+    isXUrl(pageUrl) ||
+    isFacebookUrl(url) ||
+    isFacebookUrl(pageUrl) ||
+    isBilibiliUrl(url) ||
+    isBilibiliUrl(pageUrl)
   );
 }
 
@@ -256,6 +318,9 @@ function siteKind(url, pageUrl) {
   if (isTiktokUrl(url) || isTiktokUrl(pageUrl)) return "tiktok";
   // Only real posts/reels — never homepage
   if (isInstagramPostUrl(url) || isInstagramPostUrl(pageUrl)) return "instagram";
+  if (isXUrl(url) || isXUrl(pageUrl)) return "x";
+  if (isFacebookUrl(url) || isFacebookUrl(pageUrl)) return "facebook";
+  if (isBilibiliUrl(url) || isBilibiliUrl(pageUrl)) return "bilibili";
   return null;
 }
 
@@ -263,6 +328,9 @@ function siteDefaultTitle(kind) {
   if (kind === "youtube") return "YouTube 영상";
   if (kind === "tiktok") return "TikTok 영상";
   if (kind === "instagram") return "Instagram 영상";
+  if (kind === "x") return "X 영상";
+  if (kind === "facebook") return "Facebook 영상";
+  if (kind === "bilibili") return "Bilibili 영상";
   return "영상";
 }
 
@@ -453,6 +521,7 @@ async function ytdlpExtraFromSettings(pageUrl, force = {}) {
     writeSubs: mediaMode === "video_subs",
     writeThumbnail: saveThumb && mediaMode !== "audio",
     mediaMode,
+    codecPref: s.codecPref || "best",
     yesPlaylist: UVD.isPlaylistUrl(pageUrl),
     subfolder: s.subfolder
   };
@@ -1479,7 +1548,11 @@ async function getMediaForTabAsync(tabId, hint = {}) {
   if (
     pageUrl &&
     /^https?:/i.test(pageUrl) &&
-    (isYoutubeUrl(pageUrl) || isInstagramPostUrl(pageUrl))
+    (isYoutubeUrl(pageUrl) ||
+      isInstagramPostUrl(pageUrl) ||
+      isXUrl(pageUrl) ||
+      isFacebookUrl(pageUrl) ||
+      isBilibiliUrl(pageUrl))
   ) {
     const placeholder = makeSitePlaceholder({
       id: tabId,
@@ -1509,9 +1582,15 @@ async function getMediaForTabAsync(tabId, hint = {}) {
     const tab = await chrome.tabs.get(tabId);
     const url = tab?.url || tab?.pendingUrl || pageUrl;
     if (!url || !/^https?:/i.test(url)) return items;
-    // YouTube / Instagram: always page-level yt-dlp item
+    // Social / hard sites: always page-level yt-dlp item
     // TikTok: prefer captured CDN/page play URL when present (yt-dlp often IP-blocked)
-    if (isYoutubeUrl(url) || isInstagramPostUrl(url)) {
+    if (
+      isYoutubeUrl(url) ||
+      isInstagramPostUrl(url) ||
+      isXUrl(url) ||
+      isFacebookUrl(url) ||
+      isBilibiliUrl(url)
+    ) {
       const placeholder = makeSitePlaceholder({
         id: tab.id,
         url,
@@ -1592,6 +1671,38 @@ async function collectCookiesForUrl(pageUrl) {
         "www.instagram.com",
         "cdninstagram.com",
         ".cdninstagram.com"
+      ].forEach((h) => hosts.add(h));
+    }
+    if (/x\.com|twitter\.com|t\.co/i.test(base) || /x\.com|twitter/i.test(pageUrl)) {
+      [
+        "x.com",
+        ".x.com",
+        "twitter.com",
+        ".twitter.com",
+        "www.twitter.com",
+        "mobile.twitter.com",
+        "api.x.com"
+      ].forEach((h) => hosts.add(h));
+    }
+    if (/facebook|fb\.watch|fb\.com/i.test(base) || /facebook/i.test(pageUrl)) {
+      [
+        "facebook.com",
+        ".facebook.com",
+        "www.facebook.com",
+        "m.facebook.com",
+        "fb.com",
+        ".fb.com",
+        "fb.watch"
+      ].forEach((h) => hosts.add(h));
+    }
+    if (/bilibili|b23\.tv/i.test(base) || /bilibili/i.test(pageUrl)) {
+      [
+        "bilibili.com",
+        ".bilibili.com",
+        "www.bilibili.com",
+        "m.bilibili.com",
+        "b23.tv",
+        ".bilibili.tv"
       ].forEach((h) => hosts.add(h));
     }
     const byKey = new Map();
@@ -1860,14 +1971,34 @@ async function downloadViaYtDlp(
   const available = await YtDlp.available();
   if (!available) {
     throw new Error(
-      "YouTube·TikTok·Instagram은 로컬 도우미가 필요합니다. helper/install_autostart.command 를 실행해 주세요"
+      "소셜 사이트 받기에는 로컬 도우미가 필요합니다. helper/install_autostart.command 를 실행해 주세요"
     );
   }
 
-  const label = kind === "youtube" ? "YouTube" : "영상";
+  const labelMap = {
+    youtube: "YouTube",
+    x: "X",
+    facebook: "Facebook",
+    bilibili: "Bilibili"
+  };
+  const label = labelMap[kind] || "영상";
   emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start", jid);
 
   const cookieHeader = await getCookieHeaderForUrl(targetPage);
+  // X / Facebook / Bilibili often need logged-in session cookies
+  let cookiesList;
+  if (kind === "x" || kind === "facebook" || kind === "bilibili") {
+    cookiesList = await collectCookiesForUrl(targetPage);
+    if (cookiesList?.length) {
+      emitDownloadProgress(
+        tabId,
+        5,
+        `${label} 받는 중… (쿠키 ${cookiesList.length}개)`,
+        "start",
+        jid
+      );
+    }
+  }
   const extra = await ytdlpExtraFromSettings(targetPage, forceOpts);
   if (extra.audioOnly) {
     emitDownloadProgress(tabId, 5, "오디오만 추출 중…", "start", jid);
@@ -1886,6 +2017,7 @@ async function downloadViaYtDlp(
       quality: preferQuality || "best",
       site: kind || undefined,
       cookieHeader: cookieHeader || undefined,
+      cookiesList: cookiesList?.length ? cookiesList : undefined,
       ...extra
     },
     (p) => {
@@ -3548,15 +3680,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     });
                   }
                 }
-                for (const lab of order) {
-                  if (byLabel.has(lab) && !seen.has(lab)) {
-                    qualities.push(byLabel.get(lab));
-                    seen.add(lab);
-                  }
-                }
-                for (const [lab, q] of byLabel) {
-                  if (!seen.has(lab)) qualities.push(q);
-                }
                 // Media playlist duration if already known on tab item
                 let duration = 0;
                 let estimatedSize = 0;
@@ -3567,6 +3690,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   if (mediaInfo?.duration >= 1) duration = mediaInfo.duration;
                 } catch {
                   /* ignore */
+                }
+                // Enrich chip labels with approx size: "1080p · 180MB"
+                for (const [lab, q] of byLabel) {
+                  const bw = q.estimateBandwidth || 0;
+                  if (bw > 0 && duration >= 1) {
+                    q.estimatedSize = Math.round((bw / 8) * duration);
+                    q.approx = true;
+                    const mb = q.estimatedSize / (1024 * 1024);
+                    const sizeStr =
+                      mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
+                    q.label = `${lab} · ${sizeStr}`;
+                  }
+                }
+                for (const lab of order) {
+                  if (byLabel.has(lab) && !seen.has(lab)) {
+                    qualities.push(byLabel.get(lab));
+                    seen.add(lab);
+                  }
+                }
+                for (const [lab, q] of byLabel) {
+                  if (!seen.has(lab)) qualities.push(q);
                 }
                 const best = byLabel.get(qualities[1]?.id) || info.variants[0];
                 const bw =
@@ -3579,6 +3723,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   if (qualities[0]) {
                     qualities[0].estimatedSize = estimatedSize;
                     qualities[0].approx = true;
+                    const mb = estimatedSize / (1024 * 1024);
+                    const sizeStr =
+                      mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
+                    qualities[0].label = `최고 · ${sizeStr}`;
                   }
                 }
                 sendResponse({
@@ -3608,8 +3756,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // YouTube / TikTok / hard sites
           if (needsYtDlpHelper(url, url) || msg.forceYtDlp) {
             const cookieHeader = await getCookieHeaderForUrl(url);
+            const cookiesList = await collectCookiesForUrl(url);
             const data = await YtDlp.listFormats(url, {
-              cookieHeader: cookieHeader || undefined
+              cookieHeader: cookieHeader || undefined,
+              cookiesList: cookiesList?.length ? cookiesList : undefined,
+              site: siteKind(url, url) || undefined
             });
             sendResponse({
               ok: true,
@@ -3877,7 +4028,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.17.0" });
+      sendResponse({ ok: true, version: "1.18.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;

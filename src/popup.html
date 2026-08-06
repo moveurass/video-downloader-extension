@@ -208,7 +208,7 @@
         <input type="checkbox" id="setClipboard" />
         <span>
           <span class="field-label">클립보드 링크 감시</span>
-          <span class="field-hint">팝업이 열린 동안 복사한 YT/TT/IG 링크 제안 (선택)</span>
+          <span class="field-hint">팝업이 열린 동안 복사한 YT/TT/IG/X/FB/B站 링크 제안 (선택)</span>
         </span>
       </label>
       <label class="field check-field">
@@ -231,6 +231,15 @@
           <span class="field-label">컴팩트 모드</span>
           <span class="field-hint">여백·메타 축소 · 받기 버튼 더 가까이</span>
         </span>
+      </label>
+      <label class="field">
+        <span class="field-label">코덱 우선</span>
+        <select id="setCodecPref" class="field-input">
+          <option value="best">최고 화질 (VP9/AV1 허용 · 종종 MKV)</option>
+          <option value="h264">H.264 우선 (넓은 재생 호환)</option>
+          <option value="compat">호환 모드 (H.264+AAC · MP4)</option>
+        </select>
+        <span class="field-hint">재생 안 되면 호환 모드를 쓰세요 · 최고는 용량·품질 우선</span>
       </label>
       <div class="field">
         <span class="field-label">단축키 (chrome://extensions/shortcuts)</span>
@@ -283,18 +292,46 @@
               <option value="480p">480p</option>
             </select>
           </label>
+          <label class="sq-row">
+            <span>X</span>
+            <select id="setQX" class="field-input sq-select">
+              <option value="best" selected>최고</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
+          <label class="sq-row">
+            <span>Facebook</span>
+            <select id="setQFacebook" class="field-input sq-select">
+              <option value="best" selected>최고</option>
+              <option value="1080p">1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
+          <label class="sq-row">
+            <span>Bilibili</span>
+            <select id="setQBilibili" class="field-input sq-select">
+              <option value="best">최고</option>
+              <option value="4K">4K</option>
+              <option value="1080p" selected>1080p</option>
+              <option value="720p">720p</option>
+              <option value="480p">480p</option>
+            </select>
+          </label>
         </div>
         <span class="field-hint">해당 화질이 없으면 가능한 가장 가까운 화질을 고릅니다</span>
       </div>
       <button type="button" id="btnSaveSettings" class="btn primary settings-save">
         설정 저장
       </button>
-      <p class="field-hint center">자막·오디오는 YouTube 등 도우미 사이트에서 가장 잘 됩니다</p>
+      <p class="field-hint center">YT · TT · IG · X · Facebook · Bilibili · 자막·오디오는 도우미 사이트에서 가장 잘 됩니다</p>
     </div>
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.17</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.18</p>
   </footer>
 
   <script src="uvd-common.js"></script>

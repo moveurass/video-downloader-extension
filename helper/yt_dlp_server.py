@@ -567,6 +567,30 @@ def run_download(job_id: str, payload: dict) -> None:
         or "instagr.am" in host
         or "instagram.com" in target
     )
+    is_x = (
+        site in ("x", "twitter")
+        or host in ("x.com", "twitter.com", "t.co", "mobile.twitter.com")
+        or host.endswith(".x.com")
+        or host.endswith(".twitter.com")
+        or "x.com/" in target
+        or "twitter.com/" in target
+    )
+    is_facebook = (
+        site == "facebook"
+        or "facebook.com" in host
+        or host in ("fb.watch", "fb.com")
+        or host.endswith(".facebook.com")
+        or "facebook.com/" in target
+        or "fb.watch/" in target
+    )
+    is_bilibili = (
+        site == "bilibili"
+        or "bilibili.com" in host
+        or host == "b23.tv"
+        or "bilibili.tv" in host
+        or "bilibili.com/" in target
+        or "b23.tv/" in target
+    )
 
     # Normalize Instagram URLs for yt-dlp
     if is_instagram and target:
@@ -596,6 +620,36 @@ def run_download(job_id: str, payload: dict) -> None:
     # Avoid forcing android client — it often caps at 360p/720p.
     merge_fmt = "mp4"
     sort_args: list[str] = []
+    codec_pref = (payload.get("codecPref") or "best").strip().lower()
+    if codec_pref not in ("best", "h264", "compat", "avc"):
+        codec_pref = "best"
+    if codec_pref == "avc":
+        codec_pref = "h264"
+
+    def height_fmt(h: str | None, dash: bool = True) -> str:
+        """Build format string with optional height cap + codec preference."""
+        if dash:
+            if codec_pref in ("h264", "compat"):
+                # Prefer AVC (+ AAC for compat), fall back to any
+                if h:
+                    return (
+                        f"bv*[height<=?{h}][vcodec^=avc1]+ba[acodec^=mp4a]/"
+                        f"bv*[height<=?{h}][vcodec^=avc1]+ba/"
+                        f"bv*[height<=?{h}]+ba/b[height<=?{h}]/bv*+ba/b"
+                    )
+                return (
+                    "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/"
+                    "bv*[vcodec^=avc1]+ba/"
+                    "bv*+ba/b"
+                )
+            # best quality: any codec
+            if h:
+                return f"bv*[height<=?{h}]+ba/b[height<=?{h}]/bv*+ba/b"
+            return "bv*+ba/b"
+        # progressive single file
+        if h:
+            return f"b[height<=?{h}]/b"
+        return "b"
 
     if is_instagram:
         # Instagram posts are usually progressive mp4; cookies required for many posts
@@ -611,41 +665,64 @@ def run_download(job_id: str, payload: dict) -> None:
     elif is_tiktok:
         # TikTok is usually one progressive file; keep simple selectors
         if quality in ("best", "all", "", "4K", "max", "highest"):
-            fmt = "b"
+            fmt = height_fmt(None, dash=False)
         elif quality.endswith("p") and quality[:-1].isdigit():
-            h = quality[:-1]
-            fmt = f"b[height<=?{h}]/b"
+            fmt = height_fmt(quality[:-1], dash=False)
         else:
             fmt = "b"
         merge_fmt = "mp4"
-    elif is_youtube:
-        # Max resolution + best audio, with broad fallbacks so "format not available" is rare.
-        # (Do not force player_client=web/tv/ios — some sessions mark those DRM-only.)
+    elif is_youtube or is_bilibili:
+        # Max resolution + best audio. Bilibili also often uses DASH-like streams.
         if quality in ("best", "all", "", "4K", "2160p", "max", "highest"):
-            fmt = "bv*+ba/b"
+            fmt = height_fmt(None, dash=True)
         elif quality == "1440p":
-            fmt = "bv*[height<=1440]+ba/b[height<=1440]/bv*+ba/b"
+            fmt = height_fmt("1440", dash=True)
         elif quality == "1080p":
-            fmt = "bv*[height<=1080]+ba/b[height<=1080]/bv*+ba/b"
+            fmt = height_fmt("1080", dash=True)
         elif quality == "720p":
-            fmt = "bv*[height<=720]+ba/b[height<=720]/bv*+ba/b"
+            fmt = height_fmt("720", dash=True)
         elif quality.endswith("p") and quality[:-1].isdigit():
-            h = quality[:-1]
-            fmt = f"bv*[height<=?{h}]+ba/b[height<=?{h}]/bv*+ba/b"
+            fmt = height_fmt(quality[:-1], dash=True)
         else:
-            fmt = "bv*+ba/b"
-        # Highest resolution first (4K > 1080)
-        sort_args = ["-S", "res,fps,hdr:12,vbr,tbr,abr,asr"]
-        # mkv accepts VP9/AV1+Opus without re-encode; mp4 fallback after merge if needed
-        merge_fmt = "mkv"
-    else:
-        if quality in ("best", "all", ""):
+            fmt = height_fmt(None, dash=True)
+        if codec_pref in ("h264", "compat"):
+            sort_args = ["-S", "res,codec:h264:vp9:av01,fps,tbr"]
+            merge_fmt = "mp4"
+        else:
+            sort_args = ["-S", "res,fps,hdr:12,vbr,tbr,abr,asr"]
+            # mkv accepts VP9/AV1+Opus without re-encode
+            merge_fmt = "mkv"
+    elif is_x or is_facebook:
+        # Often progressive or simple streams; cookies help a lot
+        if quality in ("best", "all", "", "4K", "max", "highest"):
             fmt = "bv*+ba/b"
         elif quality.endswith("p") and quality[:-1].isdigit():
             h = quality[:-1]
             fmt = f"bv*[height<=?{h}]+ba/b[height<=?{h}]/b"
         else:
             fmt = "bv*+ba/b"
+        if codec_pref in ("h264", "compat"):
+            fmt = (
+                "bv*[vcodec^=avc1]+ba[acodec^=mp4a]/"
+                "bv*[vcodec^=avc1]+ba/" + fmt
+            )
+            merge_fmt = "mp4"
+            sort_args = ["-S", "res,codec:h264,tbr"]
+        else:
+            merge_fmt = "mp4"
+            sort_args = ["-S", "res,tbr"]
+    else:
+        if quality in ("best", "all", ""):
+            fmt = height_fmt(None, dash=True)
+        elif quality.endswith("p") and quality[:-1].isdigit():
+            fmt = height_fmt(quality[:-1], dash=True)
+        else:
+            fmt = height_fmt(None, dash=True)
+        if codec_pref in ("h264", "compat"):
+            merge_fmt = "mp4"
+            sort_args = ["-S", "res,codec:h264,tbr"]
+        else:
+            merge_fmt = "mp4"
 
     # Concurrent DASH/HLS fragments (4K has many fragments — parallel is essential)
     concurrent = "16" if is_youtube else "4"
@@ -1031,7 +1108,14 @@ class Handler(BaseHTTPRequestHandler):
                 send_json(self, 400, {"ok": False, "error": "url required"})
                 return
             is_tt = "tiktok" in url.lower()
+            cookies_file = None
             try:
+                cookies_list = payload.get("cookiesList") or payload.get("cookies")
+                if isinstance(cookies_list, list) and cookies_list:
+                    cpath = COOKIE_DIR / f"formats_cookies_{os.getpid()}.txt"
+                    n = write_netscape_cookies(cookies_list, cpath)
+                    if n > 0:
+                        cookies_file = str(cpath)
                 cmd = [
                     bin_path,
                     "--skip-download",
@@ -1041,8 +1125,10 @@ class Handler(BaseHTTPRequestHandler):
                 ]
                 if is_tt:
                     cmd.extend(["--impersonate", "chrome"])
+                if cookies_file:
+                    cmd.extend(["--cookies", cookies_file])
                 cookie_header = (payload.get("cookieHeader") or "").strip()
-                if cookie_header:
+                if cookie_header and not cookies_file:
                     cmd.extend(["--add-header", f"Cookie:{cookie_header}"])
                 cmd.append(url)
                 out = subprocess.check_output(
@@ -1066,14 +1152,30 @@ class Handler(BaseHTTPRequestHandler):
                 if info is None:
                     info = json.loads(text[text.find("{") : text.rfind("}") + 1])
             except subprocess.TimeoutExpired:
+                if cookies_file:
+                    try:
+                        Path(cookies_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 send_json(self, 504, {"ok": False, "error": "포맷 조회 시간 초과"})
                 return
             except Exception as e:
+                if cookies_file:
+                    try:
+                        Path(cookies_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
                 msg = str(e)
                 if "IP address is blocked" in msg or "blocked from accessing" in msg:
                     msg = "TikTok 접근이 막혔습니다. 브라우저에서 재생 후 다시 열어 주세요"
                 send_json(self, 500, {"ok": False, "error": f"포맷 조회 실패: {msg}"})
                 return
+            finally:
+                if cookies_file:
+                    try:
+                        Path(cookies_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
 
             # Collect video heights + rough size estimates from formats
             entries = info.get("entries") or [info]
@@ -1088,6 +1190,22 @@ class Handler(BaseHTTPRequestHandler):
             heights: set[int] = set()
             # height -> best estimated bytes for that height
             size_by_h: dict[int, int] = {}
+            # height -> preferred short codec label for that height
+            codec_by_h: dict[int, str] = {}
+
+            def short_codec(vcodec: str) -> str:
+                v = (vcodec or "").lower()
+                if not v or v == "none":
+                    return ""
+                if "av01" in v or "av1" in v:
+                    return "av1"
+                if "vp09" in v or "vp9" in v:
+                    return "vp9"
+                if "avc" in v or "h264" in v:
+                    return "h264"
+                if "hev" in v or "h265" in v or "hvc1" in v:
+                    return "hevc"
+                return v.split(".")[0][:6]
 
             def fmt_size(f: dict, dur: float) -> int:
                 fs = f.get("filesize") or f.get("filesize_approx")
@@ -1127,6 +1245,13 @@ class Handler(BaseHTTPRequestHandler):
                         sz = fmt_size(f, ent_dur)
                         if sz > 0:
                             size_by_h[hi] = max(size_by_h.get(hi, 0), sz)
+                        # Prefer higher tbr format's codec for this height
+                        sc = short_codec(vcodec)
+                        if sc and (
+                            hi not in codec_by_h
+                            or (sz > 0 and sz >= size_by_h.get(hi, 0))
+                        ):
+                            codec_by_h[hi] = sc
                 if ent.get("height"):
                     try:
                         heights.add(int(ent["height"]))
@@ -1150,8 +1275,31 @@ class Handler(BaseHTTPRequestHandler):
                     return "360p"
                 return "240p"
 
+            def size_label(sz: int) -> str:
+                if not sz or sz <= 0:
+                    return ""
+                mb = sz / (1024 * 1024)
+                if mb >= 100:
+                    return f"{int(round(mb))}MB"
+                if mb >= 10:
+                    return f"{mb:.0f}MB"
+                if mb >= 1:
+                    return f"{mb:.1f}MB"
+                kb = sz / 1024
+                return f"{int(round(kb))}KB"
+
+            def chip_label(lab: str, h: int, sz: int, codec: str) -> str:
+                parts = [lab]
+                sl = size_label(sz)
+                if sl:
+                    parts.append(sl)
+                if codec:
+                    parts.append(codec)
+                return " · ".join(parts)
+
             bucket_max: dict[str, int] = {}
             bucket_size: dict[str, int] = {}
+            bucket_codec: dict[str, str] = {}
             for h in heights:
                 lab = label_for(h)
                 if not lab:
@@ -1160,16 +1308,20 @@ class Handler(BaseHTTPRequestHandler):
                     bucket_max[lab] = h
                     if size_by_h.get(h):
                         bucket_size[lab] = size_by_h[h]
+                    if codec_by_h.get(h):
+                        bucket_codec[lab] = codec_by_h[h]
 
             order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"]
             qualities = []
             if bucket_max:
                 best_h = max(bucket_max.values())
                 best_sz = size_by_h.get(best_h) or max(bucket_size.values(), default=0)
+                best_codec = codec_by_h.get(best_h) or ""
                 q_best = {
                     "id": "best",
-                    "label": "최고",
+                    "label": chip_label("최고", best_h, best_sz, best_codec),
                     "height": best_h,
+                    "codec": best_codec or None,
                 }
                 if best_sz:
                     q_best["estimatedSize"] = int(best_sz)
@@ -1177,16 +1329,31 @@ class Handler(BaseHTTPRequestHandler):
                 qualities.append(q_best)
             for lab in order:
                 if lab in bucket_max:
-                    q = {"id": lab, "label": lab, "height": bucket_max[lab]}
-                    if bucket_size.get(lab):
-                        q["estimatedSize"] = int(bucket_size[lab])
+                    h = bucket_max[lab]
+                    sz = int(bucket_size.get(lab) or 0)
+                    codec = bucket_codec.get(lab) or codec_by_h.get(h) or ""
+                    q = {
+                        "id": lab,
+                        "label": chip_label(lab, h, sz, codec),
+                        "height": h,
+                        "codec": codec or None,
+                    }
+                    if sz:
+                        q["estimatedSize"] = sz
                         q["approx"] = True
                     qualities.append(q)
             for lab, h in sorted(bucket_max.items(), key=lambda x: -x[1]):
                 if lab not in order and lab != "best":
-                    q = {"id": lab, "label": lab, "height": h}
-                    if bucket_size.get(lab):
-                        q["estimatedSize"] = int(bucket_size[lab])
+                    sz = int(bucket_size.get(lab) or 0)
+                    codec = bucket_codec.get(lab) or ""
+                    q = {
+                        "id": lab,
+                        "label": chip_label(lab, h, sz, codec),
+                        "height": h,
+                        "codec": codec or None,
+                    }
+                    if sz:
+                        q["estimatedSize"] = sz
                         q["approx"] = True
                     qualities.append(q)
 

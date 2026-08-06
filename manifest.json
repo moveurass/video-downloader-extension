@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.17.0",
-  "description": "단축키 확장 · 컴팩트 모드 · 최근 파일 · 나중 받기",
+  "version": "1.18.0",
+  "description": "화질 칩 용량·코덱 · 코덱 우선 · X/Facebook/Bilibili",
   "permissions": [
     "downloads",
     "storage",

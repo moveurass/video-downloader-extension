@@ -926,11 +926,14 @@ h1 {
   background: var(--surface2);
   color: var(--text);
   border-radius: 999px;
-  padding: 5px 10px;
-  font-size: 11px;
+  padding: 5px 9px;
+  font-size: 10px;
   font-weight: 600;
   cursor: pointer;
   transition: 0.12s ease;
+  white-space: nowrap;
+  max-width: 100%;
+  line-height: 1.25;
 }
 
 .q-chip:hover {

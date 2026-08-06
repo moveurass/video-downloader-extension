@@ -23,8 +23,18 @@ const UVD = (() => {
       default: "best",
       youtube: "1080p",
       tiktok: "best",
-      instagram: "best"
+      instagram: "best",
+      x: "best",
+      facebook: "best",
+      bilibili: "1080p"
     },
+    /**
+     * Codec preference for yt-dlp format selection:
+     * - best: highest quality (VP9/AV1 ok, often MKV)
+     * - h264: prefer H.264 for wide playback
+     * - compat: H.264 + AAC → MP4 (max compatibility)
+     */
+    codecPref: "best",
     /** Save cover image as .jpg next to the video */
     saveThumbnail: true,
     /** Compact popup UI (less padding / meta, more CTA above fold) */
@@ -79,6 +89,9 @@ const UVD = (() => {
     next.warnDuplicates = next.warnDuplicates !== false;
     next.saveThumbnail = next.saveThumbnail !== false;
     next.compactUi = next.compactUi !== false;
+    if (!["best", "h264", "compat"].includes(String(next.codecPref || ""))) {
+      next.codecPref = "best";
+    }
     const qbs = next.qualityBySite && typeof next.qualityBySite === "object"
       ? next.qualityBySite
       : {};
@@ -444,6 +457,21 @@ const UVD = (() => {
       if (h.includes("youtube") || h === "youtu.be") return "youtube";
       if (h.includes("tiktok")) return "tiktok";
       if (h.includes("instagram") || h.includes("instagr.am")) return "instagram";
+      if (h === "x.com" || h.endsWith(".x.com") || h.includes("twitter.com") || h === "t.co") {
+        return "x";
+      }
+      if (
+        h.includes("facebook.com") ||
+        h.includes("fb.watch") ||
+        h === "fb.com" ||
+        h.endsWith(".fb.com") ||
+        h.includes("fbcdn.net")
+      ) {
+        return "facebook";
+      }
+      if (h.includes("bilibili.com") || h === "b23.tv" || h.includes("bilibili.tv")) {
+        return "bilibili";
+      }
       return h.split(".")[0] || "";
     } catch {
       return "";
@@ -485,6 +513,33 @@ const UVD = (() => {
         const m = path.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
         if (m) return `ig:${m[1]}:${m[2]}`;
         return `ig:${path}`;
+      }
+      if (
+        host === "x.com" ||
+        host.endsWith(".x.com") ||
+        host.includes("twitter.com") ||
+        host === "t.co"
+      ) {
+        const m = path.match(/\/status\/(\d+)/i);
+        if (m) return `x:${m[1]}`;
+        return `x:${path}`;
+      }
+      if (
+        host.includes("facebook.com") ||
+        host.includes("fb.watch") ||
+        host === "fb.com" ||
+        host.endsWith(".fb.com")
+      ) {
+        const v = u.searchParams.get("v");
+        if (v) return `fb:v:${v}`;
+        const m = path.match(/\/(videos|reel|reels|watch)\/([^/?#]+)/i);
+        if (m) return `fb:${m[1]}:${m[2]}`;
+        return `fb:${path}`;
+      }
+      if (host.includes("bilibili.com") || host === "b23.tv" || host.includes("bilibili.tv")) {
+        const m = path.match(/\/video\/(BV[\w]+|av\d+)/i);
+        if (m) return `bili:${m[1]}`;
+        return `bili:${path}`;
       }
       return `${host}${path}`.toLowerCase();
     } catch {

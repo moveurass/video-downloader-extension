@@ -121,6 +121,55 @@ function isInstagramUrl(url) {
   return isInstagramPostUrl(url);
 }
 
+function isXUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  if (/t\.co\//i.test(url)) return true;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h === "x.com" || h.endsWith(".x.com") || h === "twitter.com" || h.endsWith(".twitter.com")) {
+      return /\/status\/\d+/i.test(u.pathname) || /\/i\/status\/\d+/i.test(u.pathname);
+    }
+  } catch {
+    /* fall through */
+  }
+  return /(?:x|twitter)\.com\/.+\/status\/\d+/i.test(url);
+}
+
+function isFacebookUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  if (/fb\.watch\//i.test(url)) return true;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h.includes("facebook.com") || h === "fb.com" || h.endsWith(".fb.com")) {
+      return (
+        /\/(watch|reel|reels|videos|share)/i.test(u.pathname) ||
+        u.searchParams.has("v") ||
+        /\/posts\//i.test(u.pathname)
+      );
+    }
+  } catch {
+    /* fall through */
+  }
+  return /facebook\.com\/(watch|reel|videos)|fb\.watch\//i.test(url);
+}
+
+function isBilibiliUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  if (/b23\.tv\//i.test(url)) return true;
+  try {
+    const u = new URL(url);
+    const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+    if (h.includes("bilibili.com") || h.includes("bilibili.tv")) {
+      return /\/video\/(BV|av)/i.test(u.pathname) || /\/(bangumi|play)\//i.test(u.pathname);
+    }
+  } catch {
+    /* fall through */
+  }
+  return /bilibili\.com\/video\//i.test(url);
+}
+
 function isSitePage(url) {
   return isDownloadableSiteVideo(url);
 }
@@ -151,15 +200,20 @@ function isDownloadableSiteVideo(url) {
   if (isInstagramHost(url) || /instagram\.com|instagr\.am/i.test(url)) {
     return isInstagramPostUrl(url);
   }
+  if (isXUrl(url)) return true;
+  if (isFacebookUrl(url)) return true;
+  if (isBilibiliUrl(url)) return true;
   return false;
 }
 
 function siteLabel(url, item) {
-  if (item?.site === "youtube" || isYoutubeUrl(url || item?.url || item?.pageUrl)) return "YouTube";
-  if (item?.site === "tiktok" || isTiktokUrl(url || item?.url || item?.pageUrl)) return "TikTok";
-  if (item?.site === "instagram" || isInstagramUrl(url || item?.url || item?.pageUrl)) {
-    return "Instagram";
-  }
+  const u = url || item?.url || item?.pageUrl;
+  if (item?.site === "youtube" || isYoutubeUrl(u)) return "YouTube";
+  if (item?.site === "tiktok" || isTiktokUrl(u)) return "TikTok";
+  if (item?.site === "instagram" || isInstagramUrl(u)) return "Instagram";
+  if (item?.site === "x" || isXUrl(u)) return "X";
+  if (item?.site === "facebook" || isFacebookUrl(u)) return "Facebook";
+  if (item?.site === "bilibili" || isBilibiliUrl(u)) return "Bilibili";
   return null;
 }
 
@@ -167,6 +221,9 @@ function siteKindFromUrl(pageUrl) {
   if (isYoutubeUrl(pageUrl)) return "youtube";
   if (isTiktokUrl(pageUrl)) return "tiktok";
   if (isInstagramUrl(pageUrl)) return "instagram";
+  if (isXUrl(pageUrl)) return "x";
+  if (isFacebookUrl(pageUrl)) return "facebook";
+  if (isBilibiliUrl(pageUrl)) return "bilibili";
   return null;
 }
 
@@ -181,15 +238,25 @@ function buildLocalSiteItem(tab) {
     .replace(/\s*[-–—|]\s*YouTube\s*$/i, "")
     .replace(/\s*[-–—|]\s*TikTok\s*$/i, "")
     .replace(/\s*[-–—|]\s*Instagram\s*$/i, "")
+    .replace(/\s*[-–—|]\s*X\s*$/i, "")
+    .replace(/\s*[-–—|]\s*Twitter\s*$/i, "")
+    .replace(/\s*[-–—|]\s*Facebook\s*$/i, "")
+    .replace(/\s*[-–—|]\s*bilibili\s*$/i, "")
     .replace(/\s*[-–—|].*$/, "")
     .replace(/^\(\d{1,4}\)\s*/, "")
     .trim();
   const defaults = {
     youtube: "YouTube 영상",
     tiktok: "TikTok 영상",
-    instagram: "Instagram 영상"
+    instagram: "Instagram 영상",
+    x: "X 영상",
+    facebook: "Facebook 영상",
+    bilibili: "Bilibili 영상"
   };
-  if (!title || /^(youtube|tiktok|instagram)$/i.test(title)) {
+  if (
+    !title ||
+    /^(youtube|tiktok|instagram|x|twitter|facebook|bilibili)$/i.test(title)
+  ) {
     title = defaults[kind] || "영상";
   }
   const safeBase = title
@@ -197,7 +264,15 @@ function buildLocalSiteItem(tab) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 80);
-  const label = kind === "youtube" ? "YouTube" : kind === "tiktok" ? "TikTok" : "Instagram";
+  const labelMap = {
+    youtube: "YouTube",
+    tiktok: "TikTok",
+    instagram: "Instagram",
+    x: "X",
+    facebook: "Facebook",
+    bilibili: "Bilibili"
+  };
+  const label = labelMap[kind] || "영상";
   return {
     url: pageUrl,
     pageUrl,
@@ -242,7 +317,7 @@ async function refreshHelperStatus(force = false) {
     helperOk = !!(h?.ok && h?.ytdlp);
     if (helperOk) {
       helperBar.classList.add("ok");
-      helperText.textContent = `YT·TikTok·Instagram 준비됨${
+      helperText.textContent = `YT·TT·IG·X·FB·B站 준비됨${
         h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""
       }`;
       fixBtn?.classList.add("hidden");
@@ -579,18 +654,46 @@ function qualityPickerHtml() {
   }
   return `
     <div class="quality-picker">
-      <span class="quality-label">화질</span>
+      <span class="quality-label">화질 <span class="quality-hint-inline">용량·코덱</span></span>
       <div class="quality-chips" role="group" aria-label="화질 선택">
         ${opts
-          .map(
-            (q) =>
-              `<button type="button" class="q-chip${
-                selectedQuality === q.id ? " active" : ""
-              }" data-quality="${escapeAttr(q.id)}">${escapeHtml(q.label)}</button>`
-          )
+          .map((q) => {
+            const chip = formatQualityChipLabel(q);
+            const tip = [
+              q.id,
+              q.height ? `${q.height}p` : "",
+              q.codec || "",
+              q.estimatedSize
+                ? `약 ${(q.estimatedSize / 1024 / 1024).toFixed(1)}MB`
+                : ""
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return `<button type="button" class="q-chip${
+              selectedQuality === q.id ? " active" : ""
+            }" data-quality="${escapeAttr(q.id)}" title="${escapeAttr(
+              tip
+            )}">${escapeHtml(chip)}</button>`;
+          })
           .join("")}
       </div>
     </div>`;
+}
+
+/** Chip text: "1080p · 180MB · h264" (already often in q.label from helper) */
+function formatQualityChipLabel(q) {
+  if (!q) return "최고";
+  // Helper already builds rich labels; keep if present
+  if (q.label && (q.label.includes("·") || q.label.includes("MB"))) {
+    return q.label;
+  }
+  const parts = [q.label || q.id || "최고"];
+  if (q.estimatedSize > 0) {
+    const mb = q.estimatedSize / (1024 * 1024);
+    parts.push(mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`);
+  }
+  if (q.codec) parts.push(q.codec);
+  return parts.join(" · ");
 }
 
 async function loadAvailableQualities(item) {
@@ -1163,7 +1266,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.17`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.18`;
 }
 
 function fillSettingsForm() {
@@ -1202,6 +1305,14 @@ function fillSettingsForm() {
   setSel("#setQYoutube", qbs.youtube);
   setSel("#setQTiktok", qbs.tiktok);
   setSel("#setQInstagram", qbs.instagram);
+  setSel("#setQX", qbs.x);
+  setSel("#setQFacebook", qbs.facebook);
+  setSel("#setQBilibili", qbs.bilibili);
+  const codec = $("#setCodecPref");
+  if (codec) {
+    const cp = uvdSettings.codecPref || "best";
+    codec.value = ["best", "h264", "compat"].includes(cp) ? cp : "best";
+  }
   updateSettingsPreview();
 }
 
@@ -1240,11 +1351,15 @@ async function saveSettingsFromForm() {
     warnDuplicates: $("#setWarnDup")?.checked !== false,
     saveThumbnail: $("#setSaveThumb")?.checked !== false,
     compactUi: $("#setCompact")?.checked !== false,
+    codecPref: $("#setCodecPref")?.value || "best",
     qualityBySite: {
       default: $("#setQDefault")?.value || "best",
       youtube: $("#setQYoutube")?.value || "1080p",
       tiktok: $("#setQTiktok")?.value || "best",
-      instagram: $("#setQInstagram")?.value || "best"
+      instagram: $("#setQInstagram")?.value || "best",
+      x: $("#setQX")?.value || "best",
+      facebook: $("#setQFacebook")?.value || "best",
+      bilibili: $("#setQBilibili")?.value || "1080p"
     }
   };
   try {
@@ -1295,6 +1410,9 @@ async function pollClipboardOnce() {
         isYoutubeUrl(u) ||
         isTiktokUrl(u) ||
         isInstagramUrl(u) ||
+        isXUrl(u) ||
+        isFacebookUrl(u) ||
+        isBilibiliUrl(u) ||
         UVD.isPlaylistUrl(u)
     );
     if (!link) return;
@@ -1466,6 +1584,9 @@ async function addCurrentToWatchlist(forcedUrl) {
     !isYoutubeUrl(url) &&
     !isTiktokUrl(url) &&
     !isInstagramUrl(url) &&
+    !isXUrl(url) &&
+    !isFacebookUrl(url) &&
+    !isBilibiliUrl(url) &&
     !UVD.isPlaylistUrl(url) &&
     !looksLikeDirectMedia(url)
   ) {
@@ -2055,6 +2176,32 @@ function render() {
     } else if (isTiktokUrl(currentTabUrl) && !isDownloadableSiteVideo(currentTabUrl)) {
       title = "영상 페이지를 열어 주세요.";
       hint = "TikTok @유저/video/숫자 페이지에서 다시 열어 주세요.";
+    } else if (
+      /(?:^|\.)x\.com|(?:^|\.)twitter\.com/i.test(
+        (() => {
+          try {
+            return new URL(currentTabUrl).hostname;
+          } catch {
+            return "";
+          }
+        })()
+      ) &&
+      !isXUrl(currentTabUrl)
+    ) {
+      title = "트윗 영상 페이지를 열어 주세요.";
+      hint = "x.com/…/status/숫자 주소에서 다시 열어 주세요.";
+    } else if (
+      /facebook\.com|fb\.watch|fb\.com/i.test(currentTabUrl || "") &&
+      !isFacebookUrl(currentTabUrl)
+    ) {
+      title = "Facebook 영상 페이지를 열어 주세요.";
+      hint = "Watch / Reel / 동영상 게시물 주소에서 다시 열어 주세요.";
+    } else if (
+      /bilibili\.com|b23\.tv/i.test(currentTabUrl || "") &&
+      !isBilibiliUrl(currentTabUrl)
+    ) {
+      title = "Bilibili 영상 페이지를 열어 주세요.";
+      hint = "bilibili.com/video/BV… 주소에서 다시 열어 주세요.";
     } else if (isDownloadableSiteVideo(currentTabUrl)) {
       title = "목록을 불러오지 못했습니다.";
       hint = "확장 프로그램을 새로고침한 뒤 다시 열어 주세요. 또는 링크를 붙여 넣어 보세요.";
@@ -2169,10 +2316,19 @@ async function downloadItem(item, opts = {}) {
     item.isSiteDownload ||
     item.site === "youtube" ||
     item.site === "instagram" ||
+    item.site === "x" ||
+    item.site === "facebook" ||
+    item.site === "bilibili" ||
     isYoutubeUrl(pageUrl) ||
     isYoutubeUrl(item.url) ||
     isInstagramUrl(pageUrl) ||
     isInstagramUrl(item.url) ||
+    isXUrl(pageUrl) ||
+    isXUrl(item.url) ||
+    isFacebookUrl(pageUrl) ||
+    isFacebookUrl(item.url) ||
+    isBilibiliUrl(pageUrl) ||
+    isBilibiliUrl(item.url) ||
     ((item.site === "tiktok" || isTiktokUrl(pageUrl) || isTiktokUrl(item.url)) &&
       !hasTiktokCdn);
 
@@ -2181,7 +2337,7 @@ async function downloadItem(item, opts = {}) {
       await refreshHelperStatus(true);
       if (!helperOk) {
         toast(
-          "YouTube·TikTok은 로컬 도우미가 필요합니다. helper/start.command 를 실행해 주세요",
+          "소셜 사이트 받기에는 로컬 도우미가 필요합니다. helper/start.command 를 실행해 주세요",
           "error"
         );
         return;
@@ -2482,6 +2638,9 @@ function siteDisplayName(url) {
   if (isInstagramUrl(url)) return "Instagram";
   if (isTiktokUrl(url)) return "TikTok";
   if (isYoutubeUrl(url)) return "YouTube";
+  if (isXUrl(url)) return "X";
+  if (isFacebookUrl(url)) return "Facebook";
+  if (isBilibiliUrl(url)) return "Bilibili";
   return "이 페이지";
 }
 
@@ -2532,10 +2691,12 @@ $("#btnClear").addEventListener("click", async () => {
 function normalizePastedUrl(raw) {
   let s = String(raw || "").trim();
   if (!s) return "";
-  // allow bare tiktok/youtube without scheme
+  // allow bare social hosts without scheme
   if (
     !/^https?:\/\//i.test(s) &&
-    /^(www\.)?(tiktok|youtube|youtu\.be|vm\.tiktok|instagram|instagr\.am)/i.test(s)
+    /^(www\.)?(tiktok|youtube|youtu\.be|vm\.tiktok|vt\.tiktok|instagram|instagr\.am|x\.com|twitter\.com|t\.co|facebook\.com|fb\.watch|fb\.com|bilibili\.com|b23\.tv)/i.test(
+      s
+    )
   ) {
     s = "https://" + s;
   }
@@ -2563,6 +2724,26 @@ function fnameBaseFromLink(link) {
       const m = link.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
       return m ? `Instagram_${m[2]}` : "Instagram";
     }
+    if (isXUrl(link)) {
+      const m = link.match(/status\/(\d+)/i);
+      return m ? `X_${m[1]}` : "X";
+    }
+    if (isFacebookUrl(link)) {
+      try {
+        const u = new URL(link);
+        const v = u.searchParams.get("v");
+        if (v) return `Facebook_${v}`;
+        const m = u.pathname.match(/\/(videos|reel|reels|watch)\/([^/?#]+)/i);
+        if (m) return `Facebook_${m[2]}`;
+      } catch {
+        /* ignore */
+      }
+      return "Facebook";
+    }
+    if (isBilibiliUrl(link)) {
+      const m = link.match(/\/video\/(BV[\w]+|av\d+)/i);
+      return m ? `Bilibili_${m[1]}` : "Bilibili";
+    }
   } catch {
     /* ignore */
   }
@@ -2582,6 +2763,9 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
         isYoutubeUrl(u) ||
         isTiktokUrl(u) ||
         isInstagramUrl(u) ||
+        isXUrl(u) ||
+        isFacebookUrl(u) ||
+        isBilibiliUrl(u) ||
         looksLikeDirectMedia(u) ||
         UVD.isPlaylistUrl(u)
     );
@@ -2667,7 +2851,7 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
   const parsed = UVD.parseUrlsFromText(raw);
   const link = normalizePastedUrl(parsed[0] || raw);
   if (!link) {
-    toast("유효한 링크를 붙여 넣어 주세요 (YouTube / TikTok / Instagram)", "error");
+    toast("유효한 링크를 붙여 넣어 주세요 (YT/TT/IG/X/FB/B站)", "error");
     input?.focus();
     return;
   }
@@ -2683,10 +2867,16 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
     !isYoutubeUrl(link) &&
     !isTiktokUrl(link) &&
     !isInstagramUrl(link) &&
+    !isXUrl(link) &&
+    !isFacebookUrl(link) &&
+    !isBilibiliUrl(link) &&
     !looksLikeDirectMedia(link) &&
     !UVD.isPlaylistUrl(link)
   ) {
-    toast("YouTube, TikTok, Instagram 또는 직접 영상 링크만 지원합니다", "error");
+    toast(
+      "YouTube / TikTok / Instagram / X / Facebook / Bilibili 링크만 지원합니다",
+      "error"
+    );
     return;
   }
 
@@ -2700,6 +2890,9 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
       isYoutubeUrl(link) ||
       isTiktokUrl(link) ||
       isInstagramUrl(link) ||
+      isXUrl(link) ||
+      isFacebookUrl(link) ||
+      isBilibiliUrl(link) ||
       UVD.isPlaylistUrl(link);
     // Prefer real title from current card when it's the same video page
     const sameAsCard =
@@ -2935,7 +3128,15 @@ $("#btnClipDismiss")?.addEventListener("click", () => {
       return;
     }
     const link = normalizePastedUrl(urls[0] || text);
-    if (link && (isYoutubeUrl(link) || isTiktokUrl(link) || isInstagramUrl(link))) {
+    if (
+      link &&
+      (isYoutubeUrl(link) ||
+        isTiktokUrl(link) ||
+        isInstagramUrl(link) ||
+        isXUrl(link) ||
+        isFacebookUrl(link) ||
+        isBilibiliUrl(link))
+    ) {
       $("#linkInput").value = link;
       updateLinkCount();
     }
