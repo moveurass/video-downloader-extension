@@ -443,6 +443,9 @@ function publicJob(job) {
     mediaMode: job.mediaMode || "video",
     quality: job.quality || "",
     helperJobId: job.helperJobId || null,
+    speedBps: job.speedBps || 0,
+    speedLabel: job.speedBps ? UVD.formatSpeed(job.speedBps) : "",
+    estimatedSize: job.estimatedSize || 0,
     result: job.result
       ? {
           ok: job.result.ok,
@@ -457,6 +460,23 @@ function publicJob(job) {
     startedAt: job.startedAt,
     updatedAt: job.updatedAt
   };
+}
+
+/** Parse yt-dlp-style speed from progress text, e.g. "1.23MiB/s" */
+function parseSpeedFromMessage(msg) {
+  const s = String(msg || "");
+  const m = s.match(
+    /(\d+(?:\.\d+)?)\s*(KiB|MiB|GiB|KB|MB|GB|kB|mB|B)\/s/i
+  );
+  if (!m) return 0;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  const unit = m[2].toLowerCase();
+  if (unit === "b") return n;
+  if (unit === "kib" || unit === "kb") return n * 1024;
+  if (unit === "mib" || unit === "mb") return n * 1024 * 1024;
+  if (unit === "gib" || unit === "gb") return n * 1024 * 1024 * 1024;
+  return 0;
 }
 
 /** Throw if user paused/cancelled this job (checked during long downloads). */
@@ -976,6 +996,37 @@ function updateDownloadJob(jobId, patch) {
     const prevP = typeof job.percent === "number" ? job.percent : 0;
     next.percent = Math.max(prevP, Math.min(100, next.percent));
   }
+
+  // Speed: parse from message, or estimate from % · estimatedSize
+  if (job.status === "running") {
+    const fromMsg = parseSpeedFromMessage(next.message || job.message || "");
+    if (fromMsg > 0) {
+      next.speedBps = fromMsg;
+    } else if (
+      typeof next.percent === "number" &&
+      (job.estimatedSize > 0 || next.estimatedSize > 0)
+    ) {
+      const est = next.estimatedSize || job.estimatedSize || 0;
+      const now = Date.now();
+      const bytesNow = (next.percent / 100) * est;
+      const prevBytes = job._speedBytes;
+      const prevAt = job._speedAt;
+      if (
+        prevBytes != null &&
+        prevAt &&
+        now - prevAt >= 400 &&
+        bytesNow > prevBytes
+      ) {
+        const inst = ((bytesNow - prevBytes) / (now - prevAt)) * 1000;
+        // EMA smooth
+        const prevSp = job.speedBps || inst;
+        next.speedBps = prevSp * 0.55 + inst * 0.45;
+      }
+      next._speedBytes = bytesNow;
+      next._speedAt = now;
+    }
+  }
+
   Object.assign(job, next, { updatedAt: Date.now() });
   persistJobs();
   broadcastJob(job);
@@ -1157,23 +1208,31 @@ function listActiveDownloads() {
     .map(publicJob);
 }
 
-function updateDownloadBadge() {
-  const running = [...activeDownloads.values()].filter((j) => j.status === "running").length;
-  const paused = [...activeDownloads.values()].filter((j) => j.status === "paused").length;
-  const n = running;
+async function updateDownloadBadge() {
   try {
-    if (n > 0) {
-      chrome.action.setBadgeText({ text: String(n) });
+    const settings = await UVD.getSettings();
+    if (settings.showBadge === false) {
+      chrome.action.setBadgeText({ text: "" });
+      chrome.action.setTitle({ title: "Video Downloader" });
+      return;
+    }
+    const running = [...activeDownloads.values()].filter(
+      (j) => j.status === "running"
+    ).length;
+    const paused = [...activeDownloads.values()].filter(
+      (j) => j.status === "paused"
+    ).length;
+    if (running > 0) {
+      chrome.action.setBadgeText({ text: String(running) });
       chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
       chrome.action.setTitle({
-        title: `받는 중 ${n}개${paused ? ` · 정지 ${paused}` : ""} · 페이지 이동 OK`
+        title: `받는 중 ${running}개${paused ? ` · 정지 ${paused}` : ""} · 페이지 이동 OK`
       });
     } else if (paused > 0) {
       chrome.action.setBadgeText({ text: "❚" });
       chrome.action.setBadgeBackgroundColor({ color: "#f59e0b" });
       chrome.action.setTitle({ title: `일시정지 ${paused}개` });
     } else {
-      // Clear global badge; per-tab badges refreshed on next tab event
       chrome.action.setBadgeText({ text: "" });
       chrome.action.setTitle({ title: "Video Downloader" });
     }
@@ -4364,7 +4423,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     case "SET_SETTINGS": {
       UVD.setSettings(msg.settings || msg.patch || {})
-        .then((s) => sendResponse({ ok: true, settings: s }))
+        .then(async (s) => {
+          try {
+            await updateDownloadBadge();
+          } catch {
+            /* ignore */
+          }
+          sendResponse({ ok: true, settings: s });
+        })
         .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
       return true;
     }
@@ -4478,6 +4544,85 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       resumeDownloadJob(msg.jobId || msg.id || "")
         .then((r) => sendResponse(r))
         .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "REFRESH_BADGE": {
+      updateDownloadBadge()
+        .then(() => sendResponse({ ok: true }))
+        .catch(() => sendResponse({ ok: true }));
+      return true;
+    }
+    case "DOWNLOAD_HELPER_STARTER": {
+      // Drop a double-clickable .command into Downloads for macOS users
+      (async () => {
+        try {
+          const script = `#!/bin/bash
+# Universal Video Downloader — local yt-dlp helper
+# Double-click this file (or: chmod +x 후 실행)
+set -e
+PORT=8787
+if curl -s --max-time 1 "http://127.0.0.1:$PORT/health" 2>/dev/null | grep -q '"ok"'; then
+  osascript -e 'display notification "이미 실행 중입니다" with title "UVD Helper"' 2>/dev/null || true
+  echo "Already running on :$PORT"
+  exit 0
+fi
+if ! command -v yt-dlp >/dev/null 2>&1; then
+  if command -v brew >/dev/null 2>&1; then brew install yt-dlp
+  elif command -v pip3 >/dev/null 2>&1; then pip3 install -U yt-dlp
+  fi
+fi
+LOG_DIR="$HOME/Library/Logs/uvd-helper"
+mkdir -p "$LOG_DIR" "$HOME/Downloads/VideoDownloader"
+# Prefer repo helper if found next to common clone paths
+for CAND in \\
+  "$HOME/video-downloader-extension/helper/yt_dlp_server.py" \\
+  "$HOME/Downloads/video-downloader-extension/helper/yt_dlp_server.py" \\
+  "$HOME/Desktop/video-downloader-extension/helper/yt_dlp_server.py"
+do
+  if [ -f "$CAND" ]; then
+    nohup /usr/bin/python3 "$CAND" >>"$LOG_DIR/uvd-helper.log" 2>>"$LOG_DIR/uvd-helper.err.log" &
+    sleep 1
+    if curl -s --max-time 2 "http://127.0.0.1:$PORT/health" | grep -q '"ok"'; then
+      osascript -e 'display notification "도우미가 시작되었습니다" with title "UVD Helper"' 2>/dev/null || true
+      echo "OK :$PORT"
+      exit 0
+    fi
+  fi
+done
+# Fallback: tell user to run from extension folder
+osascript -e 'display dialog "helper/yt_dlp_server.py 경로를 찾지 못했습니다.\\n확장 프로그램 폴더의 helper/start_background.command 를 실행해 주세요." buttons {"OK"}' 2>/dev/null || true
+exit 1
+`;
+          const dataUrl =
+            "data:application/x-sh;charset=utf-8," + encodeURIComponent(script);
+          const downloadId = await new Promise((resolve, reject) => {
+            chrome.downloads.download(
+              {
+                url: dataUrl,
+                filename: "UVD-도우미-시작.command",
+                saveAs: false,
+                conflictAction: "uniquify"
+              },
+              (id) => {
+                if (chrome.runtime.lastError || id == null) {
+                  reject(
+                    new Error(
+                      chrome.runtime.lastError?.message || "다운로드 실패"
+                    )
+                  );
+                } else resolve(id);
+              }
+            );
+          });
+          sendResponse({
+            ok: true,
+            downloadId,
+            hint: "다운로드 폴더의 UVD-도우미-시작.command 를 더블클릭하세요 (처음엔 실행 권한 필요할 수 있음)"
+          });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e?.message || e) });
+        }
+      })();
       return true;
     }
     case "SHOW_DOWNLOAD": {
@@ -4604,7 +4749,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.19.0" });
+      sendResponse({ ok: true, version: "1.20.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;
@@ -4891,4 +5036,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-console.log("[VideoDownloader] ready v1.19.0");
+console.log("[VideoDownloader] ready v1.20.0");

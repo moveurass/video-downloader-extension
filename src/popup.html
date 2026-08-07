@@ -31,7 +31,9 @@
   <div id="helperBar" class="helper-bar hidden">
     <span class="helper-dot" id="helperDot"></span>
     <span class="helper-text" id="helperText">도우미 확인 중…</span>
-    <button type="button" id="btnHelperFix" class="btn tiny hidden">도우미 안내</button>
+    <button type="button" id="btnHelperRecheck" class="btn tiny hidden" title="상태 다시 확인">↻</button>
+    <button type="button" id="btnHelperStart" class="btn tiny hidden">실행 파일</button>
+    <button type="button" id="btnHelperFix" class="btn tiny hidden">안내</button>
   </div>
 
   <!-- ═══════ MAIN TAB ═══════ -->
@@ -240,11 +242,34 @@
           <span class="field-hint">영상과 같은 이름으로 .jpg 저장</span>
         </span>
       </label>
+      <label class="field">
+        <span class="field-label">화면 밀도</span>
+        <select id="setUiDensity" class="field-input">
+          <option value="full">넓게 (여백·정보 많음)</option>
+          <option value="compact" selected>컴팩트 (기본)</option>
+          <option value="ultra">초컴팩트 (최소 UI)</option>
+        </select>
+        <span class="field-hint">받기 버튼·화질 칩 배치 밀도</span>
+      </label>
+      <label class="field">
+        <span class="field-label">팝업 너비</span>
+        <select id="setPopupWidth" class="field-input">
+          <option value="narrow">좁게 (320)</option>
+          <option value="normal" selected>보통 (380)</option>
+          <option value="wide">넓게 (440)</option>
+        </select>
+      </label>
       <label class="field check-field">
+        <input type="checkbox" id="setShowBadge" checked />
+        <span>
+          <span class="field-label">아이콘 배지</span>
+          <span class="field-hint">받는 중 개수를 확장 아이콘에 표시</span>
+        </span>
+      </label>
+      <label class="field check-field hidden" id="setCompactWrap">
         <input type="checkbox" id="setCompact" checked />
         <span>
-          <span class="field-label">컴팩트 모드</span>
-          <span class="field-hint">여백·메타 축소 · 받기 버튼 더 가까이</span>
+          <span class="field-label">컴팩트 모드 (구버전)</span>
         </span>
       </label>
       <label class="field">
@@ -346,7 +371,7 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.19.0</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.20.0</p>
   </footer>
 
   <script src="uvd-common.js"></script>

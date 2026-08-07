@@ -38,7 +38,16 @@ const UVD = (() => {
     /** Save cover image as .jpg next to the video */
     saveThumbnail: true,
     /** Compact popup UI (less padding / meta, more CTA above fold) */
-    compactUi: true
+    compactUi: true,
+    /**
+     * UI density: full | compact | ultra
+     * (compactUi kept for older builds; prefer uiDensity)
+     */
+    uiDensity: "compact",
+    /** Popup width: narrow 320 · normal 380 · wide 440 */
+    popupWidth: "normal",
+    /** Show count badge on extension icon while downloading */
+    showBadge: true
   };
 
   const HISTORY_KEY = "uvdHistory";
@@ -119,6 +128,15 @@ const UVD = (() => {
     next.warnDuplicates = next.warnDuplicates !== false;
     next.saveThumbnail = next.saveThumbnail !== false;
     next.compactUi = next.compactUi !== false;
+    next.showBadge = next.showBadge !== false;
+    if (!["full", "compact", "ultra"].includes(String(next.uiDensity || ""))) {
+      next.uiDensity = next.compactUi === false ? "full" : "compact";
+    }
+    if (!["narrow", "normal", "wide"].includes(String(next.popupWidth || ""))) {
+      next.popupWidth = "normal";
+    }
+    // Keep boolean in sync with density
+    next.compactUi = next.uiDensity !== "full";
     if (!["best", "h264", "compat"].includes(String(next.codecPref || ""))) {
       next.codecPref = "best";
     }
@@ -470,19 +488,19 @@ const UVD = (() => {
 
   function classifyError(msg) {
     const s = String(msg || "");
-    if (/도우미|8787|yt-dlp not|start\.command|install_autostart|연결할 수 없/i.test(s)) {
+    if (/도우미|8787|yt-dlp not|start\.command|install_autostart|연결할 수 없|헬퍼/i.test(s)) {
       return {
         code: "helper",
         label: "로컬 도우미 필요",
-        hint: "helper/install_autostart.command 를 실행해 주세요",
-        actions: ["helper", "retry"]
+        hint: "아래 「도우미 실행」으로 안내·다시 확인하세요",
+        actions: ["helper_start", "helper", "retry"]
       };
     }
     if (/login|cookie|로그인|not logged|인증|Instagram 인증/i.test(s)) {
       return {
         code: "login",
         label: "로그인 필요",
-        hint: "브라우저에서 해당 사이트에 로그인한 뒤 다시 시도하세요",
+        hint: "사이트에 로그인한 뒤 「다시 받기」를 누르세요",
         actions: ["login", "retry"]
       };
     }
@@ -490,8 +508,8 @@ const UVD = (() => {
       return {
         code: "forbidden",
         label: "접근 거부 (403)",
-        hint: "페이지에서 영상을 재생한 직후 다시 받아 주세요",
-        actions: ["open_page", "retry"]
+        hint: "페이지를 열어 재생한 직후 다시 받으세요",
+        actions: ["play_retry", "open_page", "retry"]
       };
     }
     if (/DRM|SAMPLE-AES|Widevine|보호된 영상/i.test(s)) {
@@ -510,12 +528,12 @@ const UVD = (() => {
         actions: ["retry"]
       };
     }
-    if (/Unsupported URL|지원하지 않는|게시물 링크가 아니/i.test(s)) {
+    if (/Unsupported URL|지원하지 않는|게시물 링크가 아니|감지된 영상이 없/i.test(s)) {
       return {
         code: "bad_url",
-        label: "잘못된 주소",
-        hint: "게시물/영상 페이지 주소를 확인해 주세요",
-        actions: ["open_page"]
+        label: "주소·감지 문제",
+        hint: "영상 페이지를 연 뒤 재생하고 다시 받아 주세요",
+        actions: ["play_retry", "open_page", "retry"]
       };
     }
     if (/너무 작|세그먼트 부족|유효한 세그먼트/i.test(s)) {
@@ -523,15 +541,39 @@ const UVD = (() => {
         code: "incomplete",
         label: "불완전한 다운로드",
         hint: "재생 후 다시 시도해 주세요",
-        actions: ["open_page", "retry"]
+        actions: ["play_retry", "open_page", "retry"]
+      };
+    }
+    if (/PAUSED|일시정지/i.test(s)) {
+      return {
+        code: "paused",
+        label: "일시정지",
+        hint: "다시 시작으로 이어서 받을 수 있습니다",
+        actions: ["resume"]
+      };
+    }
+    if (/CANCELLED|취소/i.test(s)) {
+      return {
+        code: "cancelled",
+        label: "취소됨",
+        hint: "원하면 다시 받기 하세요",
+        actions: ["retry"]
       };
     }
     return {
       code: "other",
       label: "다운로드 실패",
       hint: s.slice(0, 100) || "다시 시도해 주세요",
-      actions: ["retry", "open_page"]
+      actions: ["retry", "open_page", "helper"]
     };
+  }
+
+  function formatSpeed(bps) {
+    if (bps == null || !Number.isFinite(Number(bps)) || Number(bps) <= 0) return "";
+    const n = Number(bps);
+    if (n < 1024) return `${Math.round(n)} B/s`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB/s`;
+    return `${(n / (1024 * 1024)).toFixed(1)} MB/s`;
   }
 
   function siteFromUrl(url) {
@@ -706,6 +748,7 @@ const UVD = (() => {
     parseUrlsFromText,
     isPlaylistUrl,
     classifyError,
+    formatSpeed,
     siteFromUrl,
     normalizeUrlKey,
     qualityForSite,

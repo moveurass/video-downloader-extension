@@ -303,42 +303,79 @@ function buildLocalSiteItem(tab) {
   };
 }
 
+let helperPollTimer = null;
+
+function stopHelperPoll() {
+  if (helperPollTimer) {
+    clearInterval(helperPollTimer);
+    helperPollTimer = null;
+  }
+}
+
+function startHelperPoll() {
+  if (helperPollTimer) return;
+  helperPollTimer = setInterval(() => {
+    refreshHelperStatus(true).then(() => {
+      if (helperOk) stopHelperPoll();
+    });
+  }, 2800);
+}
+
 async function refreshHelperStatus(force = false) {
   if (!helperBar) return;
   const need =
     isSitePage(currentTabUrl) ||
     allItems.some((i) => i.isSiteDownload || i.site) ||
-    !!$("#linkInput")?.value;
+    !!$("#linkInput")?.value ||
+    helperBar.classList.contains("warn");
   const fixBtn = $("#btnHelperFix");
-  if (!need) {
+  const startBtn = $("#btnHelperStart");
+  const recheckBtn = $("#btnHelperRecheck");
+  if (!need && helperOk) {
     helperBar.classList.add("hidden");
     fixBtn?.classList.add("hidden");
+    startBtn?.classList.add("hidden");
+    recheckBtn?.classList.add("hidden");
+    stopHelperPoll();
     return;
   }
   helperBar.classList.remove("hidden");
   helperBar.classList.remove("ok", "warn");
-  helperText.textContent = "도우미 확인 중…";
+  if (helperText) helperText.textContent = "도우미 확인 중…";
   try {
     const h = await chrome.runtime.sendMessage({ type: "YTDLP_HEALTH", force });
     helperOk = !!(h?.ok && h?.ytdlp);
     if (helperOk) {
       helperBar.classList.add("ok");
-      helperText.textContent = `YT·TT·IG·X·FB·B站 준비됨${
-        h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""
-      }`;
+      if (helperText) {
+        helperText.textContent = `도우미 준비됨${
+          h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""
+        }`;
+      }
       fixBtn?.classList.add("hidden");
+      startBtn?.classList.add("hidden");
+      recheckBtn?.classList.add("hidden");
+      stopHelperPoll();
     } else {
       helperBar.classList.add("warn");
-      helperText.textContent =
-        "도우미 꺼짐 — helper/install_autostart.command 실행";
+      if (helperText) {
+        helperText.textContent = "도우미 꺼짐 — 실행 파일 저장 후 더블클릭";
+      }
       fixBtn?.classList.remove("hidden");
+      startBtn?.classList.remove("hidden");
+      recheckBtn?.classList.remove("hidden");
+      startHelperPoll();
     }
   } catch {
     helperOk = false;
     helperBar.classList.add("warn");
-    helperText.textContent =
-      "도우미 꺼짐 — helper/install_autostart.command 실행";
+    if (helperText) {
+      helperText.textContent = "도우미 꺼짐 — 실행 파일 저장 후 더블클릭";
+    }
     fixBtn?.classList.remove("hidden");
+    startBtn?.classList.remove("hidden");
+    recheckBtn?.classList.remove("hidden");
+    startHelperPoll();
   }
 }
 
@@ -1112,11 +1149,19 @@ function upsertUiJob(job, opts = {}) {
       "",
     quality: job.quality || prev.quality || "",
     pageUrl: job.pageUrl || prev.pageUrl || "",
+    speedBps:
+      typeof job.speedBps === "number" && job.speedBps > 0
+        ? job.speedBps
+        : prev.speedBps || 0,
+    speedLabel: job.speedLabel || prev.speedLabel || "",
     error: job.error || (status === "error" ? job.message : prev.error) || null,
     result: job.result || prev.result || null,
     updatedAt: job.updatedAt || Date.now(),
     startedAt: job.startedAt || prev.startedAt || Date.now()
   };
+  if (next.speedBps && !next.speedLabel) {
+    next.speedLabel = UVD.formatSpeed(next.speedBps);
+  }
   // After finish, adopt real saved name into title/filename for display
   if (status === "done" && resultName) {
     next.filename = resultName;
@@ -1323,9 +1368,9 @@ function renderDownloadQueue() {
       }
       const errLine =
         st === "error" && errMeta
-          ? `<div class="dl-job-err">${escapeHtml(errMeta.label)} — ${escapeHtml(
-              errMeta.hint
-            )}</div>`
+          ? `<div class="dl-job-err-box"><div class="dl-job-err"><strong>${escapeHtml(
+              errMeta.label
+            )}</strong> — ${escapeHtml(errMeta.hint)}</div></div>`
           : "";
       const tags = [info.site, info.quality].filter(Boolean);
       const tagsHtml = tags.length
@@ -1337,6 +1382,13 @@ function renderDownloadQueue() {
         ? `<div class="dl-job-file" title="${escapeAttr(info.fileLabel)}">📄 ${escapeHtml(
             info.fileLabel
           )}</div>`
+        : "";
+      const speed =
+        st === "running" && (j.speedLabel || j.speedBps)
+          ? j.speedLabel || UVD.formatSpeed(j.speedBps)
+          : "";
+      const speedHtml = speed
+        ? `<div class="dl-job-speed">${escapeHtml(speed)}</div>`
         : "";
       const tip = [info.title, info.fileLabel, j.pageUrl].filter(Boolean).join("\n");
       return `
@@ -1354,6 +1406,7 @@ function renderDownloadQueue() {
               ${fileHtml}
               ${tagsHtml}
               <div class="dl-job-msg">${escapeHtml(msg)}</div>
+              ${speedHtml}
               ${errLine}
             </div>
             <span class="dl-job-pct">${escapeHtml(pctLabel)}</span>
@@ -1374,31 +1427,51 @@ function renderDownloadQueue() {
 
 function recoveryActionsHtml(errMeta, pageUrl, job) {
   const acts = errMeta?.actions || ["retry"];
+  const u = pageUrl || job?.pageUrl || "";
   const buttons = [];
-  if (acts.includes("retry")) {
+  if (acts.includes("play_retry") && u) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="play_retry" data-url="${escapeAttr(
+        u
+      )}">재생 후 재시도</button>`
+    );
+  }
+  if (acts.includes("retry") && u) {
     buttons.push(
       `<button type="button" class="btn" data-act="retry" data-url="${escapeAttr(
-        pageUrl || job?.pageUrl || ""
+        u
       )}">다시 받기</button>`
     );
   }
-  if (acts.includes("open_page") && (pageUrl || job?.pageUrl)) {
+  if (acts.includes("open_page") && u) {
     buttons.push(
       `<button type="button" class="btn" data-act="open" data-url="${escapeAttr(
-        pageUrl || job.pageUrl
+        u
       )}">페이지 열기</button>`
     );
   }
-  if (acts.includes("login") && (pageUrl || job?.pageUrl)) {
+  if (acts.includes("login") && u) {
     buttons.push(
       `<button type="button" class="btn" data-act="login" data-url="${escapeAttr(
-        pageUrl || job.pageUrl
+        u
       )}">로그인</button>`
+    );
+  }
+  if (acts.includes("helper_start")) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="helper_start">도우미 실행</button>`
     );
   }
   if (acts.includes("helper")) {
     buttons.push(
-      `<button type="button" class="btn" data-act="helper">도우미 안내</button>`
+      `<button type="button" class="btn" data-act="helper">안내</button>`
+    );
+  }
+  if (acts.includes("resume") && job?.id) {
+    buttons.push(
+      `<button type="button" class="btn" data-act="resume" data-job="${escapeAttr(
+        job.id
+      )}">다시 시작</button>`
     );
   }
   if (!buttons.length) return "";
@@ -1439,8 +1512,13 @@ function bindRecoveryButtons(root) {
           await refreshJobsFromBackground();
           return;
         }
+        if (act === "play_retry" && url) {
+          await chrome.runtime.sendMessage({ type: "OPEN_URL", url });
+          toast("페이지에서 재생을 시작한 뒤 다시 받기를 누르세요", "ok");
+          return;
+        }
         if (act === "retry" && url) {
-          await downloadByPastedLink(url);
+          await downloadByPastedLink(url, { skipDupCheck: true });
           return;
         }
         if (act === "open" && url) {
@@ -1457,6 +1535,10 @@ function bindRecoveryButtons(root) {
           }
           await chrome.runtime.sendMessage({ type: "OPEN_URL", url: loginUrl });
           toast("로그인 후 다시 받아 주세요", "ok");
+          return;
+        }
+        if (act === "helper_start") {
+          await downloadHelperStarter();
           return;
         }
         if (act === "helper") {
@@ -1478,12 +1560,36 @@ function bindRecoveryButtons(root) {
   });
 }
 
+async function downloadHelperStarter() {
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "DOWNLOAD_HELPER_STARTER"
+    });
+    if (res?.ok) {
+      toast(
+        res.hint ||
+          "다운로드에 UVD-도우미-시작.command 저장됨 · 더블클릭 실행",
+        "ok"
+      );
+      startHelperPoll();
+      // Keep rechecking until helper is up
+      setTimeout(() => refreshHelperStatus(true), 2000);
+      setTimeout(() => refreshHelperStatus(true), 5000);
+    } else {
+      toast(res?.error || "실행 파일 저장 실패", "error");
+      showHelperHelp();
+    }
+  } catch (e) {
+    toast(userError(e?.message) || "실행 파일 저장 실패", "error");
+    showHelperHelp();
+  }
+}
+
 function showHelperHelp() {
   toast(
-    "helper/install_autostart.command 를 더블클릭해 도우미를 설치·실행하세요",
+    "① 「실행 파일」저장 후 더블클릭  ② 또는 helper/start_background.command",
     "error"
   );
-  // Try open extension folder help via GitHub readme
   chrome.runtime
     .sendMessage({
       type: "OPEN_URL",
@@ -1525,7 +1631,31 @@ async function loadSettings() {
 }
 
 function applyCompactUi() {
-  document.body.classList.toggle("compact-ui", uvdSettings.compactUi !== false);
+  applyUiLayout();
+}
+
+function applyUiLayout() {
+  const width = uvdSettings.popupWidth || "normal";
+  document.body.classList.remove("width-narrow", "width-normal", "width-wide");
+  document.body.classList.add(
+    width === "narrow"
+      ? "width-narrow"
+      : width === "wide"
+        ? "width-wide"
+        : "width-normal"
+  );
+
+  const density =
+    uvdSettings.uiDensity ||
+    (uvdSettings.compactUi === false ? "full" : "compact");
+  document.body.classList.remove("compact-ui", "ultra-ui", "full-ui");
+  if (density === "ultra") {
+    document.body.classList.add("compact-ui", "ultra-ui");
+  } else if (density === "full") {
+    document.body.classList.add("full-ui");
+  } else {
+    document.body.classList.add("compact-ui");
+  }
 }
 
 function applyModeChips() {
@@ -1540,7 +1670,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.19.0`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.20.0`;
 }
 
 function fillSettingsForm() {
@@ -1562,6 +1692,16 @@ function fillSettingsForm() {
   if (warnDup) warnDup.checked = uvdSettings.warnDuplicates !== false;
   const saveThumb = $("#setSaveThumb");
   if (saveThumb) saveThumb.checked = uvdSettings.saveThumbnail !== false;
+  const density = $("#setUiDensity");
+  if (density) {
+    density.value =
+      uvdSettings.uiDensity ||
+      (uvdSettings.compactUi === false ? "full" : "compact");
+  }
+  const width = $("#setPopupWidth");
+  if (width) width.value = uvdSettings.popupWidth || "normal";
+  const badge = $("#setShowBadge");
+  if (badge) badge.checked = uvdSettings.showBadge !== false;
   const compact = $("#setCompact");
   if (compact) compact.checked = uvdSettings.compactUi !== false;
   const setSel = (id, val) => {
@@ -1611,6 +1751,7 @@ function updateSettingsPreview() {
 async function saveSettingsFromForm() {
   // Always readable legacy filenames (title + optional quality)
   const tpl = "legacy";
+  const uiDensity = $("#setUiDensity")?.value || "compact";
   const patch = {
     subfolder: $("#setSubfolder")?.value?.trim() || "VideoDownloader",
     filenameTemplate: tpl,
@@ -1619,16 +1760,19 @@ async function saveSettingsFromForm() {
     clipboardWatch: !!$("#setClipboard")?.checked,
     warnDuplicates: $("#setWarnDup")?.checked !== false,
     saveThumbnail: $("#setSaveThumb")?.checked !== false,
-    compactUi: $("#setCompact")?.checked !== false,
+    uiDensity,
+    compactUi: uiDensity !== "full",
+    popupWidth: $("#setPopupWidth")?.value || "normal",
+    showBadge: $("#setShowBadge")?.checked !== false,
     codecPref: $("#setCodecPref")?.value || "best",
     qualityBySite: {
       default: $("#setQDefault")?.value || "best",
-      youtube: $("#setQYoutube")?.value || "1080p",
+      youtube: $("#setQYoutube")?.value || "best",
       tiktok: $("#setQTiktok")?.value || "best",
       instagram: $("#setQInstagram")?.value || "best",
       x: $("#setQX")?.value || "best",
       facebook: $("#setQFacebook")?.value || "best",
-      bilibili: $("#setQBilibili")?.value || "1080p"
+      bilibili: $("#setQBilibili")?.value || "best"
     }
   };
   try {
@@ -1638,11 +1782,13 @@ async function saveSettingsFromForm() {
     });
     uvdSettings = res?.settings || patch;
     applyModeChips();
-    applyCompactUi();
+    applyUiLayout();
     updateFooterNote();
     setupClipboardWatch();
     // Re-apply site quality to current video
     if (currentTabUrl) applySiteDefaultQuality(currentTabUrl);
+    // Refresh badge policy
+    chrome.runtime.sendMessage({ type: "REFRESH_BADGE" }).catch(() => {});
     toast("설정을 저장했습니다", "ok");
     if (allItems[0]) render();
   } catch (e) {
@@ -2329,8 +2475,12 @@ function renderHistory() {
             h.size ? ` · ${(h.size / 1024 / 1024).toFixed(1)}MB` : ""
           }`
         : `${formatTimeAgo(h.at)} · ${errMeta?.label || "실패"}`;
+      const errHint =
+        !ok && errMeta?.hint
+          ? `<div class="history-err-hint">${escapeHtml(errMeta.hint)}</div>`
+          : "";
       const acts = [];
-      if (h.pageUrl || h.url) {
+      if (ok && (h.pageUrl || h.url)) {
         acts.push(
           `<button type="button" class="btn" data-act="retry" data-url="${escapeAttr(
             h.pageUrl || h.url
@@ -2344,6 +2494,20 @@ function renderHistory() {
           )}" data-did="${escapeAttr(h.downloadId ?? "")}">폴더</button>`
         );
       } else if (errMeta) {
+        if (errMeta.actions.includes("retry") && (h.pageUrl || h.url)) {
+          acts.push(
+            `<button type="button" class="btn" data-act="retry" data-url="${escapeAttr(
+              h.pageUrl || h.url
+            )}">다시 받기</button>`
+          );
+        }
+        if (errMeta.actions.includes("play_retry") && (h.pageUrl || h.url)) {
+          acts.push(
+            `<button type="button" class="btn" data-act="play_retry" data-url="${escapeAttr(
+              h.pageUrl || h.url
+            )}">재생 후 재시도</button>`
+          );
+        }
         if (errMeta.actions.includes("open_page") && (h.pageUrl || h.url)) {
           acts.push(
             `<button type="button" class="btn" data-act="open" data-url="${escapeAttr(
@@ -2351,9 +2515,14 @@ function renderHistory() {
             )}">페이지</button>`
           );
         }
+        if (errMeta.actions.includes("helper_start")) {
+          acts.push(
+            `<button type="button" class="btn" data-act="helper_start">도우미 실행</button>`
+          );
+        }
         if (errMeta.actions.includes("helper")) {
           acts.push(
-            `<button type="button" class="btn" data-act="helper">도우미</button>`
+            `<button type="button" class="btn" data-act="helper">안내</button>`
           );
         }
         if (errMeta.actions.includes("login") && (h.pageUrl || h.url)) {
@@ -2374,11 +2543,7 @@ function renderHistory() {
               <div class="history-title" title="${escapeAttr(
                 h.title || ""
               )}">${escapeHtml(h.title || "영상")}</div>
-              <div class="history-sub">${escapeHtml(sub)}${
-                !ok && errMeta
-                  ? `<br>${escapeHtml(errMeta.hint)}`
-                  : ""
-              }</div>
+              <div class="history-sub">${escapeHtml(sub)}${errHint}</div>
             </div>
           </div>
           <div class="history-actions">${acts.join("")}</div>
@@ -3653,6 +3818,12 @@ $("#btnClearHistory")?.addEventListener("click", async () => {
 });
 $("#btnRetryFailed")?.addEventListener("click", () => retryFailedDownloads());
 $("#btnHelperFix")?.addEventListener("click", () => showHelperHelp());
+$("#btnHelperStart")?.addEventListener("click", () => downloadHelperStarter());
+$("#btnHelperRecheck")?.addEventListener("click", async () => {
+  toast("도우미 상태 확인 중…", "ok");
+  await refreshHelperStatus(true);
+  toast(helperOk ? "도우미 연결됨" : "아직 꺼져 있습니다 · 실행 파일을 더블클릭하세요", helperOk ? "ok" : "error");
+});
 $("#btnAddWatch")?.addEventListener("click", () => addCurrentToWatchlist());
 $("#btnWatchDlAll")?.addEventListener("click", () => downloadAllWatchlist());
 $("#btnClearWatch")?.addEventListener("click", async () => {
