@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.18.2",
-  "description": "나중 받기 일반 사이트 · 진행률 안정 · 기본 최고 화질",
+  "version": "1.19.0",
+  "description": "일시정지·취소 · 나중 예약 · 드래그 정렬",
   "permissions": [
     "downloads",
     "storage",

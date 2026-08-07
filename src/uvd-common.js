@@ -222,6 +222,9 @@ const UVD = (() => {
       thumbnail: entry.thumbnail || "",
       quality: entry.quality || "",
       site: entry.site || siteFromUrl(url),
+      // Optional deferred download (ms epoch). 0 / missing = manual only
+      scheduleAt: Number(entry.scheduleAt) > 0 ? Number(entry.scheduleAt) : 0,
+      scheduleLabel: entry.scheduleLabel || "",
       at: entry.at || Date.now()
     };
     const next = [item, ...filtered].slice(0, 100);
@@ -263,6 +266,48 @@ const UVD = (() => {
       /* ignore */
     }
     return [];
+  }
+
+  /** Reorder watchlist by ordered ids (drag-and-drop). */
+  async function reorderWatchlist(orderedIds) {
+    const list = await getWatchlist();
+    if (!Array.isArray(orderedIds) || !orderedIds.length) return list;
+    const map = new Map(list.map((x) => [x.id, x]));
+    const next = [];
+    for (const id of orderedIds) {
+      const item = map.get(id);
+      if (item) {
+        next.push(item);
+        map.delete(id);
+      }
+    }
+    for (const item of map.values()) next.push(item);
+    await chrome.storage.local.set({ [WATCHLIST_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "WATCHLIST_UPDATED", watchlist: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+
+  /** Patch one watchlist item by id */
+  async function updateWatchlistItem(id, patch) {
+    const list = await getWatchlist();
+    const next = list.map((x) =>
+      x.id === id ? { ...x, ...(patch || {}), id: x.id } : x
+    );
+    await chrome.storage.local.set({ [WATCHLIST_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "WATCHLIST_UPDATED", watchlist: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
   }
 
   function pad2(n) {
@@ -653,6 +698,8 @@ const UVD = (() => {
     addWatchlist,
     removeWatchlist,
     clearWatchlist,
+    reorderWatchlist,
+    updateWatchlistItem,
     applyFilenameTemplate,
     isGenericSaveName,
     downloadRelPath,

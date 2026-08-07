@@ -1189,8 +1189,9 @@ function renderDownloadQueue() {
     (a, b) => (b.startedAt || 0) - (a.startedAt || 0)
   );
   const running = jobs.filter((j) => j.status === "running");
+  const paused = jobs.filter((j) => j.status === "paused");
   const done = jobs.filter((j) => j.status === "done");
-  const errored = jobs.filter((j) => j.status === "error");
+  const errored = jobs.filter((j) => j.status === "error" || j.status === "cancelled");
 
   if (!jobs.length) {
     dlQueueEl.classList.add("hidden");
@@ -1207,10 +1208,12 @@ function renderDownloadQueue() {
   if (dlQueueTitle) {
     if (running.length) {
       dlQueueTitle.textContent = `받는 중 ${running.length}개`;
+    } else if (paused.length) {
+      dlQueueTitle.textContent = `일시정지 ${paused.length}개`;
     } else if (done.length && !errored.length) {
       dlQueueTitle.textContent = `완료 ${done.length}개`;
     } else if (errored.length) {
-      dlQueueTitle.textContent = `실패 ${errored.length}개`;
+      dlQueueTitle.textContent = `실패·취소 ${errored.length}개`;
     } else {
       dlQueueTitle.textContent = `다운로드 ${jobs.length}개`;
     }
@@ -1259,30 +1262,65 @@ function renderDownloadQueue() {
     .map((j) => {
       const st = j.status || "running";
       const pct = Math.min(100, Math.max(0, Math.round(j.percent || 0)));
-      const icon = st === "done" ? "✓" : st === "error" ? "!" : "↓";
+      const icon =
+        st === "done"
+          ? "✓"
+          : st === "error" || st === "cancelled"
+            ? "!"
+            : st === "paused"
+              ? "❚❚"
+              : "↓";
       const pctLabel =
-        st === "done" ? "완료" : st === "error" ? "실패" : `${pct}%`;
+        st === "done"
+          ? "완료"
+          : st === "error"
+            ? "실패"
+            : st === "cancelled"
+              ? "취소"
+              : st === "paused"
+                ? "정지"
+                : `${pct}%`;
       const info = jobDisplayInfo(j);
       const msg =
-        st === "error"
+        st === "error" || st === "cancelled"
           ? cleanJobMessage(j.error || j.message || "실패", "error")
-          : cleanJobMessage(j.message, j.phase);
+          : st === "paused"
+            ? j.message || "일시정지됨"
+            : cleanJobMessage(j.message, j.phase);
       const errMeta =
         st === "error"
           ? UVD.classifyError(j.error || j.message || "")
           : null;
-      const actionsHtml =
-        st === "error"
-          ? recoveryActionsHtml(errMeta, j.pageUrl, j)
-          : st === "done"
-            ? `<div class="dl-job-actions">
+      let actionsHtml = "";
+      if (st === "running") {
+        actionsHtml = `<div class="dl-job-actions">
+          <button type="button" class="btn" data-act="pause" data-job="${escapeAttr(
+            j.id
+          )}">일시정지</button>
+          <button type="button" class="btn danger" data-act="cancel" data-job="${escapeAttr(
+            j.id
+          )}">취소</button>
+        </div>`;
+      } else if (st === "paused") {
+        actionsHtml = `<div class="dl-job-actions">
+          <button type="button" class="btn" data-act="resume" data-job="${escapeAttr(
+            j.id
+          )}">다시 시작</button>
+          <button type="button" class="btn danger" data-act="cancel" data-job="${escapeAttr(
+            j.id
+          )}">취소</button>
+        </div>`;
+      } else if (st === "error") {
+        actionsHtml = recoveryActionsHtml(errMeta, j.pageUrl, j);
+      } else if (st === "done") {
+        actionsHtml = `<div class="dl-job-actions">
                 <button type="button" class="btn" data-act="show" data-path="${escapeAttr(
                   j.result?.path || ""
                 )}" data-did="${escapeAttr(
                   j.result?.downloadId ?? ""
                 )}">폴더</button>
-              </div>`
-            : "";
+              </div>`;
+      }
       const errLine =
         st === "error" && errMeta
           ? `<div class="dl-job-err">${escapeHtml(errMeta.label)} — ${escapeHtml(
@@ -1303,8 +1341,10 @@ function renderDownloadQueue() {
       const tip = [info.title, info.fileLabel, j.pageUrl].filter(Boolean).join("\n");
       return `
         <div class="dl-job ${st === "done" ? "is-done" : ""} ${
-          st === "error" ? "is-error" : ""
-        } ${st === "running" ? "is-running" : ""}" data-job-id="${escapeAttr(j.id)}">
+          st === "error" || st === "cancelled" ? "is-error" : ""
+        } ${st === "running" ? "is-running" : ""} ${
+          st === "paused" ? "is-paused" : ""
+        }" data-job-id="${escapeAttr(j.id)}">
           <div class="dl-job-top">
             <span class="dl-job-status ${escapeAttr(st)}" aria-hidden="true">${icon}</span>
             <div class="dl-job-meta">
@@ -1320,7 +1360,7 @@ function renderDownloadQueue() {
           </div>
           <div class="dl-job-bar">
             <div class="dl-job-fill" style="width:${
-              st === "error" ? 100 : pct
+              st === "error" || st === "cancelled" ? 100 : pct
             }%"></div>
           </div>
           ${actionsHtml}
@@ -1375,7 +1415,30 @@ function bindRecoveryButtons(root) {
       const url = btn.getAttribute("data-url") || "";
       const path = btn.getAttribute("data-path") || "";
       const did = btn.getAttribute("data-did");
+      const jobId = btn.getAttribute("data-job") || "";
       try {
+        if (act === "cancel" && jobId) {
+          btn.disabled = true;
+          await chrome.runtime.sendMessage({ type: "CANCEL_DOWNLOAD", jobId });
+          toast("취소했습니다", "ok");
+          await refreshJobsFromBackground();
+          return;
+        }
+        if (act === "pause" && jobId) {
+          btn.disabled = true;
+          await chrome.runtime.sendMessage({ type: "PAUSE_DOWNLOAD", jobId });
+          toast("일시정지했습니다", "ok");
+          await refreshJobsFromBackground();
+          return;
+        }
+        if (act === "resume" && jobId) {
+          btn.disabled = true;
+          await chrome.runtime.sendMessage({ type: "RESUME_DOWNLOAD", jobId });
+          toast("다시 시작합니다", "ok");
+          ensureQueuePoll();
+          await refreshJobsFromBackground();
+          return;
+        }
         if (act === "retry" && url) {
           await downloadByPastedLink(url);
           return;
@@ -1477,7 +1540,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.18.2`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.19.0`;
 }
 
 function fillSettingsForm() {
@@ -1718,6 +1781,67 @@ async function loadWatchlistUi() {
   renderWatchlist();
 }
 
+function formatScheduleLabel(w) {
+  const at = Number(w?.scheduleAt || 0);
+  if (!at || at < Date.now()) return w?.scheduleLabel || "";
+  try {
+    const d = new Date(at);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const today = new Date();
+    const sameDay =
+      d.getFullYear() === today.getFullYear() &&
+      d.getMonth() === today.getMonth() &&
+      d.getDate() === today.getDate();
+    if (sameDay) return `오늘 ${hh}:${mm}`;
+    const tom = new Date(today);
+    tom.setDate(tom.getDate() + 1);
+    const isTom =
+      d.getFullYear() === tom.getFullYear() &&
+      d.getMonth() === tom.getMonth() &&
+      d.getDate() === tom.getDate();
+    if (isTom) return `내일 ${hh}:${mm}`;
+    return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`;
+  } catch {
+    return w?.scheduleLabel || "예약됨";
+  }
+}
+
+function scheduleOptionsHtml(w) {
+  const at = Number(w?.scheduleAt || 0);
+  const active = at > Date.now();
+  return `
+    <select class="watch-schedule" data-act="watch-sched" data-id="${escapeAttr(
+      w.id
+    )}" title="예약 받기">
+      <option value="none" ${!active ? "selected" : ""}>예약 없음</option>
+      <option value="1h" ${w.scheduleLabel === "1시간 후" ? "selected" : ""}>1시간 후</option>
+      <option value="tonight" ${w.scheduleLabel === "오늘 밤 23시" ? "selected" : ""}>오늘 밤 23시</option>
+      <option value="morning" ${w.scheduleLabel === "내일 아침 9시" ? "selected" : ""}>내일 아침 9시</option>
+      <option value="clear" ${active ? "" : ""}>예약 취소</option>
+    </select>`;
+}
+
+function computeSchedule(mode) {
+  const now = Date.now();
+  if (mode === "1h") {
+    return { scheduleAt: now + 60 * 60 * 1000, scheduleLabel: "1시간 후" };
+  }
+  if (mode === "tonight") {
+    const d = new Date();
+    d.setHours(23, 0, 0, 0);
+    if (d.getTime() <= now + 60_000) d.setDate(d.getDate() + 1);
+    return { scheduleAt: d.getTime(), scheduleLabel: "오늘 밤 23시" };
+  }
+  if (mode === "morning") {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+    return { scheduleAt: d.getTime(), scheduleLabel: "내일 아침 9시" };
+  }
+  return { scheduleAt: 0, scheduleLabel: "" };
+}
+
 function renderWatchlist() {
   const root = $("#watchList");
   if (!root) return;
@@ -1725,29 +1849,36 @@ function renderWatchlist() {
     root.innerHTML = `
       <div class="empty small">
         <p>비어 있습니다.</p>
-        <p class="hint">링크 옆 「나중」또는 카드에서 추가하세요.</p>
+        <p class="hint">링크 옆 「나중」또는 카드에서 추가 · 드래그로 순서 · 예약 가능</p>
       </div>`;
     return;
   }
   root.innerHTML = watchlistItems
-    .map((w) => {
+    .map((w, idx) => {
       const title = w.title || "나중에 받을 영상";
       const site = w.site || UVD.siteFromUrl(w.url || w.pageUrl) || "";
       const hasMedia = !!(w.mediaUrl && /^https?:/i.test(w.mediaUrl));
+      const sched = formatScheduleLabel(w);
       return `
-        <div class="history-item" data-watch-id="${escapeAttr(w.id)}">
+        <div class="history-item watch-item" draggable="true" data-watch-id="${escapeAttr(
+          w.id
+        )}" data-index="${idx}">
           <div class="history-top">
-            <span class="history-status done">☆</span>
+            <span class="watch-drag" title="드래그해서 순서 변경" aria-hidden="true">⋮⋮</span>
+            <span class="history-status done">${idx + 1}</span>
             <div class="history-meta">
               <div class="history-title" title="${escapeAttr(title)}">${escapeHtml(
                 title
               )}</div>
               <div class="history-sub">${escapeHtml(
                 formatTimeAgo(w.at)
-              )} · ${escapeHtml(site)}${hasMedia ? " · 스트림 저장됨" : ""}</div>
+              )} · ${escapeHtml(site)}${hasMedia ? " · 스트림" : ""}${
+                sched ? ` · ⏰ ${escapeHtml(sched)}` : ""
+              }</div>
             </div>
           </div>
-          <div class="history-actions">
+          <div class="history-actions watch-actions">
+            ${scheduleOptionsHtml(w)}
             <button type="button" class="btn" data-act="watch-dl"
               data-url="${escapeAttr(w.url || w.pageUrl || "")}"
               data-page-url="${escapeAttr(w.pageUrl || w.url || "")}"
@@ -1762,18 +1893,41 @@ function renderWatchlist() {
         </div>`;
     })
     .join("");
-  root.querySelectorAll("[data-act]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const act = btn.getAttribute("data-act");
-      const id = btn.getAttribute("data-id") || "";
-      const url = btn.getAttribute("data-url") || "";
+
+  // Actions
+  root.querySelectorAll("[data-act]").forEach((el) => {
+    const act = el.getAttribute("data-act");
+    if (act === "watch-sched") {
+      el.addEventListener("change", async () => {
+        const id = el.getAttribute("data-id") || "";
+        const mode = el.value;
+        const patch =
+          mode === "none" || mode === "clear"
+            ? { scheduleAt: 0, scheduleLabel: "" }
+            : computeSchedule(mode);
+        await chrome.runtime
+          .sendMessage({ type: "UPDATE_WATCHLIST_ITEM", id, patch })
+          .catch(() => {});
+        toast(
+          patch.scheduleAt
+            ? `예약: ${patch.scheduleLabel || formatScheduleLabel(patch)}`
+            : "예약을 취소했습니다",
+          "ok"
+        );
+        await loadWatchlistUi();
+      });
+      return;
+    }
+    el.addEventListener("click", async () => {
+      const id = el.getAttribute("data-id") || "";
+      const url = el.getAttribute("data-url") || "";
       if (act === "watch-dl" && url) {
         await downloadByPastedLink(url, {
           skipDupCheck: false,
-          mediaUrl: btn.getAttribute("data-media-url") || "",
-          pageUrl: btn.getAttribute("data-page-url") || url,
-          title: btn.getAttribute("data-title") || "",
-          quality: btn.getAttribute("data-quality") || selectedQuality || "best"
+          mediaUrl: el.getAttribute("data-media-url") || "",
+          pageUrl: el.getAttribute("data-page-url") || url,
+          title: el.getAttribute("data-title") || "",
+          quality: el.getAttribute("data-quality") || selectedQuality || "best"
         });
         await chrome.runtime
           .sendMessage({ type: "REMOVE_WATCHLIST", id })
@@ -1787,6 +1941,54 @@ function renderWatchlist() {
           .catch(() => {});
         await loadWatchlistUi();
       }
+    });
+  });
+
+  // Drag reorder
+  let dragId = null;
+  root.querySelectorAll(".watch-item").forEach((row) => {
+    row.addEventListener("dragstart", (e) => {
+      dragId = row.getAttribute("data-watch-id");
+      row.classList.add("dragging");
+      try {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", dragId || "");
+      } catch {
+        /* ignore */
+      }
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      root.querySelectorAll(".watch-item").forEach((r) => r.classList.remove("drag-over"));
+      dragId = null;
+    });
+    row.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      row.classList.add("drag-over");
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("drag-over"));
+    row.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      row.classList.remove("drag-over");
+      const fromId = dragId || e.dataTransfer?.getData("text/plain");
+      const toId = row.getAttribute("data-watch-id");
+      if (!fromId || !toId || fromId === toId) return;
+      const ids = watchlistItems.map((w) => w.id);
+      const from = ids.indexOf(fromId);
+      const to = ids.indexOf(toId);
+      if (from < 0 || to < 0) return;
+      ids.splice(from, 1);
+      ids.splice(to, 0, fromId);
+      const res = await chrome.runtime
+        .sendMessage({ type: "REORDER_WATCHLIST", ids })
+        .catch(() => null);
+      if (res?.watchlist) watchlistItems = res.watchlist;
+      else {
+        // local fallback order
+        const map = new Map(watchlistItems.map((w) => [w.id, w]));
+        watchlistItems = ids.map((id) => map.get(id)).filter(Boolean);
+      }
+      renderWatchlist();
     });
   });
 }

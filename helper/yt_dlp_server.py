@@ -37,8 +37,37 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
+# job_id -> running subprocess (not JSON-serializable; keep aside)
+process_map: dict[str, subprocess.Popen] = {}
 COOKIE_DIR = Path(os.environ.get("UVD_COOKIE_DIR", HOME / ".cache" / "uvd-helper"))
 COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def request_cancel_job(job_id: str) -> bool:
+    """Mark job cancelled and kill yt-dlp process if running."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            return False
+        job["cancel"] = True
+        job["status"] = "cancelled"
+        job["message"] = "취소됨"
+        job["error"] = "사용자가 취소했습니다"
+    proc = process_map.get(job_id)
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                proc.kill()
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+    process_map.pop(job_id, None)
+    return True
 
 
 def write_netscape_cookies(cookies: list, path: Path) -> int:
@@ -916,10 +945,18 @@ def run_download(job_id: str, payload: dict) -> None:
                 text=True,
                 bufsize=1,
             )
+            process_map[job_id] = proc
             assert proc.stdout is not None
             last_line = ""
             printed_paths = []
             for line in proc.stdout:
+                with jobs_lock:
+                    if jobs.get(job_id, {}).get("cancel"):
+                        try:
+                            proc.terminate()
+                        except Exception:
+                            pass
+                        break
                 line = line.rstrip()
                 last_line = line
                 if line.startswith("/") or (len(line) > 3 and line[1:3] == ":\\"):
@@ -955,6 +992,18 @@ def run_download(job_id: str, payload: dict) -> None:
                         jobs[job_id]["message"] = "파일 합치는 중…"
 
             code = proc.wait(timeout=3600)
+            process_map.pop(job_id, None)
+            with jobs_lock:
+                if jobs.get(job_id, {}).get("cancel"):
+                    jobs[job_id].update(
+                        {
+                            "status": "cancelled",
+                            "message": "취소됨",
+                            "error": "사용자가 취소했습니다",
+                            "finishedAt": time.time(),
+                        }
+                    )
+                    return
             if code == 0:
                 break
             # Retry only on format / DRM style failures
@@ -965,6 +1014,18 @@ def run_download(job_id: str, payload: dict) -> None:
             if attempt_i + 1 < len(attempts) and "http error 403" in err_l:
                 continue
             break
+
+        with jobs_lock:
+            if jobs.get(job_id, {}).get("cancel"):
+                jobs[job_id].update(
+                    {
+                        "status": "cancelled",
+                        "message": "취소됨",
+                        "error": "사용자가 취소했습니다",
+                        "finishedAt": time.time(),
+                    }
+                )
+                return
 
         # Resolve output file
         final_path = None
@@ -1098,18 +1159,42 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/job/"):
-            job_id = self.path.split("/job/", 1)[-1].split("?")[0]
+            rest = self.path.split("/job/", 1)[-1].split("?")[0]
+            if rest.endswith("/cancel"):
+                job_id = rest[: -len("/cancel")].rstrip("/")
+                ok = request_cancel_job(job_id)
+                send_json(
+                    self,
+                    200 if ok else 404,
+                    {"ok": ok, "error": None if ok else "job not found"},
+                )
+                return
+            job_id = rest
             with jobs_lock:
                 job = jobs.get(job_id)
+                # strip non-serializable
+                safe = {k: v for k, v in (job or {}).items() if k != "proc"}
             if not job:
                 send_json(self, 404, {"ok": False, "error": "job not found"})
                 return
-            send_json(self, 200, {"ok": True, "job": job})
+            send_json(self, 200, {"ok": True, "job": safe})
             return
 
         send_json(self, 404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
+        # Cancel running yt-dlp job
+        if self.path.startswith("/job/") and self.path.rstrip("/").endswith("/cancel"):
+            rest = self.path.split("/job/", 1)[-1].split("?")[0]
+            job_id = rest[: -len("/cancel")].rstrip("/") if rest.endswith("/cancel") else rest
+            ok = request_cancel_job(job_id)
+            send_json(
+                self,
+                200 if ok else 404,
+                {"ok": ok, "error": None if ok else "job not found"},
+            )
+            return
+
         # List available video heights / quality labels (no download)
         if self.path == "/formats" or self.path.startswith("/formats?"):
             payload = read_json(self)

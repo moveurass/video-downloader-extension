@@ -718,6 +718,51 @@ body.compact-ui .clip-banner {
   margin-top: 7px;
 }
 
+.watch-hint {
+  margin: 0 12px 6px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.watch-item {
+  cursor: grab;
+}
+
+.watch-item.dragging {
+  opacity: 0.45;
+}
+
+.watch-item.drag-over {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(225, 29, 72, 0.35);
+}
+
+.watch-drag {
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  letter-spacing: -2px;
+  user-select: none;
+  margin-top: 2px;
+}
+
+.watch-actions {
+  align-items: center;
+}
+
+.watch-schedule {
+  max-width: 118px;
+  height: 24px;
+  padding: 0 4px;
+  font-size: 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--text);
+}
+
 .history-actions .btn {
   padding: 4px 8px;
   font-size: 10px;
@@ -1294,12 +1339,32 @@ h1 {
   background: rgba(37, 99, 235, 0.08);
 }
 
+.dl-job.is-paused {
+  border-color: rgba(245, 158, 11, 0.5);
+  background: rgba(245, 158, 11, 0.08);
+}
+
 .dl-job.is-done {
   border-color: rgba(16, 185, 129, 0.35);
 }
 
 .dl-job.is-error {
   border-color: rgba(225, 29, 72, 0.4);
+}
+
+.dl-job-status.paused {
+  background: rgba(245, 158, 11, 0.25);
+  color: #fbbf24;
+  font-size: 8px;
+}
+
+.dl-job-status.cancelled {
+  background: rgba(225, 29, 72, 0.2);
+  color: var(--accent-hover);
+}
+
+.dl-job-actions .btn.danger {
+  color: #fda4af;
 }
 
 .dl-job-top {

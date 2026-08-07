@@ -58,6 +58,22 @@ const YtDlp = (() => {
     return data.job;
   }
 
+  /** Cancel a running helper download (kills yt-dlp process). */
+  async function cancelJob(jobId) {
+    if (!jobId) return { ok: false };
+    try {
+      const res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}"
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: !!(res.ok && data.ok), ...data };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  }
+
   /**
    * List available quality labels for a page/media URL (yt-dlp -J).
    * @returns {Promise<{qualities: Array<{id:string,label:string,height?:number}>, heights: number[]}>}
@@ -119,6 +135,9 @@ const YtDlp = (() => {
           method: "yt-dlp"
         };
       }
+      if (job.status === "cancelled" || job.cancel) {
+        throw new Error("CANCELLED");
+      }
       if (job.status === "error") {
         throw new Error(job.error || job.message || "다운로드 실패");
       }
@@ -132,6 +151,7 @@ const YtDlp = (() => {
     available,
     startDownload,
     getJob,
+    cancelJob,
     downloadAndWait,
     listFormats
   };

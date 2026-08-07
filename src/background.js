@@ -23,6 +23,8 @@ const MAX_REFERER_RULES = 40;
 const activeDownloads = new Map();
 /** @type {Map<number, string>} tabId → latest jobId for that tab */
 const tabJobMap = new Map();
+/** jobId → AbortController (best-effort cancel for fetch-based paths) */
+const jobAbortControllers = new Map();
 let jobSeq = 0;
 /** Refcounted SW keep-alive while any download runs */
 let keepAliveRefs = 0;
@@ -427,6 +429,7 @@ function publicJob(job) {
     tabId: job.tabId,
     title: job.title,
     pageUrl: job.pageUrl,
+    mediaUrl: job.mediaUrl || "",
     filename: job.filename,
     status: job.status,
     percent: job.percent,
@@ -439,6 +442,7 @@ function publicJob(job) {
     errorActions: errMeta?.actions || [],
     mediaMode: job.mediaMode || "video",
     quality: job.quality || "",
+    helperJobId: job.helperJobId || null,
     result: job.result
       ? {
           ok: job.result.ok,
@@ -453,6 +457,201 @@ function publicJob(job) {
     startedAt: job.startedAt,
     updatedAt: job.updatedAt
   };
+}
+
+/** Throw if user paused/cancelled this job (checked during long downloads). */
+function throwIfJobStopped(jobId) {
+  if (!jobId) return;
+  const j = activeDownloads.get(jobId);
+  if (!j) return;
+  if (j.pauseRequested || j.status === "paused") {
+    const e = new Error("PAUSED");
+    e.code = "PAUSED";
+    throw e;
+  }
+  if (j.cancelRequested || j.status === "cancelled") {
+    const e = new Error("CANCELLED");
+    e.code = "CANCELLED";
+    throw e;
+  }
+}
+
+function finalizePausedJob(jobId) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return;
+  job.status = "paused";
+  job.phase = "paused";
+  job.message = "일시정지됨 · 다시 시작 가능";
+  job.pauseRequested = false;
+  job.cancelRequested = false;
+  job.error = null;
+  job.updatedAt = Date.now();
+  jobAbortControllers.delete(jobId);
+  persistJobs();
+  broadcastJob(job);
+  updateDownloadBadge();
+}
+
+function finishCancelledJob(jobId) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return;
+  job.status = "cancelled";
+  job.phase = "cancelled";
+  job.message = "취소됨";
+  job.error = "사용자가 취소했습니다";
+  job.cancelRequested = false;
+  job.pauseRequested = false;
+  job.updatedAt = Date.now();
+  jobAbortControllers.delete(jobId);
+  if (job.tabId != null && tabJobMap.get(job.tabId) === jobId) {
+    tabJobMap.delete(job.tabId);
+  }
+  persistJobs();
+  broadcastJob(job);
+  updateDownloadBadge();
+  setTimeout(() => {
+    const cur = activeDownloads.get(jobId);
+    if (cur && cur.status === "cancelled") {
+      activeDownloads.delete(jobId);
+      persistJobs();
+      updateDownloadBadge();
+    }
+  }, 30_000);
+}
+
+/**
+ * Cancel a running (or paused) download.
+ */
+async function cancelDownloadJob(jobId) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return { ok: false, error: "작업 없음" };
+  if (job.status === "done" || job.status === "cancelled") {
+    return { ok: true, status: job.status };
+  }
+  job.cancelRequested = true;
+  job.pauseRequested = false;
+  try {
+    jobAbortControllers.get(jobId)?.abort();
+  } catch {
+    /* ignore */
+  }
+  if (job.helperJobId) {
+    try {
+      await YtDlp.cancelJob(job.helperJobId);
+    } catch {
+      /* ignore */
+    }
+  }
+  if (job.result?.downloadId != null) {
+    try {
+      chrome.downloads.cancel(job.result.downloadId);
+    } catch {
+      /* ignore */
+    }
+  }
+  // If already paused, finalize cancel immediately
+  if (job.status === "paused" || job.status === "error") {
+    finishCancelledJob(jobId);
+  } else {
+    // Running: asyncFn will reject / stop; also force-cancel after short delay
+    job.message = "취소 중…";
+    broadcastJob(job);
+    setTimeout(() => {
+      const j = activeDownloads.get(jobId);
+      if (j && j.status === "running" && j.cancelRequested) {
+        finishCancelledJob(jobId);
+      }
+    }, 2500);
+  }
+  return { ok: true, status: "cancelling" };
+}
+
+/**
+ * Pause a running download (abort current work; job stays for resume).
+ */
+async function pauseDownloadJob(jobId) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return { ok: false, error: "작업 없음" };
+  if (job.status !== "running") {
+    return { ok: false, error: "받는 중인 항목만 일시정지할 수 있습니다" };
+  }
+  job.pauseRequested = true;
+  job.cancelRequested = false;
+  try {
+    jobAbortControllers.get(jobId)?.abort();
+  } catch {
+    /* ignore */
+  }
+  if (job.helperJobId) {
+    try {
+      await YtDlp.cancelJob(job.helperJobId);
+    } catch {
+      /* ignore */
+    }
+  }
+  job.message = "일시정지 중…";
+  broadcastJob(job);
+  setTimeout(() => {
+    const j = activeDownloads.get(jobId);
+    if (j && j.status === "running" && j.pauseRequested) {
+      finalizePausedJob(jobId);
+    }
+  }, 2000);
+  return { ok: true, status: "pausing" };
+}
+
+/**
+ * Resume a paused job from its page/media URL.
+ */
+async function resumeDownloadJob(jobId) {
+  const job = activeDownloads.get(jobId);
+  if (!job) return { ok: false, error: "작업 없음" };
+  if (job.status !== "paused") {
+    return { ok: false, error: "일시정지된 항목만 다시 시작할 수 있습니다" };
+  }
+  const pageUrl = job.pageUrl || "";
+  if (!pageUrl || !/^https?:/i.test(pageUrl)) {
+    return { ok: false, error: "다시 시작할 주소가 없습니다" };
+  }
+  job.status = "running";
+  job.phase = "start";
+  job.percent = 0;
+  job.message = "다시 시작…";
+  job.pauseRequested = false;
+  job.cancelRequested = false;
+  job.error = null;
+  job.helperJobId = null;
+  job.updatedAt = Date.now();
+  const ac = new AbortController();
+  jobAbortControllers.set(jobId, ac);
+  persistJobs();
+  broadcastJob(job);
+  updateDownloadBadge();
+  const keep = startKeepAlive();
+  withJobContext(jobId, () =>
+    downloadPageFromUi(job.tabId, pageUrl, job.quality || "best", jobId, {
+      mediaMode: job.mediaMode,
+      mediaUrl: job.mediaUrl || "",
+      title: job.title || ""
+    })
+  )
+    .then((r) => {
+      const j = activeDownloads.get(jobId);
+      if (j?.pauseRequested) finalizePausedJob(jobId);
+      else if (j?.cancelRequested) finishCancelledJob(jobId);
+      else finishDownloadJob(jobId, r, null);
+      stopKeepAlive(keep);
+    })
+    .catch((err) => {
+      const j = activeDownloads.get(jobId);
+      const msg = String(err?.message || err || "");
+      if (j?.pauseRequested || /PAUSED/i.test(msg)) finalizePausedJob(jobId);
+      else if (j?.cancelRequested || /CANCELLED|취소/i.test(msg)) {
+        finishCancelledJob(jobId);
+      } else finishDownloadJob(jobId, null, err);
+      stopKeepAlive(keep);
+    });
+  return { ok: true, status: "running" };
 }
 
 /** Chrome downloads relative path under user Downloads */
@@ -642,6 +841,7 @@ function createDownloadJob({
   tabId,
   title,
   pageUrl,
+  mediaUrl,
   filename,
   mediaMode,
   quality,
@@ -670,6 +870,7 @@ function createDownloadJob({
     tabId: tabId != null ? tabId : -1,
     title: niceTitle,
     pageUrl: pageUrl || "",
+    mediaUrl: mediaUrl || "",
     filename: filename || "",
     mediaMode: mediaMode || "video",
     quality: quality || "",
@@ -681,10 +882,14 @@ function createDownloadJob({
     error: null,
     errorCode: null,
     result: null,
+    helperJobId: null,
+    cancelRequested: false,
+    pauseRequested: false,
     startedAt: Date.now(),
     updatedAt: Date.now()
   };
   activeDownloads.set(id, job);
+  jobAbortControllers.set(id, new AbortController());
   // Keep latest job id for tab (UI only); progress always uses explicit jobId
   if (tabId != null && tabId >= 0) tabJobMap.set(tabId, id);
   persistJobs();
@@ -953,14 +1158,20 @@ function listActiveDownloads() {
 }
 
 function updateDownloadBadge() {
-  const n = [...activeDownloads.values()].filter((j) => j.status === "running").length;
+  const running = [...activeDownloads.values()].filter((j) => j.status === "running").length;
+  const paused = [...activeDownloads.values()].filter((j) => j.status === "paused").length;
+  const n = running;
   try {
     if (n > 0) {
       chrome.action.setBadgeText({ text: String(n) });
       chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
       chrome.action.setTitle({
-        title: `받는 중 ${n}개 · 페이지를 이동해도 계속됩니다`
+        title: `받는 중 ${n}개${paused ? ` · 정지 ${paused}` : ""} · 페이지 이동 OK`
       });
+    } else if (paused > 0) {
+      chrome.action.setBadgeText({ text: "❚" });
+      chrome.action.setBadgeBackgroundColor({ color: "#f59e0b" });
+      chrome.action.setTitle({ title: `일시정지 ${paused}개` });
     } else {
       // Clear global badge; per-tab badges refreshed on next tab event
       chrome.action.setBadgeText({ text: "" });
@@ -1011,6 +1222,11 @@ function detachJobsFromTab(tabId) {
  * @param {string|null} [jobId] — required when multiple downloads run
  */
 function emitDownloadProgress(tabId, percent, message, phase = "download", jobId = null) {
+  try {
+    throwIfJobStopped(jobId);
+  } catch (e) {
+    throw e;
+  }
   const job = findRunningJob(tabId, jobId);
   if (!job) {
     // Multi-download without jobId: drop ambient noise (was causing % thrash)
@@ -1940,6 +2156,11 @@ async function downloadTikTok(
         ...extra
       },
       (p) => {
+        throwIfJobStopped(jid);
+        if (p.helperJobId && jid) {
+          const job = activeDownloads.get(jid);
+          if (job) job.helperJobId = p.helperJobId;
+        }
         let message = p.message || "받는 중…";
         if (/\[download\]/i.test(message)) {
           message = `받는 중… ${Math.round(p.percent || 0)}%`;
@@ -2051,6 +2272,11 @@ async function downloadViaYtDlp(
       ...extra
     },
     (p) => {
+      throwIfJobStopped(jid);
+      if (p.helperJobId && jid) {
+        const job = activeDownloads.get(jid);
+        if (job) job.helperJobId = p.helperJobId;
+      }
       let message = p.message || "받는 중…";
       if (/\[download\]/i.test(message)) message = `받는 중… ${Math.round(p.percent || 0)}%`;
       if (/Merging|Merger/i.test(message)) message = "파일 합치는 중…";
@@ -2182,6 +2408,11 @@ async function downloadInstagram(
         ...extra
       },
       (p) => {
+        throwIfJobStopped(jid);
+        if (p.helperJobId && jid) {
+          const job = activeDownloads.get(jid);
+          if (job) job.helperJobId = p.helperJobId;
+        }
         let message = p.message || "받는 중…";
         if (/\[download\]/i.test(message)) {
           message = `받는 중… ${Math.round(p.percent || 0)}%`;
@@ -2900,6 +3131,21 @@ function stopKeepAlive(_token) {
  * @param {() => Promise<object>} asyncFn
  * @param {(r: object) => void} sendResponse
  */
+function settleTrackedJob(jobId, result, err) {
+  const job = activeDownloads.get(jobId);
+  const msg = String(err?.message || err || "");
+  if (job?.pauseRequested || /PAUSED/i.test(msg)) {
+    finalizePausedJob(jobId);
+    return;
+  }
+  if (job?.cancelRequested || /CANCELLED|사용자가 취소/i.test(msg)) {
+    finishCancelledJob(jobId);
+    return;
+  }
+  if (err) finishDownloadJob(jobId, null, err);
+  else finishDownloadJob(jobId, result, null);
+}
+
 function runTrackedDownload(meta, asyncFn, sendResponse) {
   const jobId = createDownloadJob(meta);
   const keep = startKeepAlive();
@@ -2918,11 +3164,11 @@ function runTrackedDownload(meta, asyncFn, sendResponse) {
   Promise.resolve()
     .then(() => withJobContext(jobId, () => asyncFn(jobId)))
     .then((r) => {
-      finishDownloadJob(jobId, r, null);
+      settleTrackedJob(jobId, r, null);
       stopKeepAlive(keep);
     })
     .catch((err) => {
-      finishDownloadJob(jobId, null, err);
+      settleTrackedJob(jobId, null, err);
       stopKeepAlive(keep);
     });
   return true;
@@ -2934,10 +3180,10 @@ async function runTrackedDownloadAsync(meta, asyncFn) {
   const keep = startKeepAlive();
   try {
     const r = await withJobContext(jobId, () => asyncFn(jobId));
-    finishDownloadJob(jobId, r, null);
+    settleTrackedJob(jobId, r, null);
     return r;
   } catch (err) {
-    finishDownloadJob(jobId, null, err);
+    settleTrackedJob(jobId, null, err);
     throw err;
   } finally {
     stopKeepAlive(keep);
@@ -4153,14 +4399,84 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case "REMOVE_WATCHLIST": {
-      UVD.removeWatchlist(msg.id || msg.url || "")
-        .then((watchlist) => sendResponse({ ok: true, watchlist }))
+      const rid = msg.id || msg.url || "";
+      UVD.removeWatchlist(rid)
+        .then(async (watchlist) => {
+          if (rid) {
+            try {
+              await chrome.alarms.clear(`uvd-watch-${rid}`);
+            } catch {
+              /* ignore */
+            }
+          }
+          sendResponse({ ok: true, watchlist });
+        })
         .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
       return true;
     }
     case "CLEAR_WATCHLIST": {
       UVD.clearWatchlist()
-        .then(() => sendResponse({ ok: true, watchlist: [] }))
+        .then(async () => {
+          try {
+            const all = await chrome.alarms.getAll();
+            for (const a of all) {
+              if (a.name.startsWith("uvd-watch-")) {
+                await chrome.alarms.clear(a.name);
+              }
+            }
+          } catch {
+            /* ignore */
+          }
+          sendResponse({ ok: true, watchlist: [] });
+        })
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "REORDER_WATCHLIST": {
+      UVD.reorderWatchlist(msg.ids || msg.orderedIds || [])
+        .then((watchlist) => sendResponse({ ok: true, watchlist }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "UPDATE_WATCHLIST_ITEM": {
+      (async () => {
+        const id = msg.id || "";
+        const patch = msg.patch || {};
+        const watchlist = await UVD.updateWatchlistItem(id, patch);
+        // Schedule deferred download via chrome.alarms
+        const alarmName = `uvd-watch-${id}`;
+        try {
+          await chrome.alarms.clear(alarmName);
+        } catch {
+          /* ignore */
+        }
+        const when = Number(patch.scheduleAt || 0);
+        if (when > Date.now() + 15_000) {
+          try {
+            await chrome.alarms.create(alarmName, { when });
+          } catch (e) {
+            console.warn("[UVD] schedule alarm", e);
+          }
+        }
+        sendResponse({ ok: true, watchlist });
+      })().catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "CANCEL_DOWNLOAD": {
+      cancelDownloadJob(msg.jobId || msg.id || "")
+        .then((r) => sendResponse(r))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "PAUSE_DOWNLOAD": {
+      pauseDownloadJob(msg.jobId || msg.id || "")
+        .then((r) => sendResponse(r))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "RESUME_DOWNLOAD": {
+      resumeDownloadJob(msg.jobId || msg.id || "")
+        .then((r) => sendResponse(r))
         .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
       return true;
     }
@@ -4288,7 +4604,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.18.2" });
+      sendResponse({ ok: true, version: "1.19.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;
@@ -4521,6 +4837,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 chrome.alarms.create("keepalive", { periodInMinutes: 4.5 });
-chrome.alarms.onAlarm.addListener(() => {});
 
-console.log("[VideoDownloader] ready v1.13.0");
+/** Deferred watchlist downloads: alarm name `uvd-watch-{id}` */
+async function runScheduledWatchItem(watchId) {
+  const list = await UVD.getWatchlist();
+  const item = list.find((x) => x.id === watchId);
+  if (!item) return;
+  const pageUrl = item.pageUrl || item.url || "";
+  if (!/^https?:/i.test(pageUrl)) {
+    await UVD.removeWatchlist(watchId);
+    return;
+  }
+  const keep = startKeepAlive();
+  try {
+    await runTrackedDownloadAsync(
+      {
+        tabId: -1,
+        title: item.title || "예약 다운로드",
+        pageUrl,
+        mediaUrl: item.mediaUrl || "",
+        filename: "",
+        quality: item.quality || "best"
+      },
+      (jobId) =>
+        downloadPageFromUi(-1, pageUrl, item.quality || "best", jobId, {
+          mediaUrl: item.mediaUrl || "",
+          title: item.title || ""
+        })
+    );
+  } catch (e) {
+    console.warn("[UVD] scheduled watch download", watchId, e);
+  } finally {
+    stopKeepAlive(keep);
+    try {
+      await UVD.removeWatchlist(watchId);
+    } catch {
+      /* ignore */
+    }
+    try {
+      await chrome.alarms.clear(`uvd-watch-${watchId}`);
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm?.name) return;
+  if (alarm.name === "keepalive" || alarm.name === "uvd-dl-keepalive") return;
+  if (alarm.name.startsWith("uvd-watch-")) {
+    const id = alarm.name.slice("uvd-watch-".length);
+    runScheduledWatchItem(id).catch(() => {});
+  }
+});
+
+console.log("[VideoDownloader] ready v1.19.0");
