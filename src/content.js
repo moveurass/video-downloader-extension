@@ -802,6 +802,180 @@
     }
   });
 
+  /**
+   * Fetch another page on this site (same cookies / origin context) and
+   * scrape og:image + title. Also judges whether the page is a real video.
+   */
+  async function probePageMeta(targetUrl, expectedKey) {
+    const url = String(targetUrl || "").trim();
+    if (!url || !/^https?:/i.test(url)) {
+      return { ok: false, exists: false, error: "bad url" };
+    }
+    // Same-site only from content script (avoid leaking cookies cross-site)
+    try {
+      const a = new URL(url);
+      const b = new URL(location.href);
+      if (a.hostname.replace(/^www\./, "") !== b.hostname.replace(/^www\./, "")) {
+        return { ok: false, exists: false, error: "cross-origin" };
+      }
+    } catch {
+      return { ok: false, exists: false, error: "bad url" };
+    }
+    try {
+      const res = await fetch(url, {
+        credentials: "include",
+        redirect: "follow",
+        headers: { Accept: "text/html,application/xhtml+xml" }
+      });
+      const finalUrl = res.url || url;
+      const status = res.status;
+      if (!res.ok) {
+        return {
+          ok: false,
+          exists: false,
+          status,
+          url,
+          finalUrl,
+          error: `HTTP ${status}`
+        };
+      }
+      const html = await res.text();
+      if (!html || html.length < 200) {
+        return {
+          ok: false,
+          exists: false,
+          status,
+          url,
+          finalUrl,
+          error: "empty"
+        };
+      }
+      const pickMeta = (...pats) => {
+        for (const re of pats) {
+          const m = html.match(re);
+          if (m?.[1]) return m[1].trim();
+        }
+        return "";
+      };
+      let thumb =
+        pickMeta(
+          /property=["']og:image(?::secure_url|:url)?["'][^>]*content=["']([^"']+)["']/i,
+          /content=["']([^"']+)["'][^>]*property=["']og:image(?::secure_url|:url)?["']/i,
+          /name=["']twitter:image(?::src)?["'][^>]*content=["']([^"']+)["']/i,
+          /content=["']([^"']+)["'][^>]*name=["']twitter:image(?::src)?["']/i,
+          /rel=["']image_src["'][^>]*href=["']([^"']+)["']/i,
+          /<video[^>]+poster=["']([^"']+)["']/i
+        ) || "";
+      // Cover/thumb img heuristics (123av card grids & players)
+      if (!thumb) {
+        const imgs = [
+          ...html.matchAll(
+            /<img[^>]+(?:class|id)=["'][^"']*(?:cover|thumb|poster|preview)[^"']*["'][^>]+src=["']([^"']+)["']/gi
+          ),
+          ...html.matchAll(
+            /<img[^>]+src=["']([^"']+)["'][^>]*(?:class|id)=["'][^"']*(?:cover|thumb|poster|preview)[^"']*["']/gi
+          )
+        ];
+        for (const m of imgs) {
+          const u = m[1];
+          if (u && !/\.svg(\?|$)/i.test(u) && !/sprite|icon|logo|avatar|1x1|pixel/i.test(u)) {
+            thumb = u;
+            break;
+          }
+        }
+      }
+      let title =
+        pickMeta(
+          /property=["']og:title["'][^>]*content=["']([^"']+)["']/i,
+          /content=["']([^"']+)["'][^>]*property=["']og:title["']/i,
+          /<title[^>]*>([^<]{2,200})<\/title>/i
+        ) || "";
+      // Decode common entities
+      const dec = (s) =>
+        String(s || "")
+          .replace(/&amp;/g, "&")
+          .replace(/&quot;/g, '"')
+          .replace(/&#39;/g, "'")
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">");
+      thumb = dec(thumb);
+      title = dec(title);
+      if (thumb && thumb.startsWith("//")) thumb = location.protocol + thumb;
+      if (thumb && thumb.startsWith("/")) {
+        try {
+          thumb = new URL(thumb, location.origin).href;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (thumb && !/^https?:|^data:/i.test(thumb)) {
+        try {
+          thumb = new URL(thumb, finalUrl || url).href;
+        } catch {
+          thumb = "";
+        }
+      }
+
+      // ── existence heuristics (avoid listing phantom product codes) ──
+      const bodySample = html.slice(0, 8000);
+      const blocked =
+        /just a moment|cf-browser-verification|attention required|checking your browser|enable javascript|access denied|captcha/i.test(
+          title + " " + bodySample
+        );
+      const notFound =
+        status === 404 ||
+        /not\s*found|404|페이지를\s*찾을|존재하지\s*않|no\s*results?|검색\s*결과\s*없|video\s*not\s*found|deleted|removed/i.test(
+          title + " " + bodySample
+        );
+      const isSearch =
+        /\/search/i.test(finalUrl) ||
+        /[?&](q|keyword|query|search)=/i.test(finalUrl);
+      const key = String(expectedKey || "").trim();
+      const keyU = key.toUpperCase();
+      const keyLoose = keyU.replace(/[-_\s]/g, "");
+      const hay = `${title} ${finalUrl}`.toUpperCase().replace(/[-_\s]/g, "");
+      const keyInPage =
+        !key ||
+        hay.includes(keyU.replace(/[-_\s]/g, "")) ||
+        (keyLoose.length >= 4 && hay.includes(keyLoose));
+      // Soft-404: site returns 200 home/search without the code
+      const looksVideoPath = /\/(v|video|watch|dm\d*\/v|en\/v|ja\/v)\//i.test(
+        finalUrl
+      );
+      let exists = !blocked && !notFound && !isSearch;
+      if (exists && key && !keyInPage) {
+        // Allow if we clearly landed on a video path with a poster
+        exists = looksVideoPath && !!thumb;
+      }
+      if (exists && isSearch) exists = false;
+      // Prefer requiring the product code in title/url for JAV codes
+      if (exists && key && keyLoose.length >= 5 && !keyInPage && !thumb) {
+        exists = false;
+      }
+
+      return {
+        ok: true,
+        exists,
+        status,
+        url,
+        finalUrl,
+        thumbnail: thumb || "",
+        title: title || "",
+        keyInPage,
+        isSearch,
+        notFound,
+        blocked,
+        source: "content-fetch"
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        exists: false,
+        error: String(e?.message || e)
+      };
+    }
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === "SCAN_NOW") {
       REPORTED.clear();
@@ -815,6 +989,59 @@
         }
       });
       return false;
+    }
+
+    if (msg.type === "PROBE_PAGE_META") {
+      probePageMeta(msg.url || msg.pageUrl, msg.expectedKey || msg.key || "")
+        .then((r) => sendResponse(r))
+        .catch((e) =>
+          sendResponse({
+            ok: false,
+            exists: false,
+            error: String(e?.message || e)
+          })
+        );
+      return true;
+    }
+
+    // Same-site image → data URL (CDN covers that block extension origin)
+    if (msg.type === "FETCH_THUMB_PAGE") {
+      (async () => {
+        try {
+          const url = String(msg.url || "").trim();
+          if (!url || !/^https?:/i.test(url)) {
+            sendResponse({ ok: false, error: "bad url" });
+            return;
+          }
+          const res = await fetch(url, {
+            credentials: "include",
+            redirect: "follow"
+          });
+          if (!res.ok) {
+            sendResponse({ ok: false, error: `HTTP ${res.status}` });
+            return;
+          }
+          const blob = await res.blob();
+          if (!blob || blob.size < 80 || blob.size > 2_500_000) {
+            sendResponse({ ok: false, error: "size" });
+            return;
+          }
+          if (blob.type && !blob.type.startsWith("image/") && blob.type !== "application/octet-stream") {
+            sendResponse({ ok: false, error: "not image" });
+            return;
+          }
+          const dataUrl = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          sendResponse({ ok: true, dataUrl });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e?.message || e) });
+        }
+      })();
+      return true;
     }
 
     if (msg.type === "EXTRACT_TIKTOK") {

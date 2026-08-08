@@ -68,12 +68,40 @@
       </div>
     </section>
 
-    <!-- Series complete suggestion -->
+    <!-- Series complete / playlist selection preview -->
     <section id="seriesBanner" class="series-banner hidden">
-      <span class="series-banner-title" id="seriesBannerTitle">시리즈 완주</span>
-      <div class="series-banner-list" id="seriesBannerList"></div>
+      <div class="series-banner-head">
+        <span class="series-banner-title" id="seriesBannerTitle">시리즈 완주</span>
+        <span class="series-banner-dest" id="seriesBannerDest"></span>
+      </div>
+      <p class="series-banner-sub" id="seriesBannerSub"></p>
+      <div id="seriesVerifyProgress" class="series-verify-progress hidden" aria-live="polite">
+        <div class="series-verify-bar">
+          <div id="seriesVerifyFill" class="series-verify-fill"></div>
+        </div>
+        <div class="series-verify-meta">
+          <span id="seriesVerifyText" class="series-verify-text">확인 중…</span>
+          <span id="seriesVerifyCount" class="series-verify-count"></span>
+        </div>
+        <p id="seriesVerifyDetail" class="series-verify-detail"></p>
+      </div>
+      <div class="series-toolbar" id="seriesToolbar">
+        <div class="series-range" id="seriesRange" role="group" aria-label="받을 개수">
+          <button type="button" class="series-range-chip" data-range="3">3</button>
+          <button type="button" class="series-range-chip" data-range="5">5</button>
+          <button type="button" class="series-range-chip" data-range="10">10</button>
+          <button type="button" class="series-range-chip" data-range="all">전체</button>
+        </div>
+        <div class="series-select-actions">
+          <button type="button" id="btnSeriesSelAll" class="btn ghost tiny">전체</button>
+          <button type="button" id="btnSeriesSelPending" class="btn ghost tiny">미받음</button>
+          <button type="button" id="btnSeriesSelNone" class="btn ghost tiny">해제</button>
+        </div>
+      </div>
+      <ul class="series-preview-list" id="seriesBannerList"></ul>
       <div class="series-banner-actions">
-        <button type="button" id="btnSeriesGo" class="btn primary tiny">완주 시작</button>
+        <button type="button" id="btnSeriesGo" class="btn primary tiny">선택 항목 시작</button>
+        <button type="button" id="btnSeriesRetryFailed" class="btn ghost tiny hidden">실패 재시도</button>
         <button type="button" id="btnSeriesDismiss" class="btn ghost tiny">닫기</button>
       </div>
     </section>
@@ -114,7 +142,7 @@
       </div>
     </section>
 
-    <!-- YouTube playlist panel -->
+    <!-- YouTube playlist panel (selection happens in series banner) -->
     <section id="playlistBox" class="playlist-box hidden" aria-label="재생목록">
       <div class="pl-head">
         <div class="pl-head-text">
@@ -129,21 +157,10 @@
         <span id="plProgressText" class="pl-progress-text">대기</span>
       </div>
       <div class="pl-controls">
-        <label class="pl-max-label">
-          최대
-          <select id="plMax" class="pl-max">
-            <option value="5">5개</option>
-            <option value="10" selected>10개</option>
-            <option value="25">25개</option>
-            <option value="50">50개</option>
-            <option value="100">100개</option>
-            <option value="all">전체</option>
-          </select>
-        </label>
-        <button type="button" id="btnPlDownload" class="btn primary tiny">목록 받기</button>
+        <button type="button" id="btnPlSelect" class="btn primary tiny">선택해서 받기</button>
+        <button type="button" id="btnPlDownload" class="btn ghost tiny">바로 받기</button>
       </div>
-      <ul id="plList" class="pl-list"></ul>
-      <p id="plHint" class="pl-hint">화질 칩이 각 영상에 적용됩니다 · 도우미 필요</p>
+      <p id="plHint" class="pl-hint">위 시리즈 패널에서 체크 후 받거나 · 「바로 받기」로 상위 항목을 큐에 넣습니다</p>
     </section>
 
     <section class="link-box compact" id="linkBox">

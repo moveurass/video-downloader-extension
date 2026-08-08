@@ -689,11 +689,39 @@ async function buildSaveFilename({
   quality,
   pageUrl,
   mediaType,
-  mediaMode
+  mediaMode,
+  seriesKey,
+  playlistTitle,
+  seriesIndex,
+  seriesTotal
 } = {}) {
   const s = await UVD.getSettings();
   const mode = mediaMode || s.mediaMode || "video";
   const cleanTitle = UVD.isGenericSaveName(title) ? "" : title || "";
+  const ext =
+    mode === "audio" || mediaType === "audio" ? ".mp3" : ".mp4";
+  // Series / playlist → structured names (Playlist - 03. Title / SSIS-003 …)
+  if (
+    (playlistTitle || seriesKey || seriesIndex > 0) &&
+    typeof Naming !== "undefined" &&
+    Naming.buildSeriesFilename
+  ) {
+    const full = Naming.buildSeriesFilename({
+      title: cleanTitle || title || "",
+      quality: quality || "",
+      type: mode === "audio" ? "audio" : "video",
+      seriesKey: seriesKey || "",
+      playlistTitle: playlistTitle || "",
+      index: seriesIndex || 0,
+      total: seriesTotal || 0
+    });
+    if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
+      return safeDownloadName(
+        full,
+        mode === "audio" ? "audio/mp3" : "video/mp4"
+      );
+    }
+  }
   // Always legacy readable names (title + optional _quality)
   const base = UVD.applyFilenameTemplate("legacy", {
     title: cleanTitle,
@@ -702,8 +730,6 @@ async function buildSaveFilename({
     mediaMode: mode
   });
   if (!base || UVD.isGenericSaveName(base)) return "";
-  const ext =
-    mode === "audio" || mediaType === "audio" ? ".mp3" : ".mp4";
   return safeDownloadName(
     base.endsWith(ext) ? base : base + ext,
     mode === "audio" ? "audio/mp3" : "video/mp4"
@@ -868,7 +894,12 @@ function createDownloadJob({
   filename,
   mediaMode,
   quality,
-  thumbnail
+  thumbnail,
+  seriesId,
+  seriesKey,
+  seriesIndex,
+  seriesTitle,
+  tags
 } = {}) {
   const id = `dl_${Date.now()}_${++jobSeq}`;
   // Resolve thumbnail from tab meta if not provided
@@ -888,6 +919,17 @@ function createDownloadJob({
   }
   if (!niceTitle) niceTitle = "영상";
 
+  const jobTags = [
+    ...new Set(
+      [
+        ...(Array.isArray(tags) ? tags : []),
+        seriesId || "",
+        seriesKey || "",
+        "series"
+      ].filter(Boolean)
+    )
+  ];
+
   const job = {
     id,
     tabId: tabId != null ? tabId : -1,
@@ -898,6 +940,11 @@ function createDownloadJob({
     mediaMode: mediaMode || "video",
     quality: quality || "",
     thumbnail: thumb || "",
+    seriesId: seriesId || "",
+    seriesKey: seriesKey || "",
+    seriesIndex: seriesIndex || 0,
+    seriesTitle: seriesTitle || "",
+    tags: jobTags,
     status: "running",
     percent: 2,
     message: niceTitle !== "영상" ? `받는 중 · ${niceTitle.slice(0, 40)}` : "백그라운드에서 받는 중…",
@@ -1105,6 +1152,10 @@ function finishDownloadJob(jobId, result, error) {
       mediaMode: job.mediaMode || "video",
       site: UVD.siteFromUrl(job.pageUrl || ""),
       thumbnail: job.thumbnail || "",
+      tags: job.tags || [],
+      seriesId: job.seriesId || "",
+      seriesKey: job.seriesKey || "",
+      seriesIndex: job.seriesIndex || 0,
       at: Date.now()
     }).catch(() => {});
   } catch {
@@ -4369,6 +4420,319 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })();
       return true;
     }
+    case "PROBE_PAGE_META": {
+      // Scrape og:image / title + existence for product-code series (123av etc.)
+      // Prefer content-script same-site fetch (cookies + less bot-like).
+      (async () => {
+        try {
+          const url = String(msg.url || msg.pageUrl || "").trim();
+          const expectedKey = String(msg.expectedKey || msg.key || "").trim();
+          if (!url || !/^https?:/i.test(url)) {
+            sendResponse({ ok: false, exists: false, error: "url 없음" });
+            return;
+          }
+          // 1) Active tab content script when same host
+          const probeTabId = tabId;
+          if (probeTabId != null && probeTabId >= 0) {
+            try {
+              const tab = await chrome.tabs.get(probeTabId).catch(() => null);
+              if (tab?.url) {
+                const th = new URL(tab.url).hostname.replace(/^www\./, "");
+                const uh = new URL(url).hostname.replace(/^www\./, "");
+                if (
+                  th &&
+                  uh &&
+                  (th === uh || th.endsWith("." + uh) || uh.endsWith("." + th))
+                ) {
+                  const r = await chrome.tabs
+                    .sendMessage(probeTabId, {
+                      type: "PROBE_PAGE_META",
+                      url,
+                      expectedKey,
+                      key: expectedKey
+                    })
+                    .catch(() => null);
+                  // Trust content result even when exists:false (don't fall through
+                  // and falsely re-mark as ok via weak background scrape)
+                  if (r && (r.ok || r.exists === false || r.error)) {
+                    sendResponse({
+                      ...r,
+                      source: r.source || "content"
+                    });
+                    return;
+                  }
+                }
+              }
+            } catch {
+              /* fall through */
+            }
+          }
+          // 2) Background fetch fallback
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 12000);
+          let res;
+          try {
+            res = await fetch(url, {
+              method: "GET",
+              signal: ctrl.signal,
+              credentials: "omit",
+              redirect: "follow",
+              headers: { Accept: "text/html,application/xhtml+xml" }
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+          const finalUrl = res.url || url;
+          const status = res.status;
+          if (!res.ok) {
+            sendResponse({
+              ok: false,
+              exists: false,
+              status,
+              url,
+              finalUrl,
+              error: `HTTP ${status}`
+            });
+            return;
+          }
+          const html = await res.text();
+          const pickMeta = (...pats) => {
+            for (const re of pats) {
+              const m = html.match(re);
+              if (m?.[1]) return m[1].trim();
+            }
+            return "";
+          };
+          let thumb =
+            pickMeta(
+              /property=["']og:image(?::secure_url|:url)?["'][^>]*content=["']([^"']+)["']/i,
+              /content=["']([^"']+)["'][^>]*property=["']og:image(?::secure_url|:url)?["']/i,
+              /name=["']twitter:image(?::src)?["'][^>]*content=["']([^"']+)["']/i,
+              /content=["']([^"']+)["'][^>]*name=["']twitter:image(?::src)?["']/i,
+              /rel=["']image_src["'][^>]*href=["']([^"']+)["']/i,
+              /<video[^>]+poster=["']([^"']+)["']/i
+            ) || "";
+          if (!thumb) {
+            const imgs = [
+              ...html.matchAll(
+                /<img[^>]+(?:class|id)=["'][^"']*(?:cover|thumb|poster|preview)[^"']*["'][^>]+src=["']([^"']+)["']/gi
+              ),
+              ...html.matchAll(
+                /<img[^>]+src=["']([^"']+)["'][^>]*(?:class|id)=["'][^"']*(?:cover|thumb|poster|preview)[^"']*["']/gi
+              )
+            ];
+            for (const m of imgs) {
+              const u = m[1];
+              if (
+                u &&
+                !/\.svg(\?|$)/i.test(u) &&
+                !/sprite|icon|logo|avatar|1x1|pixel/i.test(u)
+              ) {
+                thumb = u;
+                break;
+              }
+            }
+          }
+          let title =
+            pickMeta(
+              /property=["']og:title["'][^>]*content=["']([^"']+)["']/i,
+              /content=["']([^"']+)["'][^>]*property=["']og:title["']/i,
+              /<title[^>]*>([^<]{2,200})<\/title>/i
+            ) || "";
+          const dec = (s) =>
+            String(s || "")
+              .replace(/&amp;/g, "&")
+              .replace(/&quot;/g, '"')
+              .replace(/&#39;/g, "'");
+          thumb = dec(thumb);
+          title = dec(title);
+          if (thumb.startsWith("//")) {
+            try {
+              thumb = new URL(url).protocol + thumb;
+            } catch {
+              thumb = "https:" + thumb;
+            }
+          }
+          if (thumb.startsWith("/")) {
+            try {
+              thumb = new URL(thumb, finalUrl || url).href;
+            } catch {
+              thumb = "";
+            }
+          }
+          if (thumb && !/^https?:/i.test(thumb)) {
+            try {
+              thumb = new URL(thumb, finalUrl || url).href;
+            } catch {
+              thumb = "";
+            }
+          }
+          const bodySample = html.slice(0, 8000);
+          const blocked =
+            /just a moment|cf-browser-verification|attention required|checking your browser|enable javascript|access denied|captcha/i.test(
+              title + " " + bodySample
+            );
+          const notFound =
+            /not\s*found|404|페이지를\s*찾을|존재하지\s*않|no\s*results?|검색\s*결과\s*없|video\s*not\s*found|deleted|removed/i.test(
+              title + " " + bodySample
+            );
+          const isSearch =
+            /\/search/i.test(finalUrl) ||
+            /[?&](q|keyword|query|search)=/i.test(finalUrl);
+          const keyU = expectedKey.toUpperCase();
+          const keyLoose = keyU.replace(/[-_\s]/g, "");
+          const hay = `${title} ${finalUrl}`
+            .toUpperCase()
+            .replace(/[-_\s]/g, "");
+          const keyInPage =
+            !expectedKey ||
+            (keyLoose.length >= 4 && hay.includes(keyLoose));
+          const looksVideoPath =
+            /\/(v|video|watch|dm\d*\/v|en\/v|ja\/v)\//i.test(finalUrl);
+          let exists = !blocked && !notFound && !isSearch;
+          if (exists && expectedKey && !keyInPage) {
+            exists = looksVideoPath && !!thumb;
+          }
+          if (exists && expectedKey && keyLoose.length >= 5 && !keyInPage && !thumb) {
+            exists = false;
+          }
+          sendResponse({
+            ok: true,
+            exists,
+            status,
+            url,
+            finalUrl,
+            thumbnail: thumb || "",
+            title: title || "",
+            keyInPage,
+            isSearch,
+            notFound,
+            source: "background-fetch"
+          });
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            exists: false,
+            error: String(e?.message || e || "probe failed")
+          });
+        }
+      })();
+      return true;
+    }
+    case "FETCH_THUMB": {
+      // Privileged fetch → data URL (popup <img> often blocked by CDN/hotlink)
+      (async () => {
+        try {
+          const url = String(msg.url || "").trim();
+          if (!url) {
+            sendResponse({ ok: false, error: "url 없음" });
+            return;
+          }
+          if (url.startsWith("data:image/")) {
+            sendResponse({ ok: true, dataUrl: url });
+            return;
+          }
+          if (!/^https?:/i.test(url)) {
+            sendResponse({ ok: false, error: "bad url" });
+            return;
+          }
+          // Prefer page-context fetch when a same-site tab is available (123av CDN)
+          const thumbTabId = tabId;
+          if (thumbTabId != null && thumbTabId >= 0) {
+            try {
+              const tab = await chrome.tabs.get(thumbTabId).catch(() => null);
+              if (tab?.url) {
+                const th = new URL(tab.url).hostname.replace(/^www\./, "");
+                let uh = "";
+                try {
+                  uh = new URL(url).hostname.replace(/^www\./, "");
+                } catch {
+                  uh = "";
+                }
+                // Same registrable-ish host or known related CDN under page site
+                const sameSite =
+                  th &&
+                  uh &&
+                  (th === uh ||
+                    uh.endsWith(th) ||
+                    th.endsWith(uh) ||
+                    /123av|missav|jable|njav|netflav|surrit|javcdn|javplayer/i.test(
+                      uh
+                    ));
+                if (sameSite) {
+                  const r = await chrome.tabs
+                    .sendMessage(thumbTabId, {
+                      type: "FETCH_THUMB_PAGE",
+                      url
+                    })
+                    .catch(() => null);
+                  if (r?.ok && r.dataUrl) {
+                    sendResponse({ ok: true, dataUrl: r.dataUrl, source: "page" });
+                    return;
+                  }
+                }
+              }
+            } catch {
+              /* fall through */
+            }
+          }
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), 10000);
+          let res;
+          try {
+            res = await fetch(url, {
+              method: "GET",
+              signal: ctrl.signal,
+              credentials: "omit",
+              redirect: "follow",
+              cache: "force-cache"
+            });
+          } finally {
+            clearTimeout(timer);
+          }
+          if (!res.ok) {
+            sendResponse({ ok: false, error: `HTTP ${res.status}` });
+            return;
+          }
+          const ctype = (res.headers.get("content-type") || "").toLowerCase();
+          if (ctype && !ctype.startsWith("image/") && !ctype.includes("octet-stream")) {
+            sendResponse({ ok: false, error: "not image" });
+            return;
+          }
+          const buf = await res.arrayBuffer();
+          if (!buf || buf.byteLength < 80 || buf.byteLength > 2_500_000) {
+            sendResponse({ ok: false, error: "size" });
+            return;
+          }
+          const bytes = new Uint8Array(buf);
+          // Tiny 1×1 / tracking pixels
+          if (buf.byteLength < 200 && ctype.includes("gif")) {
+            sendResponse({ ok: false, error: "tiny" });
+            return;
+          }
+          let binary = "";
+          const chunk = 0x8000;
+          for (let i = 0; i < bytes.length; i += chunk) {
+            binary += String.fromCharCode.apply(
+              null,
+              bytes.subarray(i, i + chunk)
+            );
+          }
+          const mime =
+            ctype && ctype.startsWith("image/")
+              ? ctype.split(";")[0]
+              : "image/jpeg";
+          const dataUrl = `data:${mime};base64,${btoa(binary)}`;
+          sendResponse({ ok: true, dataUrl, bytes: buf.byteLength });
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            error: String(e?.message || e || "fetch failed")
+          });
+        }
+      })();
+      return true;
+    }
     case "LIST_PLAYLIST": {
       const pageUrl = msg.pageUrl || msg.url || "";
       if (!pageUrl || !/^https?:/i.test(pageUrl)) {
@@ -4441,22 +4805,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const settings = await UVD.getSettings();
           const started = [];
           const plTitle = msg.title || "재생목록";
-          for (let i = 0; i < urls.length; i++) {
-            if (started.length >= MAX_CONCURRENT_STARTS_BG()) {
-              // Queue remaining by waiting for slots would be complex;
-              // start up to concurrent limit; user can re-run for rest
-              break;
+          let plSeriesId = msg.seriesId || "";
+          if (!plSeriesId && pageUrl) {
+            try {
+              plSeriesId = `series:pl:${new URL(pageUrl).searchParams.get("list") || UVD.normalizeUrlKey(pageUrl)}`;
+            } catch {
+              plSeriesId = `series:pl:${Date.now()}`;
             }
+          }
+          const startOne = async (i) => {
             const videoUrl = urls[i];
             const entry = entries[i] || {};
             const title =
               entry.title ||
               `${plTitle} (${i + 1}/${urls.length})`;
+            const sKey = entry.id || entry.key || "";
             const fname = await buildSaveFilename({
               title,
               quality: preferQuality,
               pageUrl: videoUrl,
-              mediaMode: settings.mediaMode
+              mediaMode: settings.mediaMode,
+              playlistTitle: plTitle,
+              seriesKey: sKey,
+              seriesIndex: i + 1,
+              seriesTotal: urls.length
             });
             const jobId = createDownloadJob({
               tabId: tid,
@@ -4464,7 +4836,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               pageUrl: videoUrl,
               filename: fname || "",
               mediaMode: settings.mediaMode,
-              quality: preferQuality
+              quality: preferQuality,
+              thumbnail: entry.thumbnail || "",
+              seriesId: plSeriesId,
+              seriesKey: sKey,
+              seriesIndex: i + 1,
+              seriesTitle: plTitle,
+              tags: ["series", "playlist", plSeriesId, sKey].filter(Boolean)
             });
             const keep = startKeepAlive();
             started.push({ jobId, url: videoUrl, title });
@@ -4487,57 +4865,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 settleTrackedJob(jobId, null, err);
                 stopKeepAlive(keep);
               });
+          };
+          for (let i = 0; i < urls.length; i++) {
+            if (started.length >= MAX_CONCURRENT_STARTS_BG()) {
+              break;
+            }
+            await startOne(i);
           }
           // Remaining videos beyond concurrent: fire more after a delay chain
-          const rest = urls.slice(started.length);
-          if (rest.length) {
-            // Start rest with staggered concurrency (reuse simple loop)
+          if (urls.length > started.length) {
             (async () => {
               for (let i = started.length; i < urls.length; i++) {
-                // Wait until running < max
                 while (
                   [...activeDownloads.values()].filter((j) => j.status === "running")
                     .length >= MAX_CONCURRENT_STARTS_BG()
                 ) {
                   await new Promise((r) => setTimeout(r, 800));
                 }
-                const videoUrl = urls[i];
-                const entry = entries[i] || {};
-                const title =
-                  entry.title || `${plTitle} (${i + 1}/${urls.length})`;
-                const fname = await buildSaveFilename({
-                  title,
-                  quality: preferQuality,
-                  pageUrl: videoUrl,
-                  mediaMode: settings.mediaMode
-                });
-                const jobId = createDownloadJob({
-                  tabId: tid,
-                  title,
-                  pageUrl: videoUrl,
-                  filename: fname || "",
-                  mediaMode: settings.mediaMode,
-                  quality: preferQuality
-                });
-                const keep = startKeepAlive();
-                try {
-                  const r = await withJobContext(jobId, () =>
-                    downloadViaYtDlp(
-                      tid,
-                      videoUrl,
-                      videoUrl,
-                      fname || undefined,
-                      preferQuality,
-                      jobId,
-                      { mediaMode: settings.mediaMode }
-                    )
-                  );
-                  settleTrackedJob(jobId, r, null);
-                } catch (err) {
-                  settleTrackedJob(jobId, null, err);
-                } finally {
-                  stopKeepAlive(keep);
-                }
+                await startOne(i);
               }
             })().catch(() => {});
           }
@@ -4665,7 +5010,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case "SERIES_COMPLETE": {
-      // Queue next N product codes / playlist remainder
+      // Queue selected entries (from UI preview) or auto-discover
       (async () => {
         try {
           const settings = await UVD.getSettings();
@@ -4675,10 +5020,141 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             20,
             Math.max(1, Number(msg.count) || settings.seriesCompleteCount || 5)
           );
+          const preferQuality = msg.preferQuality || "best";
+          const explicit = Array.isArray(msg.entries)
+            ? msg.entries.filter((e) => e && /^https?:/i.test(e.url || ""))
+            : [];
+          const forceMode = msg.mode || null;
           const info = UVD.extractSeriesInfo(title);
           const results = { mode: null, queued: 0, items: [] };
 
-          // 1) Playlist remainder
+          const resolveSeriesId = () => {
+            if (msg.seriesId) return String(msg.seriesId);
+            if (forceMode === "product_code" || (!forceMode && info && !(
+              UVD.isPlaylistOnlyUrl(pageUrl) || UVD.isWatchInPlaylistUrl(pageUrl)
+            ))) {
+              return `series:code:${info?.prefix || info?.key || "series"}`;
+            }
+            try {
+              const list =
+                new URL(pageUrl).searchParams.get("list") ||
+                UVD.normalizeUrlKey(pageUrl) ||
+                "unknown";
+              return `series:pl:${list}`;
+            } catch {
+              return `series:${Date.now()}`;
+            }
+          };
+          const seriesId = resolveSeriesId();
+          const seriesTitle = msg.seriesTitle || title || "";
+
+          const startPlaylistJobs = async (entries, plTitle) => {
+            const started = [];
+            const total = entries.length;
+            for (let i = 0; i < entries.length; i++) {
+              while (
+                [...activeDownloads.values()].filter((j) => j.status === "running")
+                  .length >= MAX_CONCURRENT_STARTS_BG()
+              ) {
+                await new Promise((r) => setTimeout(r, 600));
+              }
+              const entry = entries[i] || {};
+              const videoUrl = entry.url;
+              if (!videoUrl) continue;
+              const t =
+                entry.title ||
+                `${plTitle || "시리즈"} (${i + 1}/${entries.length})`;
+              const sIdx = entry.seriesIndex || i + 1;
+              const sKey = entry.key || entry.id || entry.seriesKey || "";
+              const fname = await buildSaveFilename({
+                title: t,
+                quality: preferQuality,
+                pageUrl: videoUrl,
+                mediaMode: settings.mediaMode,
+                playlistTitle: plTitle || seriesTitle || "",
+                seriesKey: sKey,
+                seriesIndex: sIdx,
+                seriesTotal: total
+              });
+              const jobId = createDownloadJob({
+                tabId: msg.tabId ?? -1,
+                title: t,
+                pageUrl: videoUrl,
+                filename: fname || "",
+                mediaMode: settings.mediaMode,
+                quality: preferQuality,
+                thumbnail: entry.thumbnail || "",
+                seriesId,
+                seriesKey: sKey,
+                seriesIndex: sIdx,
+                seriesTitle: plTitle || seriesTitle || "",
+                tags: ["series", "playlist", seriesId, sKey].filter(Boolean)
+              });
+              const keep = startKeepAlive();
+              started.push(jobId);
+              withJobContext(jobId, () =>
+                downloadViaYtDlp(
+                  msg.tabId ?? -1,
+                  videoUrl,
+                  videoUrl,
+                  fname || undefined,
+                  preferQuality,
+                  jobId,
+                  { mediaMode: settings.mediaMode }
+                )
+              )
+                .then((r) => {
+                  settleTrackedJob(jobId, r, null);
+                  stopKeepAlive(keep);
+                })
+                .catch((err) => {
+                  settleTrackedJob(jobId, null, err);
+                  stopKeepAlive(keep);
+                });
+            }
+            return started;
+          };
+
+          // Prefer explicit UI selection (user checked items in preview)
+          if (explicit.length) {
+            const asPlaylist =
+              forceMode === "playlist" ||
+              (!forceMode &&
+                (UVD.isPlaylistOnlyUrl(pageUrl) ||
+                  UVD.isWatchInPlaylistUrl(pageUrl)));
+            if (asPlaylist) {
+              results.mode = "playlist";
+              results.seriesId = seriesId;
+              results.items = explicit;
+              const jobIds = await startPlaylistJobs(
+                explicit,
+                msg.seriesTitle || title
+              );
+              results.queued = jobIds.length;
+              results.jobIds = jobIds;
+              sendResponse({ ok: true, ...results });
+              return;
+            }
+            // product codes → watchlist with exact selected URLs/titles
+            results.mode = "product_code";
+            results.seriesId = seriesId;
+            for (const e of explicit) {
+              await UVD.addWatchlist({
+                url: e.url,
+                pageUrl: e.url,
+                title: e.title || e.key || "시리즈",
+                quality: preferQuality,
+                site: UVD.siteFromUrl(pageUrl) || UVD.siteFromUrl(e.url) || "",
+                tags: ["series", info?.prefix, e.key, seriesId].filter(Boolean)
+              });
+              results.items.push(e);
+              results.queued += 1;
+            }
+            sendResponse({ ok: true, ...results });
+            return;
+          }
+
+          // 1) Playlist remainder (no explicit list)
           if (
             UVD.isPlaylistOnlyUrl(pageUrl) ||
             UVD.isWatchInPlaylistUrl(pageUrl)
@@ -4703,12 +5179,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               max: 200
             });
             let entries = data.entries || [];
-            // Skip current video if present
             const curKey = UVD.normalizeUrlKey(pageUrl);
             entries = entries.filter(
               (e) => UVD.normalizeUrlKey(e.url || "") !== curKey
             );
-            // If watch in playlist, skip until after current
             if (UVD.isWatchInPlaylistUrl(pageUrl)) {
               try {
                 const vid = new URL(pageUrl).searchParams.get("v");
@@ -4722,79 +5196,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             }
             entries = entries.slice(0, count);
             results.mode = "playlist";
+            results.seriesId = seriesId;
             results.items = entries;
             if (entries.length) {
-              const res = await new Promise((resolve) => {
-                // reuse DOWNLOAD_PLAYLIST logic inline
-                const preferQuality = msg.preferQuality || "best";
-                (async () => {
-                  const urls = entries.map((e) => e.url).filter(Boolean);
-                  const started = [];
-                  for (let i = 0; i < urls.length; i++) {
-                    while (
-                      [...activeDownloads.values()].filter(
-                        (j) => j.status === "running"
-                      ).length >= MAX_CONCURRENT_STARTS_BG()
-                    ) {
-                      await new Promise((r) => setTimeout(r, 600));
-                    }
-                    const videoUrl = urls[i];
-                    const entry = entries[i] || {};
-                    const t =
-                      entry.title ||
-                      `${data.title || "시리즈"} (${i + 1}/${urls.length})`;
-                    const fname = await buildSaveFilename({
-                      title: t,
-                      quality: preferQuality,
-                      pageUrl: videoUrl,
-                      mediaMode: settings.mediaMode
-                    });
-                    const jobId = createDownloadJob({
-                      tabId: msg.tabId ?? -1,
-                      title: t,
-                      pageUrl: videoUrl,
-                      filename: fname || "",
-                      mediaMode: settings.mediaMode,
-                      quality: preferQuality
-                    });
-                    const keep = startKeepAlive();
-                    started.push(jobId);
-                    withJobContext(jobId, () =>
-                      downloadViaYtDlp(
-                        msg.tabId ?? -1,
-                        videoUrl,
-                        videoUrl,
-                        fname || undefined,
-                        preferQuality,
-                        jobId,
-                        { mediaMode: settings.mediaMode }
-                      )
-                    )
-                      .then((r) => {
-                        settleTrackedJob(jobId, r, null);
-                        stopKeepAlive(keep);
-                      })
-                      .catch((err) => {
-                        settleTrackedJob(jobId, null, err);
-                        stopKeepAlive(keep);
-                      });
-                  }
-                  resolve({ ok: true, count: started.length, jobIds: started });
-                })().catch((e) =>
-                  resolve({ ok: false, error: String(e?.message || e) })
-                );
-              });
-              results.queued = res.count || 0;
-              results.jobIds = res.jobIds || [];
+              const jobIds = await startPlaylistJobs(
+                entries,
+                data.title || title
+              );
+              results.queued = jobIds.length;
+              results.jobIds = jobIds;
             }
             sendResponse({ ok: true, ...results });
             return;
           }
 
-          // 2) Product code series → watchlist next N codes (URLs guessed per pack)
+          // 2) Product code series → watchlist
           if (info) {
             const nexts = UVD.nextSeriesKeys(info, count);
-            const pack = await UVD.getSitePackForUrl(pageUrl);
             let host = "";
             try {
               host = new URL(pageUrl).origin;
@@ -4802,43 +5220,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               host = "";
             }
             for (const n of nexts) {
-              // Best-effort URL: keep same path pattern replacing code
               let nextUrl = "";
               if (pageUrl && info.key) {
                 nextUrl = pageUrl.replace(
-                  new RegExp(info.key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"), "i"),
+                  new RegExp(
+                    info.key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
+                    "i"
+                  ),
                   n.key
                 );
                 if (nextUrl === pageUrl) {
                   nextUrl = pageUrl.replace(
-                    new RegExp(
-                      `${info.prefix}[-_]?${info.num}`,
-                      "i"
-                    ),
+                    new RegExp(`${info.prefix}[-_]?${info.num}`, "i"),
                     n.key
                   );
                 }
               }
               if (!nextUrl || nextUrl === pageUrl) {
-                // site search fallback
                 if (host) {
                   nextUrl = `${host}/search?q=${encodeURIComponent(n.key)}`;
                 } else {
-                  nextUrl = `https://www.google.com/search?q=${encodeURIComponent(n.key + " video")}`;
+                  nextUrl = `https://www.google.com/search?q=${encodeURIComponent(
+                    n.key + " video"
+                  )}`;
                 }
               }
               await UVD.addWatchlist({
                 url: nextUrl,
                 pageUrl: nextUrl,
                 title: n.label,
-                quality: msg.preferQuality || "best",
+                quality: preferQuality,
                 site: UVD.siteFromUrl(pageUrl) || "",
-                tags: ["series", info.prefix, n.key]
+                tags: ["series", info.prefix, n.key, seriesId].filter(Boolean)
               });
               results.items.push({ key: n.key, url: nextUrl, title: n.label });
               results.queued += 1;
             }
             results.mode = "product_code";
+            results.seriesId = seriesId;
             sendResponse({ ok: true, ...results });
             return;
           }

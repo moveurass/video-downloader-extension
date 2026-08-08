@@ -1585,30 +1585,117 @@ class Handler(BaseHTTPRequestHandler):
             raw_entries = info.get("entries") or []
             pl_title = info.get("title") or info.get("playlist_title") or "재생목록"
             entries_out = []
+            is_yt_pl = bool(
+                re.search(r"youtube\.com|youtu\.be|music\.youtube", (url or ""), re.I)
+            )
+
+            def _yt_video_id(*candidates: object) -> str:
+                """Extract a single YouTube video id (11 chars), never a list id."""
+                for c in candidates:
+                    if c is None:
+                        continue
+                    s = str(c).strip()
+                    if not s:
+                        continue
+                    if re.match(r"^[\w-]{11}$", s) and not re.match(
+                        r"^(PL|UU|LL|FL|OL|RD|SD|UL)", s, re.I
+                    ):
+                        return s
+                    m = re.search(
+                        r"(?:v=|/shorts/|/embed/|/live/|youtu\.be/)([\w-]{11})",
+                        s,
+                    )
+                    if m:
+                        return m.group(1)
+                    m = re.search(
+                        r"(?:ytimg\.com|img\.youtube\.com)/vi/([\w-]{11})/",
+                        s,
+                    )
+                    if m:
+                        return m.group(1)
+                return ""
+
             for e in raw_entries:
                 if not e or e.get("entries"):
                     continue
-                eid = e.get("id") or e.get("url") or ""
-                etitle = (e.get("title") or e.get("id") or "영상").strip()
-                eurl = e.get("url") or e.get("webpage_url") or ""
-                if not eurl and eid and "youtube" in url.lower():
+                raw_id = e.get("id") or ""
+                eurl = e.get("url") or e.get("webpage_url") or e.get("original_url") or ""
+                # Resolve per-entry video id BEFORE building thumb (critical:
+                # flat playlist sometimes attaches the *playlist cover* thumb
+                # which is always the first video — never reuse that as-is.)
+                vid = _yt_video_id(raw_id, eurl, e.get("display_id"))
+                if not vid:
+                    ths = e.get("thumbnails") or []
+                    if isinstance(ths, list):
+                        for t in ths:
+                            u = t.get("url") if isinstance(t, dict) else t
+                            vid = _yt_video_id(u)
+                            if vid:
+                                break
+                if not vid:
+                    vid = _yt_video_id(e.get("thumbnail"))
+
+                eid = vid or str(raw_id or eurl or "")
+                etitle = (e.get("title") or eid or "영상")
+                if isinstance(etitle, str):
+                    etitle = etitle.strip()
+                else:
+                    etitle = str(etitle)
+
+                if is_yt_pl and vid:
+                    eurl = f"https://www.youtube.com/watch?v={vid}"
+                elif not eurl and eid and is_yt_pl:
                     eurl = f"https://www.youtube.com/watch?v={eid}"
-                if not eurl and eid:
+                elif not eurl and eid:
                     eurl = str(eid) if str(eid).startswith("http") else ""
                 if not eurl:
                     continue
+
                 dur = e.get("duration") or 0
                 try:
                     dur = float(dur or 0)
                 except (TypeError, ValueError):
                     dur = 0
+
+                # Per-video poster only. Do NOT fall back to playlist-level
+                # or shared first-video cover — that made every row identical.
+                thumb = ""
+                if vid:
+                    thumb = f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"
+                else:
+                    thumb = (e.get("thumbnail") or "") or ""
+                    if not thumb:
+                        ths = e.get("thumbnails") or []
+                        if isinstance(ths, list) and ths:
+                            for t in reversed(ths):
+                                if isinstance(t, dict) and t.get("url"):
+                                    thumb = t["url"]
+                                    break
+                                if isinstance(t, str) and t.startswith("http"):
+                                    thumb = t
+                                    break
+                    if isinstance(thumb, str) and thumb.startswith("//"):
+                        thumb = "https:" + thumb
+                    # If thumb still points at a YT id, prefer stable CDN for *that* id
+                    tvid = _yt_video_id(thumb)
+                    if tvid:
+                        thumb = f"https://i.ytimg.com/vi/{tvid}/hqdefault.jpg"
+
+                uploader = (
+                    e.get("uploader")
+                    or e.get("channel")
+                    or e.get("playlist_uploader")
+                    or ""
+                )
                 entries_out.append(
                     {
-                        "id": str(eid),
+                        "id": str(vid or eid),
                         "title": etitle[:120],
                         "url": eurl,
                         "duration": int(dur) if dur >= 1 else 0,
-                        "thumbnail": (e.get("thumbnail") or "") or "",
+                        "thumbnail": thumb or "",
+                        "uploader": str(uploader)[:60] if uploader else "",
+                        "view_count": e.get("view_count") or 0,
                     }
                 )
                 if len(entries_out) >= max_items:

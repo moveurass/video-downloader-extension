@@ -48,6 +48,10 @@ let playlistDl = { active: false, total: 0, done: 0, jobIds: new Set() };
 
 /** Series complete pending payload */
 let seriesPending = null;
+/** Last series run id for batch failure retry */
+let lastSeriesRun = null; // { seriesId, title, mode }
+/** Default range for series preview: 3 | 5 | 10 | 'all' */
+let seriesRangePref = "5";
 /** Library filter state */
 let libFilter = { q: "", status: "done", site: "", series: "" };
 /** Cached site packs for settings */
@@ -1996,102 +2000,1666 @@ async function loadSitePacksUi() {
 
 function hideSeriesBanner() {
   seriesPending = null;
+  hideSeriesVerifyProgress();
   $("#seriesBanner")?.classList.add("hidden");
 }
 
+/** Normalize any thumb src the popup can render (http(s), data, blob, //). */
+function normalizeThumbSrc(src) {
+  if (!src || typeof src !== "string") return "";
+  let u = src.trim();
+  if (!u) return "";
+  if (u.startsWith("//")) u = `https:${u}`;
+  if (/^(https?:|data:|blob:)/i.test(u)) return u;
+  return "";
+}
+
+/** Current page / card thumbnail to anchor product-code series rows. */
+function seriesAnchorThumbnail() {
+  try {
+    for (const it of allItems || []) {
+      const t = normalizeThumbSrc(it?.thumbnail);
+      if (t) return t;
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const pageKey = UVD?.normalizeUrlKey?.(currentTabUrl || "") || "";
+    for (const h of historyItems || []) {
+      if (!h?.thumbnail) continue;
+      const hk = UVD?.normalizeUrlKey?.(h.pageUrl || h.url || "") || "";
+      if (pageKey && hk && pageKey === hk) {
+        const t = normalizeThumbSrc(h.thumbnail);
+        if (t) return t;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+/** Look up a past library thumb for a product code / series key. */
+function historyThumbForSeriesKey(key) {
+  if (!key) return "";
+  const k = String(key).toUpperCase();
+  for (const h of historyItems || []) {
+    if (!h?.thumbnail) continue;
+    const sk = String(h.seriesKey || "").toUpperCase();
+    const title = String(h.title || "").toUpperCase();
+    if (sk === k || title.includes(k)) {
+      const t = normalizeThumbSrc(h.thumbnail);
+      if (t) return t;
+    }
+  }
+  return "";
+}
+
+/**
+ * If current cover URL embeds the product code, rewrite it for the next code.
+ * Works well on 123av / missav style CDNs: .../ssis-001/cover.jpg → ssis-002
+ */
+function rewriteThumbForSeriesKey(thumbUrl, fromKey, toKey) {
+  const src = normalizeThumbSrc(thumbUrl);
+  if (!src || src.startsWith("data:") || src.startsWith("blob:")) return "";
+  if (!fromKey || !toKey || fromKey === toKey) return "";
+  const variants = (k) => {
+    const u = String(k);
+    const lower = u.toLowerCase();
+    const upper = u.toUpperCase();
+    const noHyphen = u.replace(/[-_]/g, "");
+    return [
+      u,
+      lower,
+      upper,
+      lower.replace(/-/g, "_"),
+      upper.replace(/-/g, "_"),
+      lower.replace(/-/g, ""),
+      upper.replace(/-/g, ""),
+      noHyphen.toLowerCase(),
+      noHyphen.toUpperCase()
+    ];
+  };
+  const froms = variants(fromKey);
+  const tos = variants(toKey);
+  let out = src;
+  let hit = false;
+  for (let i = 0; i < froms.length; i++) {
+    const f = froms[i];
+    const t = tos[i] || tos[0];
+    if (!f || f.length < 3) continue;
+    if (out.includes(f)) {
+      out = out.split(f).join(t);
+      hit = true;
+    }
+  }
+  if (!hit || out === src) return "";
+  return out;
+}
+
+/** Guess next product-code URLs (same logic spirit as background) */
+function guessSeriesItemUrls(pageUrl, info, nexts) {
+  let host = "";
+  try {
+    host = new URL(pageUrl).origin;
+  } catch {
+    host = "";
+  }
+  const anchorThumb = seriesAnchorThumbnail();
+  const fromKey = info?.key || "";
+  return nexts.map((n, i) => {
+    let nextUrl = "";
+    if (pageUrl && info.key) {
+      nextUrl = pageUrl.replace(
+        new RegExp(info.key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"), "i"),
+        n.key
+      );
+      if (nextUrl === pageUrl) {
+        nextUrl = pageUrl.replace(
+          new RegExp(`${info.prefix}[-_]?${info.num}`, "i"),
+          n.key
+        );
+      }
+    }
+    // Also try lowercase path codes (123av often uses /v/ssis-001)
+    if ((!nextUrl || nextUrl === pageUrl) && pageUrl && info.key) {
+      const low = pageUrl.replace(
+        new RegExp(info.key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"), "i"),
+        n.key.toLowerCase()
+      );
+      if (low !== pageUrl) nextUrl = low;
+    }
+    let destNote = "URL 추정";
+    if (!nextUrl || nextUrl === pageUrl) {
+      if (host) {
+        // 123av-style search paths
+        if (/123av|missav|jable|njav|netflav|supjav/i.test(host)) {
+          nextUrl = `${host}/en/search?keyword=${encodeURIComponent(n.key)}`;
+          destNote = "사이트 검색";
+        } else {
+          nextUrl = `${host}/search?q=${encodeURIComponent(n.key)}`;
+          destNote = "사이트 검색";
+        }
+      } else {
+        nextUrl = `https://www.google.com/search?q=${encodeURIComponent(
+          n.key + " video"
+        )}`;
+        destNote = "검색 링크";
+      }
+    } else {
+      destNote = "주소 패턴 추정";
+    }
+    const histThumb = historyThumbForSeriesKey(n.key);
+    const rewritten = rewriteThumbForSeriesKey(anchorThumb, fromKey, n.key);
+    // Prefer: history → code-rewritten cover → (first row only) soft current
+    const soft = !histThumb && !rewritten && i === 0 && !!anchorThumb;
+    return {
+      key: n.key,
+      title: `${n.label || n.key}`,
+      // Readable label so user knows what it is
+      displayTitle: `다음 ${i + 1}편 · ${n.label || n.key}`,
+      url: nextUrl,
+      destNote,
+      thumbnail: histThumb || rewritten || (soft ? anchorThumb : "") || "",
+      softThumb: soft || (!!rewritten && !histThumb),
+      selected: true
+    };
+  });
+}
+
+function shortUrlDisplay(url) {
+  if (!url) return "";
+  try {
+    const u = new URL(url);
+    const path = (u.pathname + u.search).replace(/\/+$/, "");
+    const s = u.hostname.replace(/^www\./, "") + path;
+    return s.length > 48 ? s.slice(0, 46) + "…" : s;
+  } catch {
+    return String(url).slice(0, 48);
+  }
+}
+
+/** True if string looks like a YouTube video id (not a product code / list id). */
+function isYouTubeVideoId(raw) {
+  const id = String(raw || "").trim();
+  if (!id) return false;
+  // Product codes like SSIS-001 — not YT
+  if (/^[A-Z]{2,12}[-_ ]?\d{2,6}$/i.test(id)) return false;
+  // Playlist / radio list ids
+  if (/^(PL|UU|LL|FL|OL|RD|SD|UL)[\w-]{10,}$/i.test(id)) return false;
+  // Standard YT video ids are 11 chars [A-Za-z0-9_-]
+  return /^[\w-]{11}$/.test(id);
+}
+
+/** Pull a YouTube video id out of a ytimg / img.youtube poster URL. */
+function youtubeVideoIdFromThumbUrl(url) {
+  const m = String(url || "").match(
+    /(?:ytimg\.com|img\.youtube\.com)\/vi\/([\w-]{11})\//i
+  );
+  return m && isYouTubeVideoId(m[1]) ? m[1] : "";
+}
+
+/**
+ * Extract a YouTube video id from id / key / url / thumbnail.
+ * Order prefers explicit video identity over poster URL (poster can be wrong/shared).
+ */
+function youtubeVideoIdFromItem(item) {
+  if (!item) return "";
+  const tryId = (raw) => (isYouTubeVideoId(raw) ? String(raw).trim() : "");
+
+  let vid = tryId(item.id) || tryId(item.key) || tryId(item.videoId);
+  if (vid) return vid;
+
+  const url = String(item.url || item.pageUrl || item.webpage_url || "");
+  if (url) {
+    // Bare 11-char id as url
+    if (tryId(url)) return tryId(url);
+    try {
+      const u = new URL(url);
+      const host = u.hostname.replace(/^www\./, "").toLowerCase();
+      if (host === "youtu.be") {
+        vid = tryId(u.pathname.replace(/^\//, "").split("/")[0]);
+        if (vid) return vid;
+      }
+      if (
+        host.includes("youtube.com") ||
+        host.includes("youtube-nocookie.com") ||
+        host.includes("music.youtube.com")
+      ) {
+        vid = tryId(u.searchParams.get("v"));
+        if (vid) return vid;
+        const m = u.pathname.match(
+          /\/(?:shorts|embed|live|v|watch)\/([\w-]{11})/i
+        );
+        if (m && tryId(m[1])) return m[1];
+      }
+    } catch {
+      /* ignore */
+    }
+    const m2 = url.match(/[?&]v=([\w-]{11})/i);
+    if (m2 && tryId(m2[1])) return m2[1];
+    const m3 = url.match(/youtu\.be\/([\w-]{11})/i);
+    if (m3 && tryId(m3[1])) return m3[1];
+  }
+
+  // Last resort: id embedded in poster URL
+  return youtubeVideoIdFromThumbUrl(item.thumbnail);
+}
+
+/** Stable YouTube poster URL candidates for a video id. */
+function youtubePosterUrl(videoId, quality = "hqdefault") {
+  if (!videoId || !isYouTubeVideoId(videoId)) return "";
+  return `https://i.ytimg.com/vi/${videoId}/${quality}.jpg`;
+}
+
+/** Ordered candidate poster URLs for a series row. */
+function seriesThumbCandidates(item) {
+  const out = [];
+  const seen = new Set();
+  const push = (u) => {
+    const n = normalizeThumbSrc(u);
+    if (!n || seen.has(n)) return;
+    // Skip giant data URLs already on the item when listing candidates for fetch
+    seen.add(n);
+    out.push(n);
+  };
+  const direct = normalizeThumbSrc(item?.thumbnail);
+  if (direct) push(direct);
+  const vid = youtubeVideoIdFromItem(item);
+  if (vid) {
+    for (const q of ["hqdefault", "mqdefault", "sddefault", "0", "default"]) {
+      push(`https://i.ytimg.com/vi/${vid}/${q}.jpg`);
+      push(`https://img.youtube.com/vi/${vid}/${q}.jpg`);
+    }
+  }
+  return out;
+}
+
+/** In-memory data-URL cache for series thumbs (popup session). */
+const seriesThumbCache = new Map();
+
+/**
+ * Fetch image via background (host permissions) → data URL.
+ * Popup <img src="https://…"> is frequently blank (CDN / referrer / tracking).
+ */
+async function fetchThumbDataUrl(url) {
+  const key = String(url || "").trim();
+  if (!key) return "";
+  if (key.startsWith("data:image/")) return key;
+  if (seriesThumbCache.has(key)) return seriesThumbCache.get(key);
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "FETCH_THUMB",
+      url: key,
+      tabId: currentTabId
+    });
+    if (res?.ok && res.dataUrl && String(res.dataUrl).startsWith("data:image/")) {
+      seriesThumbCache.set(key, res.dataUrl);
+      // Cap cache size
+      if (seriesThumbCache.size > 80) {
+        const first = seriesThumbCache.keys().next().value;
+        seriesThumbCache.delete(first);
+      }
+      return res.dataUrl;
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+async function resolveSeriesThumbDataUrl(item) {
+  if (!item) return "";
+  // Prefer already-resolved data URL on the item
+  const existing = normalizeThumbSrc(item.thumbnail);
+  if (existing && existing.startsWith("data:image/")) return existing;
+  if (existing && seriesThumbCache.has(existing)) {
+    return seriesThumbCache.get(existing);
+  }
+  const candidates = seriesThumbCandidates(item);
+  for (const url of candidates) {
+    if (url.startsWith("data:image/")) return url;
+    const data = await fetchThumbDataUrl(url);
+    if (data) return data;
+  }
+  return "";
+}
+
+/**
+ * After list paint: load each row thumb via privileged fetch and swap in.
+ * token guards against stale renders when the list is rebuilt.
+ */
+let seriesThumbHydrateToken = 0;
+async function hydrateSeriesThumbs() {
+  const token = ++seriesThumbHydrateToken;
+  const list = $("#seriesBannerList");
+  if (!list || !seriesPending?.items?.length) return;
+  const items = seriesPending.items;
+  const jobs = items.map((_, i) => i);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(4, jobs.length) }, async () => {
+    while (cursor < jobs.length) {
+      const idx = jobs[cursor++];
+      if (token !== seriesThumbHydrateToken) return;
+      if (!seriesPending?.items?.[idx]) return;
+      const item = seriesPending.items[idx];
+      const dataUrl = await resolveSeriesThumbDataUrl(item);
+      if (token !== seriesThumbHydrateToken) return;
+      const li = list.querySelector(
+        `li.series-preview-item[data-series-idx="${idx}"]`
+      );
+      if (!dataUrl) {
+        const ph = li?.querySelector("span.series-preview-thumb-ph");
+        if (ph) {
+          ph.classList.remove("is-loading");
+          ph.textContent = ph.getAttribute("data-ph") || "?";
+        }
+        continue;
+      }
+      // Store so re-render keeps it
+      seriesPending.items[idx].thumbnail = dataUrl;
+      seriesPending.items[idx].softThumb = false;
+      if (seriesPending.allItems) {
+        const key = String(item.id || item.key || item.url || "");
+        for (const a of seriesPending.allItems) {
+          const ak = String(a.id || a.key || a.url || "");
+          if (key && ak && key === ak) {
+            a.thumbnail = dataUrl;
+            a.softThumb = false;
+          }
+        }
+      }
+      if (!li) continue;
+      let img = li.querySelector("img.series-preview-thumb");
+      if (!img) {
+        const ph = li.querySelector("span.series-preview-thumb-ph");
+        img = document.createElement("img");
+        img.className = "series-preview-thumb";
+        img.alt = "";
+        img.setAttribute("data-series-idx", String(idx));
+        if (ph) ph.replaceWith(img);
+        else li.insertBefore(img, li.querySelector(".series-preview-body"));
+      }
+      img.classList.remove("is-soft", "is-loading");
+      img.src = dataUrl;
+    }
+  });
+  await Promise.all(workers);
+}
+
+/**
+ * Normalize a playlist/series entry so id/url/thumbnail are per-video.
+ * Fixes cases where helper returns a shared playlist cover for every row.
+ */
+function normalizeSeriesPlaylistEntry(e, index = 0) {
+  const raw = e || {};
+  let id =
+    (isYouTubeVideoId(raw.id) && String(raw.id).trim()) ||
+    (isYouTubeVideoId(raw.key) && String(raw.key).trim()) ||
+    youtubeVideoIdFromItem(raw) ||
+    "";
+  let url = String(raw.url || raw.webpage_url || "").trim();
+  if (id && (!url || !/^https?:/i.test(url))) {
+    url = `https://www.youtube.com/watch?v=${id}`;
+  } else if (url && !id) {
+    id = youtubeVideoIdFromItem({ ...raw, url, id: "", key: "" }) || "";
+  }
+  // Always rebuild YT poster from *this* row's video id — never trust a
+  // shared playlist-level thumbnail that yt-dlp may attach to every entry.
+  let thumbnail = "";
+  if (id) {
+    thumbnail = youtubePosterUrl(id, "hqdefault");
+  } else {
+    thumbnail = normalizeThumbSrc(raw.thumbnail) || "";
+  }
+  return {
+    title: raw.title || id || `영상 ${index + 1}`,
+    url: url || raw.url || "",
+    key: id || raw.key || raw.id || "",
+    id: id || raw.id || "",
+    duration: raw.duration || 0,
+    thumbnail,
+    uploader: raw.uploader || "",
+    destNote: raw.destNote || "재생목록",
+    selected: raw.selected !== false,
+    softThumb: false
+  };
+}
+
+/** Best-effort thumbnail for a series preview row */
+function seriesItemThumbnail(item) {
+  if (!item) return "";
+  const vid = youtubeVideoIdFromItem(item);
+  if (vid) return youtubePosterUrl(vid, "hqdefault");
+  return normalizeThumbSrc(item.thumbnail) || "";
+}
+
+function seriesRangeLimit(pref) {
+  const p = pref == null ? seriesRangePref : pref;
+  if (p === "all") return 999;
+  const n = parseInt(p, 10);
+  return Number.isFinite(n) && n > 0 ? n : 5;
+}
+
+function resolveSeriesIdFromPayload(payload) {
+  if (payload?.seriesId) return String(payload.seriesId);
+  if (payload?.mode === "product_code") {
+    return `series:code:${payload.seriesKey || payload.seriesPrefix || "series"}`;
+  }
+  const url = payload?.listUrl || payload?.pageUrl || "";
+  try {
+    const list = new URL(url).searchParams.get("list");
+    if (list) return `series:pl:${list}`;
+  } catch {
+    /* ignore */
+  }
+  return `series:${Date.now()}`;
+}
+
+/** Apply downloaded flags + range window onto seriesPending.items for display. */
+function rebuildSeriesVisibleItems() {
+  if (!seriesPending) return;
+  const all = seriesPending.allItems || seriesPending.items || [];
+  const limit = seriesRangeLimit(seriesPending.rangePref ?? seriesRangePref);
+  // Annotate downloaded from history
+  let annotated = all;
+  try {
+    if (UVD.annotateSeriesDownloaded) {
+      annotated = UVD.annotateSeriesDownloaded(all, historyItems || []);
+    }
+  } catch {
+    annotated = all;
+  }
+  // Preserve user selection across rebuild when possible
+  const prevSel = new Map(
+    (seriesPending.items || []).map((x, i) => [
+      String(x.id || x.key || x.url || i),
+      x.selected
+    ])
+  );
+  const windowed = annotated.slice(0, limit).map((x, i) => {
+    const k = String(x.id || x.key || x.url || i);
+    let selected = x.selected;
+    if (prevSel.has(k)) selected = prevSel.get(k);
+    // Downloaded default off unless user re-checked
+    if (x.downloaded && !prevSel.has(k)) selected = false;
+    if (selected == null) selected = !x.downloaded;
+    return {
+      ...x,
+      index: i,
+      seriesIndex: x.seriesIndex || i + 1,
+      selected: selected !== false
+    };
+  });
+  seriesPending.allItems = annotated;
+  seriesPending.items = windowed;
+  seriesPending.rangePref = seriesPending.rangePref || seriesRangePref;
+  seriesPending.seriesId =
+    seriesPending.seriesId || resolveSeriesIdFromPayload(seriesPending);
+}
+
 function showSeriesBanner(payload) {
-  seriesPending = payload;
+  const incoming = payload.items || [];
+  const isLoading = !!payload.loading;
+  // Keep full list separately for range chips
+  const allItems = isLoading
+    ? []
+    : (payload.allItems || incoming).map((x, i) => ({
+        ...x,
+        seriesIndex: x.seriesIndex || i + 1
+      }));
+
+  seriesPending = {
+    ...payload,
+    allItems,
+    rangePref: payload.rangePref || seriesRangePref,
+    seriesId: payload.seriesId || resolveSeriesIdFromPayload(payload),
+    items: []
+  };
+  if (!isLoading) rebuildSeriesVisibleItems();
+  else seriesPending.items = [];
+
   const ban = $("#seriesBanner");
   const title = $("#seriesBannerTitle");
+  const dest = $("#seriesBannerDest");
+  const sub = $("#seriesBannerSub");
   const list = $("#seriesBannerList");
+  const toolbar = $("#seriesToolbar");
   if (!ban) return;
   ban.classList.remove("hidden");
+  if (toolbar) toolbar.classList.toggle("hidden", isLoading);
+
+  renderSeriesRangeChips();
+  renderSeriesListBody();
+  updateSeriesGoButton();
+  updateSeriesRetryButton();
+
+  const items = seriesPending.items || [];
+  const n = items.length;
+  const totalAll = (seriesPending.allItems || []).length;
+  const doneN = (seriesPending.allItems || []).filter((x) => x.downloaded).length;
+  const isPl = seriesPending.mode === "playlist";
+  const destLabel = isPl ? "바로 받기 (큐)" : "나중 받기";
+
   if (title) {
-    title.textContent =
-      payload.mode === "playlist"
-        ? `재생목록 나머지 ${payload.items?.length || 0}편`
-        : `시리즈 완주 · ${payload.seriesKey || ""} 다음 ${
-            payload.items?.length || 0
-          }편`;
+    title.textContent = isPl
+      ? `재생목록 · ${totalAll || n}편`
+      : `시리즈 ${seriesPending.seriesKey || ""} · 다음 ${totalAll || n}편`;
   }
-  if (list) {
-    list.textContent = (payload.items || [])
-      .slice(0, 8)
-      .map((x) => x.title || x.key || x.label)
-      .join(" · ");
+  if (dest) {
+    dest.textContent = destLabel;
+    dest.classList.toggle("is-watch", !isPl);
+  }
+  if (sub) {
+    if (isLoading) {
+      sub.textContent =
+        seriesPending.mode === "product_code"
+          ? "실제로 있는 다음 편만 확인하는 중… (없는 번호는 제외)"
+          : "받을 목록을 확인하는 중…";
+    } else if (!n && !totalAll) {
+      sub.textContent = "받을 항목이 없습니다.";
+    } else if (isPl) {
+      sub.textContent = `체크한 영상을 큐에 넣습니다 · 화질: ${
+        selectedQuality === "best" ? "최고" : selectedQuality
+      }${doneN ? ` · 이미 받음 ${doneN}` : ""}`;
+    } else {
+      sub.textContent = `페이지에서 확인된 편만 표시합니다${
+        doneN ? ` · 이미 받음 ${doneN}` : ""
+      } · 「나중」받기에 추가`;
+    }
+  }
+
+  try {
+    ban.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  } catch {
+    /* ignore */
+  }
+}
+
+function renderSeriesRangeChips() {
+  const root = $("#seriesRange");
+  if (!root || !seriesPending) return;
+  const pref = String(seriesPending.rangePref || seriesRangePref);
+  root.querySelectorAll(".series-range-chip").forEach((btn) => {
+    const r = btn.getAttribute("data-range");
+    btn.classList.toggle("active", r === pref);
+  });
+}
+
+function renderSeriesListBody() {
+  const list = $("#seriesBannerList");
+  if (!list || !seriesPending) return;
+  if (seriesPending.loading) {
+    list.innerHTML = `<li class="series-preview-empty">불러오는 중…</li>`;
+    return;
+  }
+  const items = seriesPending.items || [];
+  const isPl = seriesPending.mode === "playlist";
+  if (!items.length) {
+    list.innerHTML = `<li class="series-preview-empty">표시할 항목이 없습니다</li>`;
+    return;
+  }
+  list.innerHTML = items
+    .map((x, i) => {
+      const name = x.title || x.key || x.label || `항목 ${i + 1}`;
+      const thumb = seriesItemThumbnail(x);
+      const chips = [];
+      if (x.downloaded) {
+        chips.push(`<span class="series-preview-chip done">받음</span>`);
+      }
+      if (x.key && String(x.key) !== String(name)) {
+        chips.push(
+          `<span class="series-preview-chip key">${escapeHtml(
+            String(x.key)
+          )}</span>`
+        );
+      }
+      if (x.duration) {
+        chips.push(
+          `<span class="series-preview-chip dur">${escapeHtml(
+            formatDurShort(x.duration)
+          )}</span>`
+        );
+      }
+      if (x.uploader) {
+        chips.push(
+          `<span class="series-preview-chip">${escapeHtml(
+            String(x.uploader).slice(0, 24)
+          )}</span>`
+        );
+      }
+      if (isPl) {
+        chips.push(`<span class="series-preview-chip">바로 받기</span>`);
+      } else {
+        chips.push(`<span class="series-preview-chip">나중 받기</span>`);
+      }
+      const metaLine = x.url ? shortUrlDisplay(x.url) : x.destNote || "";
+      const phLabel = (x.key || name || "?").slice(0, 10);
+      // Prefer already-resolved data: URLs; otherwise show loading shell.
+      // Real image is injected by hydrateSeriesThumbs() via privileged fetch.
+      const ready =
+        thumb && String(thumb).startsWith("data:image/")
+          ? thumb
+          : seriesThumbCache.get(thumb) || "";
+      const thumbHtml = ready
+        ? `<img class="series-preview-thumb" src="${escapeAttr(
+            ready
+          )}" alt="" decoding="async" data-series-idx="${i}" data-ph="${escapeAttr(
+            phLabel
+          )}" />`
+        : `<span class="series-preview-thumb-ph is-loading" data-series-idx="${i}" data-ph="${escapeAttr(
+            phLabel
+          )}">${escapeHtml(phLabel)}</span>`;
+      return `<li class="series-preview-item${
+        x.downloaded ? " is-done" : ""
+      }" data-series-idx="${i}">
+            <input type="checkbox" data-series-idx="${i}" ${
+              x.selected !== false ? "checked" : ""
+            } />
+            ${thumbHtml}
+            <span class="series-preview-body">
+              <span class="series-preview-name" title="${escapeAttr(
+                name
+              )}">${i + 1}. ${escapeHtml(name)}</span>
+              ${
+                metaLine
+                  ? `<span class="series-preview-meta" title="${escapeAttr(
+                      x.url || metaLine
+                    )}">${escapeHtml(metaLine)}</span>`
+                  : ""
+              }
+              ${
+                chips.length
+                  ? `<span class="series-preview-chips">${chips.join("")}</span>`
+                  : ""
+              }
+            </span>
+          </li>`;
+    })
+    .join("");
+  list.querySelectorAll("input[data-series-idx]").forEach((inp) => {
+    inp.addEventListener("change", () => {
+      const idx = parseInt(inp.getAttribute("data-series-idx"), 10);
+      if (seriesPending?.items?.[idx]) {
+        seriesPending.items[idx].selected = inp.checked;
+      }
+      updateSeriesGoButton();
+    });
+  });
+  // Load posters via background fetch (reliable in extension popup)
+  hydrateSeriesThumbs().catch(() => {});
+}
+
+function setSeriesSelection(mode) {
+  if (!seriesPending?.items?.length) return;
+  for (const it of seriesPending.items) {
+    if (mode === "all") it.selected = true;
+    else if (mode === "none") it.selected = false;
+    else if (mode === "pending") it.selected = !it.downloaded;
+  }
+  renderSeriesListBody();
+  updateSeriesGoButton();
+}
+
+function setSeriesRange(pref) {
+  seriesRangePref = pref === "all" ? "all" : String(pref);
+  if (!seriesPending) return;
+  seriesPending.rangePref = seriesRangePref;
+  rebuildSeriesVisibleItems();
+  renderSeriesRangeChips();
+  renderSeriesListBody();
+  updateSeriesGoButton();
+  const sub = $("#seriesBannerSub");
+  const title = $("#seriesBannerTitle");
+  const items = seriesPending.items || [];
+  const totalAll = (seriesPending.allItems || []).length;
+  const doneN = (seriesPending.allItems || []).filter((x) => x.downloaded).length;
+  const isPl = seriesPending.mode === "playlist";
+  if (title) {
+    title.textContent = isPl
+      ? `재생목록 · ${totalAll || items.length}편`
+      : `시리즈 ${seriesPending.seriesKey || ""} · 다음 ${totalAll || items.length}편`;
+  }
+  if (sub && !seriesPending.loading) {
+    if (isPl) {
+      sub.textContent = `표시 ${items.length}/${totalAll || items.length} · 화질: ${
+        selectedQuality === "best" ? "최고" : selectedQuality
+      }${doneN ? ` · 이미 받음 ${doneN}` : ""}`;
+    } else {
+      sub.textContent = `표시 ${items.length}/${totalAll || items.length}${
+        doneN ? ` · 이미 받음 ${doneN}` : ""
+      }`;
+    }
+  }
+}
+
+function updateSeriesGoButton() {
+  const goBtn = $("#btnSeriesGo");
+  if (!goBtn || !seriesPending) return;
+  const sel = (seriesPending.items || []).filter((x) => x.selected !== false);
+  const n = sel.length;
+  const isPl = seriesPending.mode === "playlist";
+  const skipDone = sel.filter((x) => x.downloaded).length;
+  goBtn.disabled = n === 0 || !!seriesPending.loading;
+  if (n === 0) {
+    goBtn.textContent = "선택 없음";
+  } else if (isPl) {
+    goBtn.textContent =
+      skipDone > 0 && skipDone < n
+        ? `${n}편 바로 받기 · 받음 ${skipDone}`
+        : `${n}편 바로 받기`;
+  } else {
+    goBtn.textContent = `${n}편 나중 받기에 추가`;
+  }
+}
+
+async function updateSeriesRetryButton() {
+  const btn = $("#btnSeriesRetryFailed");
+  if (!btn) return;
+  const sid = seriesPending?.seriesId || lastSeriesRun?.seriesId || "";
+  if (!sid) {
+    btn.classList.add("hidden");
+    return;
+  }
+  let failed = [];
+  try {
+    failed = await UVD.getFailedRetryable({ seriesId: sid });
+  } catch {
+    failed = (historyItems || []).filter(
+      (h) =>
+        h?.status === "error" &&
+        (h.seriesId === sid ||
+          (Array.isArray(h.tags) && h.tags.includes(sid)))
+    );
+  }
+  if (!failed.length) {
+    btn.classList.add("hidden");
+    btn.textContent = "실패 재시도";
+    return;
+  }
+  btn.classList.remove("hidden");
+  btn.textContent = `실패 재시도 · ${failed.length}`;
+  btn.title = `이 시리즈 실패 ${failed.length}편 다시 받기`;
+}
+
+async function retrySeriesFailed() {
+  const sid = seriesPending?.seriesId || lastSeriesRun?.seriesId || "";
+  if (!sid) {
+    toast("재시도할 시리즈가 없습니다", "error");
+    return;
+  }
+  let failed = [];
+  try {
+    failed = await UVD.getFailedRetryable({ seriesId: sid });
+  } catch {
+    failed = [];
+  }
+  if (!failed.length) {
+    toast("이 시리즈 실패 항목이 없습니다", "ok");
+    updateSeriesRetryButton();
+    return;
+  }
+  const urls = failed
+    .map((h) => h.pageUrl || h.url)
+    .filter((u) => /^https?:/i.test(u));
+  toast(`${urls.length}편 시리즈 실패 재시도…`, "ok");
+  try {
+    await refreshHelperStatus(true);
+    const res = await chrome.runtime.sendMessage({
+      type: "DOWNLOAD_BATCH",
+      urls: urls.slice(0, 20),
+      tabId: currentTabId,
+      preferQuality: selectedQuality || "best"
+    });
+    if (res?.ok) {
+      toast(`${res.count || urls.length}편 재시도 시작`, "ok");
+      ensureQueuePoll();
+      await refreshJobsFromBackground();
+    } else {
+      toast(userError(res?.error) || "재시도 실패", "error");
+    }
+  } catch (e) {
+    toast(userError(e?.message) || "재시도 실패", "error");
+  }
+  updateSeriesRetryButton();
+}
+
+/** Swap series row thumb in-place when a better URL arrives. */
+function patchSeriesRowThumb(index, thumbUrl, { soft = false } = {}) {
+  if (!seriesPending?.items?.[index]) return;
+  // Resolve via privileged fetch when given an http(s) URL
+  const apply = (dataUrl) => {
+    if (!dataUrl || !seriesPending?.items?.[index]) return;
+    seriesPending.items[index].thumbnail = dataUrl;
+    if (!soft) seriesPending.items[index].softThumb = false;
+    const list = $("#seriesBannerList");
+    if (!list) return;
+    const li = list.querySelector(
+      `li.series-preview-item[data-series-idx="${index}"]`
+    );
+    if (!li) return;
+    let img = li.querySelector("img.series-preview-thumb");
+    const ph = li.querySelector("span.series-preview-thumb-ph");
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "series-preview-thumb";
+      img.alt = "";
+      img.setAttribute("data-series-idx", String(index));
+      if (ph) ph.replaceWith(img);
+      else li.insertBefore(img, li.querySelector(".series-preview-body"));
+    }
+    img.classList.toggle("is-soft", !!soft);
+    img.src = dataUrl;
+  };
+  const src = normalizeThumbSrc(thumbUrl);
+  if (!src) return;
+  if (src.startsWith("data:image/")) {
+    apply(src);
+    return;
+  }
+  fetchThumbDataUrl(src).then((data) => {
+    if (data) apply(data);
+  });
+}
+
+/**
+ * Product-code series (123av etc.): scrape next-page og:image via content
+ * script / cookies. yt-dlp has no 123av extractor so LIST_QUALITIES alone fails.
+ */
+async function enrichSeriesThumbnails() {
+  if (!seriesPending?.items?.length || seriesPending.loading) return;
+  // Playlist YouTube rows hydrate via ytimg — skip
+  if (seriesPending.mode === "playlist") return;
+
+  const items = seriesPending.items;
+  const jobs = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const url = it?.url || "";
+    if (!/^https?:/i.test(url)) continue;
+    // Skip pure external search placeholders
+    if (/google\.[^/]+\/search/i.test(url)) continue;
+    // Need better thumb if missing or soft/rewritten guess
+    const hasHard =
+      normalizeThumbSrc(it.thumbnail) &&
+      !it.softThumb &&
+      String(it.thumbnail).startsWith("data:image/");
+    if (hasHard) continue;
+    jobs.push(i);
+  }
+  if (!jobs.length) return;
+
+  const limit = 3;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < jobs.length) {
+      const idx = jobs[cursor++];
+      if (!seriesPending?.items?.[idx]) return;
+      const row = seriesPending.items[idx];
+      const url = row.url;
+      try {
+        // 1) Same-site page scrape (best for 123av — uses page cookies)
+        const meta = await chrome.runtime
+          .sendMessage({
+            type: "PROBE_PAGE_META",
+            url,
+            pageUrl: url,
+            tabId: currentTabId
+          })
+          .catch(() => null);
+        if (meta?.ok) {
+          if (normalizeThumbSrc(meta.thumbnail)) {
+            patchSeriesRowThumb(idx, meta.thumbnail, { soft: false });
+          }
+          if (meta.title && seriesPending?.items?.[idx]) {
+            // Keep key-prefixed label but upgrade real title when useful
+            const key = seriesPending.items[idx].key || "";
+            const t = String(meta.title).trim();
+            if (t.length > 4 && (!key || t.toUpperCase().includes(String(key).toUpperCase()))) {
+              seriesPending.items[idx].title = t.length > 80 ? t.slice(0, 78) + "…" : t;
+              const nameEl = document.querySelector(
+                `#seriesBannerList li[data-series-idx="${idx}"] .series-preview-name`
+              );
+              if (nameEl) {
+                nameEl.textContent = `${idx + 1}. ${seriesPending.items[idx].title}`;
+                nameEl.title = seriesPending.items[idx].title;
+              }
+            }
+          }
+          if (normalizeThumbSrc(meta.thumbnail)) continue;
+        }
+        // 2) Optional yt-dlp probe (works on some adult tubes, not 123av)
+        if (helperOk) {
+          const res = await chrome.runtime
+            .sendMessage({
+              type: "LIST_QUALITIES",
+              url,
+              pageUrl: url,
+              forceYtDlp: true
+            })
+            .catch(() => null);
+          if (res?.ok && normalizeThumbSrc(res.thumbnail)) {
+            patchSeriesRowThumb(idx, res.thumbnail, { soft: false });
+          }
+        }
+      } catch {
+        /* ignore per-item */
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(limit, jobs.length) }, () => worker())
+  );
+}
+
+async function ensureHistoryLoaded() {
+  if (historyItems?.length) return;
+  try {
+    historyItems = await UVD.getHistory().catch(() => []);
+  } catch {
+    historyItems = [];
+  }
+}
+
+/** Open series banner from a loaded playlistInfo (panel integration). */
+async function openSeriesFromPlaylist(info, opts = {}) {
+  if (!info?.entries?.length) {
+    toast("재생목록이 비어 있습니다", "error");
+    return;
+  }
+  await ensureHistoryLoaded();
+  const rangePref =
+    opts.rangePref ||
+    seriesRangePref ||
+    String(uvdSettings.seriesCompleteCount || 5);
+  const listUrl = info.url || "";
+  let seriesId = "";
+  try {
+    const list = new URL(listUrl).searchParams.get("list");
+    seriesId = list ? `series:pl:${list}` : `series:pl:${UVD.normalizeUrlKey(listUrl)}`;
+  } catch {
+    seriesId = `series:pl:${Date.now()}`;
+  }
+  const all = info.entries.map((e, i) => normalizeSeriesPlaylistEntry(e, i));
+  showSeriesBanner({
+    mode: "playlist",
+    title: info.title || "재생목록",
+    pageUrl: listUrl,
+    listUrl,
+    playlistTitle: info.title || "재생목록",
+    seriesId,
+    seriesKey: "",
+    allItems: all,
+    items: all,
+    rangePref,
+    loading: false
+  });
+  if (!opts.quiet) {
+    toast(
+      `${all.length}개 항목 · 범위·체크 확인 후 「바로 받기」`,
+      "ok"
+    );
   }
 }
 
 async function offerSeriesComplete(title, pageUrl) {
-  if (uvdSettings.seriesComplete === false) return;
+  if (uvdSettings.seriesComplete === false) {
+    toast("설정에서 시리즈 완주가 꺼져 있습니다", "error");
+    return;
+  }
   const info = UVD.extractSeriesInfo(title || "");
   const hasPl =
     UVD.isPlaylistOnlyUrl(pageUrl) || UVD.isWatchInPlaylistUrl?.(pageUrl);
   if (!info && !hasPl) return;
-  // Soft preview without starting downloads
+
+  await ensureHistoryLoaded();
+  // Sync range default with settings when user hasn't touched chips
+  if (!seriesRangePref || seriesRangePref === "5") {
+    const sc = String(uvdSettings.seriesCompleteCount || 5);
+    if (["3", "5", "10"].includes(sc)) seriesRangePref = sc;
+  }
+
+  // ── Playlist: load real remaining entries ──
   if (hasPl) {
     showSeriesBanner({
       mode: "playlist",
       title,
       pageUrl,
-      items: [{ title: "재생목록 나머지 받기" }],
-      seriesKey: info?.key || ""
+      seriesKey: info?.key || "",
+      items: [],
+      loading: true
     });
+    try {
+      await refreshHelperStatus(true);
+      if (!helperOk) {
+        showSeriesBanner({
+          mode: "playlist",
+          title,
+          pageUrl,
+          items: [],
+          loading: false
+        });
+        toast("재생목록 미리보기는 도우미가 필요합니다", "error");
+        return;
+      }
+      let listUrl = pageUrl;
+      if (UVD.isWatchInPlaylistUrl(pageUrl)) {
+        try {
+          const u = new URL(pageUrl);
+          const listId = u.searchParams.get("list");
+          if (listId) listUrl = `https://www.youtube.com/playlist?list=${listId}`;
+        } catch {
+          /* ignore */
+        }
+      }
+      const res = await chrome.runtime.sendMessage({
+        type: "LIST_PLAYLIST",
+        pageUrl: listUrl,
+        max: 200
+      });
+      if (!res?.ok) throw new Error(res?.error || "목록 조회 실패");
+      let entries = res.entries || [];
+      const curKey = UVD.normalizeUrlKey(pageUrl);
+      entries = entries.filter(
+        (e) => UVD.normalizeUrlKey(e.url || "") !== curKey
+      );
+      if (UVD.isWatchInPlaylistUrl(pageUrl)) {
+        try {
+          const vid = new URL(pageUrl).searchParams.get("v");
+          const idx = entries.findIndex(
+            (e) => e.id === vid || (e.url || "").includes(`v=${vid}`)
+          );
+          if (idx >= 0) entries = entries.slice(idx + 1);
+        } catch {
+          /* ignore */
+        }
+      }
+      // Keep full remainder; range chips control how many are shown/selected
+      const all = entries.map((e, i) => normalizeSeriesPlaylistEntry(e, i));
+      let seriesId = "";
+      try {
+        const list = new URL(listUrl).searchParams.get("list");
+        seriesId = list ? `series:pl:${list}` : `series:pl:${UVD.normalizeUrlKey(listUrl)}`;
+      } catch {
+        seriesId = `series:pl:${Date.now()}`;
+      }
+      showSeriesBanner({
+        mode: "playlist",
+        title,
+        pageUrl,
+        listUrl,
+        seriesKey: info?.key || "",
+        playlistTitle: res.title || "재생목록",
+        seriesId,
+        allItems: all,
+        items: all,
+        rangePref: seriesRangePref,
+        loading: false
+      });
+      if (!all.length) {
+        toast("이어서 받을 재생목록 항목이 없습니다", "ok");
+      }
+    } catch (e) {
+      hideSeriesBanner();
+      toast(userError(e?.message) || "재생목록 미리보기 실패", "error");
+    }
     return;
   }
+
+  // ── Product code: guess next keys, then VERIFY pages exist ──
   if (info) {
-    const nexts = UVD.nextSeriesKeys(
-      info,
-      uvdSettings.seriesCompleteCount || 5
-    );
+    // Continue from library: if we've already saved later codes, start after max
+    let baseInfo = { ...info };
+    let continueNote = "";
+    try {
+      const maxInfo = UVD.maxSeriesNumInHistory?.(
+        historyItems || [],
+        info.prefix
+      );
+      if (maxInfo && Number.isFinite(maxInfo.num) && maxInfo.num >= info.num) {
+        baseInfo = {
+          ...info,
+          num: maxInfo.num,
+          pad: maxInfo.pad || info.pad,
+          key: `${info.prefix}-${String(maxInfo.num).padStart(
+            maxInfo.pad || info.pad || 3,
+            "0"
+          )}`
+        };
+        continueNote = `서재 기준 ${baseInfo.key} 이후부터`;
+      }
+    } catch {
+      /* ignore */
+    }
+
     showSeriesBanner({
       mode: "product_code",
       title,
       pageUrl,
       seriesKey: info.key,
-      items: nexts.map((n) => ({ title: n.label, key: n.key }))
+      seriesId: `series:code:${info.prefix || info.key}`,
+      items: [],
+      allItems: [],
+      rangePref: seriesRangePref,
+      loading: true
     });
+    showSeriesVerifyProgress();
+    updateSeriesVerifyProgress({
+      index: 0,
+      total: 1,
+      status: "checking",
+      found: 0,
+      missing: 0,
+      label: continueNote
+        ? `${continueNote} · 후보 준비…`
+        : `${info.key} 다음 편 후보 준비 중…`
+    });
+    try {
+      // Probe more candidates than UI range; stop early on consecutive misses
+      const want = Math.min(
+        20,
+        Math.max(
+          seriesRangeLimit(seriesRangePref),
+          uvdSettings.seriesCompleteCount || 5,
+          5
+        )
+      );
+      // Over-fetch candidates so we can fill `want` after filtering phantoms
+      // Use baseInfo (library-continued) for next keys
+      const nexts = UVD.nextSeriesKeys(baseInfo, Math.min(30, want + 8));
+      // URL guess still uses current pageUrl + original key patterns
+      const guessed = guessSeriesItemUrls(pageUrl, info, nexts).map((x) => ({
+        ...x,
+        title: x.displayTitle || x.title
+      }));
+      // For continue: rewrite pageUrl patterns from baseInfo.key if needed
+      if (continueNote && baseInfo.key !== info.key) {
+        for (const g of guessed) {
+          if (g.url && info.key) {
+            const alt = pageUrl.replace(
+              new RegExp(
+                info.key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"),
+                "i"
+              ),
+              g.key
+            );
+            if (alt !== pageUrl) g.url = alt;
+          }
+        }
+      }
+      updateSeriesVerifyProgress({
+        index: 0,
+        total: guessed.length || 1,
+        status: "checking",
+        found: 0,
+        missing: 0,
+        label: continueNote
+          ? `${continueNote} · 후보 ${guessed.length}개`
+          : `후보 ${guessed.length}개 · 목표 ${want}편`
+      });
+      const verified = await validateProductSeriesItems(guessed, {
+        want,
+        maxConsecutiveMiss: 2,
+        onProgress: updateSeriesVerifyProgress
+      });
+      // Brief pause so user can read the final progress line
+      await new Promise((r) => setTimeout(r, 350));
+      hideSeriesVerifyProgress();
+      showSeriesBanner({
+        mode: "product_code",
+        title,
+        pageUrl,
+        seriesKey: info.key,
+        seriesId: `series:code:${info.prefix || info.key}`,
+        allItems: verified,
+        items: verified,
+        rangePref: seriesRangePref,
+        loading: false
+      });
+      if (!verified.length) {
+        toast(
+          seriesVerifyFailHint() ||
+            "실제로 있는 다음 편을 찾지 못했습니다 · 품번 추정만으로는 목록에 넣지 않습니다",
+          "error"
+        );
+      } else {
+        const skipped = guessed.length - verified.length;
+        toast(
+          [
+            continueNote || null,
+            skipped > 0
+              ? `실제 확인 ${verified.length}편 · 없는 번호 ${skipped}개 제외`
+              : `실제 확인 ${verified.length}편`
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          "ok"
+        );
+        hydrateSeriesThumbs().catch(() => {});
+      }
+    } catch (e) {
+      hideSeriesVerifyProgress();
+      hideSeriesBanner();
+      toast(
+        seriesProbeErrorHint(e) ||
+          userError(e?.message) ||
+          "시리즈 목록 확인 실패",
+        "error"
+      );
+    }
   }
 }
 
+/** User-facing hint after product-series validation found nothing */
+function seriesVerifyFailHint() {
+  return "확인된 다음 편이 없습니다 · 사이트가 막혔거나 다음 품번이 없을 수 있어요. 영상 페이지를 연 채 다시 시도하세요";
+}
+
+function seriesProbeErrorHint(err) {
+  const s = String(err?.message || err || "");
+  if (/blocked|cloudflare|just a moment|captcha|403|401/i.test(s)) {
+    return "사이트가 차단했습니다 · 123av 탭에서 영상 페이지를 연 뒤 재생하고 다시 「시리즈」를 눌러 주세요";
+  }
+  if (/cross-origin|content|Receiving end|Could not establish/i.test(s)) {
+    return "페이지 연결이 필요합니다 · 해당 사이트 탭을 새로고침한 뒤 다시 시도하세요";
+  }
+  return null;
+}
+
+function showSeriesVerifyProgress() {
+  const el = $("#seriesVerifyProgress");
+  if (!el) return;
+  el.classList.remove("hidden");
+  const fill = $("#seriesVerifyFill");
+  if (fill) fill.style.width = "0%";
+  const text = $("#seriesVerifyText");
+  if (text) text.textContent = "확인 준비 중…";
+  const count = $("#seriesVerifyCount");
+  if (count) count.textContent = "";
+  const detail = $("#seriesVerifyDetail");
+  if (detail) detail.textContent = "";
+}
+
+function hideSeriesVerifyProgress() {
+  $("#seriesVerifyProgress")?.classList.add("hidden");
+}
+
+/**
+ * @param {{
+ *   index: number,
+ *   total: number,
+ *   key?: string,
+ *   status?: 'checking'|'found'|'missing'|'skip'|'done'|'stop',
+ *   found?: number,
+ *   missing?: number,
+ *   label?: string
+ * }} p
+ */
+function updateSeriesVerifyProgress(p = {}) {
+  const el = $("#seriesVerifyProgress");
+  if (!el) return;
+  el.classList.remove("hidden");
+  const total = Math.max(1, Number(p.total) || 1);
+  const index = Math.min(total, Math.max(0, Number(p.index) || 0));
+  const found = Number(p.found) || 0;
+  const missing = Number(p.missing) || 0;
+  const pct = Math.round((index / total) * 100);
+  const fill = $("#seriesVerifyFill");
+  if (fill) fill.style.width = `${Math.min(100, Math.max(0, pct))}%`;
+
+  const text = $("#seriesVerifyText");
+  if (text) {
+    if (p.status === "done") {
+      text.textContent = "확인 완료";
+    } else if (p.status === "stop") {
+      text.textContent = "연속 없음 · 중단";
+    } else if (p.status === "found") {
+      text.textContent = "있음 · 목록에 추가";
+    } else if (p.status === "missing") {
+      text.textContent = "없음 · 건너뜀";
+    } else if (p.status === "skip") {
+      text.textContent = "검색 링크 · 건너뜀";
+    } else {
+      text.textContent = "페이지 확인 중…";
+    }
+  }
+  const count = $("#seriesVerifyCount");
+  if (count) {
+    count.textContent = `${index}/${total} · 확인 ${found}${
+      missing ? ` · 제외 ${missing}` : ""
+    }`;
+  }
+  const detail = $("#seriesVerifyDetail");
+  if (detail) {
+    if (p.label) {
+      detail.textContent = p.label;
+    } else if (p.key) {
+      const st =
+        p.status === "found"
+          ? "✓"
+          : p.status === "missing"
+            ? "✗"
+            : p.status === "skip"
+              ? "–"
+              : "…";
+      detail.textContent = `${st} ${p.key}`;
+    } else {
+      detail.textContent = "";
+    }
+  }
+  // Keep sub line in sync
+  const sub = $("#seriesBannerSub");
+  if (sub && p.status !== "done") {
+    sub.textContent = `확인 중 ${index}/${total} · 찾음 ${found}${
+      p.key ? ` · ${p.key}` : ""
+    }`;
+  }
+}
+
+/**
+ * Probe guessed product-code URLs; keep only pages that actually exist.
+ * Stops after maxConsecutiveMiss failures in a row (series usually ends there).
+ */
+async function validateProductSeriesItems(candidates, opts = {}) {
+  const want = Math.max(1, Number(opts.want) || 5);
+  const maxMiss = Math.max(1, Number(opts.maxConsecutiveMiss) || 2);
+  const onProgress =
+    typeof opts.onProgress === "function" ? opts.onProgress : null;
+  const out = [];
+  let missStreak = 0;
+  let missing = 0;
+  const total = candidates.length;
+  // Sequential probe — order matters and avoids hammering the site
+  for (let i = 0; i < candidates.length && out.length < want; i++) {
+    const c = candidates[i];
+    const url = c?.url || "";
+    const step = i + 1;
+    onProgress?.({
+      index: step,
+      total,
+      key: c.key,
+      status: "checking",
+      found: out.length,
+      missing,
+      label: c.key ? `${c.key} 확인 중…` : `후보 ${step} 확인 중…`
+    });
+    // Never treat pure search links as real episodes
+    if (
+      !url ||
+      /\/search/i.test(url) ||
+      /[?&](q|keyword|query|search)=/i.test(url) ||
+      /google\.[^/]+\/search/i.test(url)
+    ) {
+      missing += 1;
+      missStreak += 1;
+      onProgress?.({
+        index: step,
+        total,
+        key: c.key,
+        status: "skip",
+        found: out.length,
+        missing,
+        label: c.key
+          ? `${c.key} · 검색 링크라 제외`
+          : "검색 링크 · 제외"
+      });
+      if (missStreak >= maxMiss) {
+        onProgress?.({
+          index: step,
+          total,
+          key: c.key,
+          status: "stop",
+          found: out.length,
+          missing,
+          label: `연속 ${maxMiss}회 없음 · 더 이상 확인하지 않음`
+        });
+        break;
+      }
+      continue;
+    }
+    // Already in library as done → treat as real (even if site is down now)
+    {
+      const histHit = (historyItems || []).find(
+        (h) =>
+          h &&
+          h.status === "done" &&
+          (UVD.historyMatchesEntry?.(h, c) ||
+            (c.key &&
+              String(h.seriesKey || "")
+                .toUpperCase() === String(c.key).toUpperCase()))
+      );
+      if (histHit || c.downloaded) {
+        out.push({
+          ...c,
+          verified: true,
+          url: histHit?.pageUrl || histHit?.url || c.url,
+          title: histHit?.title || c.title || c.key,
+          thumbnail:
+            normalizeThumbSrc(histHit?.thumbnail) || c.thumbnail || "",
+          destNote: "서재·확인됨",
+          selected: c.selected !== false
+        });
+        missStreak = 0;
+        onProgress?.({
+          index: step,
+          total,
+          key: c.key,
+          status: "found",
+          found: out.length,
+          missing,
+          label: `${c.key || "항목"} · 서재에 있어 확인됨`
+        });
+        continue;
+      }
+    }
+    try {
+      const meta = await chrome.runtime
+        .sendMessage({
+          type: "PROBE_PAGE_META",
+          url,
+          pageUrl: url,
+          expectedKey: c.key,
+          key: c.key,
+          tabId: currentTabId
+        })
+        .catch(() => null);
+      const exists = !!(meta && meta.exists === true);
+      if (!exists) {
+        missing += 1;
+        missStreak += 1;
+        const why = meta?.blocked
+          ? "차단됨 · 사이트에서 재생 후 재시도"
+          : meta?.isSearch
+            ? "검색으로 떨어짐 · 없는 품번"
+            : meta?.notFound
+              ? "없음/삭제"
+              : meta?.error
+                ? String(meta.error).slice(0, 40)
+                : "페이지 없음";
+        onProgress?.({
+          index: step,
+          total,
+          key: c.key,
+          status: "missing",
+          found: out.length,
+          missing,
+          label: `${c.key || "항목"} · ${why}`
+        });
+        if (missStreak >= maxMiss) {
+          const stopLabel = meta?.blocked
+            ? "연속 차단 · 페이지에서 로그인/재생 후 다시 「시리즈」"
+            : `연속 ${maxMiss}회 없음 · 시리즈 끝으로 보고 중단`;
+          onProgress?.({
+            index: step,
+            total,
+            key: c.key,
+            status: "stop",
+            found: out.length,
+            missing,
+            label: stopLabel
+          });
+          break;
+        }
+        continue;
+      }
+      missStreak = 0;
+      const realTitle = String(meta.title || "").trim();
+      const realThumb = normalizeThumbSrc(meta.thumbnail) || c.thumbnail || "";
+      const finalUrl = meta.finalUrl || url;
+      out.push({
+        ...c,
+        url: finalUrl,
+        title:
+          realTitle && realTitle.length > 2
+            ? realTitle.length > 80
+              ? realTitle.slice(0, 78) + "…"
+              : realTitle
+            : c.displayTitle || c.title || c.key,
+        thumbnail: realThumb,
+        softThumb: false,
+        verified: true,
+        destNote: "확인됨",
+        selected: true
+      });
+      onProgress?.({
+        index: step,
+        total,
+        key: c.key,
+        status: "found",
+        found: out.length,
+        missing,
+        label: `${c.key || "항목"} · 있음${
+          realTitle ? ` · ${realTitle.slice(0, 40)}` : ""
+        }`
+      });
+    } catch {
+      missing += 1;
+      missStreak += 1;
+      onProgress?.({
+        index: step,
+        total,
+        key: c.key,
+        status: "missing",
+        found: out.length,
+        missing,
+        label: `${c.key || "항목"} · 확인 실패`
+      });
+      if (missStreak >= maxMiss) {
+        onProgress?.({
+          index: step,
+          total,
+          key: c.key,
+          status: "stop",
+          found: out.length,
+          missing,
+          label: `연속 ${maxMiss}회 실패 · 중단`
+        });
+        break;
+      }
+    }
+  }
+  onProgress?.({
+    index: total,
+    total,
+    status: "done",
+    found: out.length,
+    missing,
+    label:
+      out.length > 0
+        ? `완료 · ${out.length}편 확인${missing ? ` · ${missing}개 제외` : ""}`
+        : "완료 · 확인된 편 없음"
+  });
+  return out;
+}
+
 async function runSeriesComplete() {
-  if (!seriesPending) return;
+  if (!seriesPending || seriesPending.loading) return;
+  const selected = (seriesPending.items || []).filter(
+    (x) => x.selected !== false
+  );
+  if (!selected.length) {
+    toast("받을 항목을 체크해 주세요", "error");
+    return;
+  }
   const btn = $("#btnSeriesGo");
   if (btn) {
     btn.disabled = true;
     btn.textContent = "…";
   }
   try {
+    const isPl = seriesPending.mode === "playlist";
+    // Pass only selected entries so user sees exactly what runs
+    const seriesId =
+      seriesPending.seriesId || resolveSeriesIdFromPayload(seriesPending);
+    lastSeriesRun = {
+      seriesId,
+      title: seriesPending.playlistTitle || seriesPending.title || "",
+      mode: seriesPending.mode
+    };
     const res = await chrome.runtime.sendMessage({
       type: "SERIES_COMPLETE",
       title: seriesPending.title,
-      pageUrl: seriesPending.pageUrl,
-      count: uvdSettings.seriesCompleteCount || 5,
+      pageUrl: seriesPending.pageUrl || seriesPending.listUrl,
+      count: selected.length,
       preferQuality: selectedQuality || "best",
-      tabId: currentTabId
+      tabId: currentTabId,
+      seriesId,
+      seriesTitle:
+        seriesPending.playlistTitle || seriesPending.title || "",
+      // Explicit selection — backend prefers these when provided
+      entries: selected.map((x, i) => ({
+        title: x.title,
+        url: x.url,
+        key: x.key || x.id,
+        id: x.id || x.key,
+        seriesIndex: x.seriesIndex || i + 1,
+        thumbnail: x.thumbnail || ""
+      })),
+      mode: seriesPending.mode
     });
     if (!res?.ok) {
       toast(userError(res?.error) || "시리즈 완주 실패", "error");
       return;
     }
-    if (res.mode === "playlist") {
-      toast(`시리즈(목록) ${res.queued || 0}개 받기 시작`, "ok");
+    if (res.seriesId) lastSeriesRun.seriesId = res.seriesId;
+    if (res.mode === "playlist" || isPl) {
+      const names = selected
+        .slice(0, 3)
+        .map((x) => x.title)
+        .join(", ");
+      const reDone = selected.filter((x) => x.downloaded).length;
+      toast(
+        `${res.queued || selected.length}편 받기 시작${
+          reDone ? ` · 재받기 ${reDone}` : ""
+        }${names ? ` · ${names}${selected.length > 3 ? " …" : ""}` : ""}`,
+        "ok"
+      );
       ensureQueuePoll();
       await refreshJobsFromBackground();
+      // Keep banner for retry button; collapse list optional
+      updateSeriesRetryButton();
     } else {
+      const names = selected
+        .slice(0, 4)
+        .map((x) => x.key || x.title)
+        .join(", ");
       toast(
-        `다음 ${res.queued || 0}편을 나중 받기에 넣었습니다`,
+        `나중 받기에 ${res.queued || selected.length}편 추가 · ${names}${
+          selected.length > 4 ? " …" : ""
+        }`,
         "ok"
       );
       await loadWatchlistUi();
+      switchTab("watch");
+      hideSeriesBanner();
     }
-    hideSeriesBanner();
   } catch (e) {
     toast(userError(e?.message) || "시리즈 완주 실패", "error");
   } finally {
     if (btn) {
       btn.disabled = false;
-      btn.textContent = "완주 시작";
+      updateSeriesGoButton();
     }
   }
 }
@@ -2099,14 +3667,32 @@ async function runSeriesComplete() {
 function updateRetryFailedButton() {
   const btn = $("#btnRetryFailed");
   if (!btn) return;
+  const sid = lastSeriesRun?.seriesId || "";
+  let seriesFailed = 0;
+  if (sid) {
+    seriesFailed = historyItems.filter(
+      (h) =>
+        h?.status === "error" &&
+        (h.seriesId === sid ||
+          (Array.isArray(h.tags) && h.tags.includes(sid)))
+    ).length;
+  }
   const n = historyItems.filter(
     (h) => h?.status === "error" && /^https?:/i.test(h.pageUrl || h.url || "")
   ).length;
   btn.disabled = n === 0;
-  // Short labels so toolbar fits next to 「비우기」
-  btn.textContent = n > 0 ? `실패 재시도 · ${n}` : "실패 재시도";
-  btn.title =
-    n > 0 ? `실패한 ${n}개 다시 받기` : "재시도할 실패 항목이 없습니다";
+  // Prefer series-scoped label when last run has failures
+  if (seriesFailed > 0) {
+    btn.textContent = `시리즈 실패 · ${seriesFailed}`;
+    btn.title = `마지막 시리즈 실패 ${seriesFailed}편 다시 받기 (전체 실패 ${n})`;
+    btn.dataset.seriesRetry = "1";
+  } else {
+    btn.textContent = n > 0 ? `실패 재시도 · ${n}` : "실패 재시도";
+    btn.title =
+      n > 0 ? `실패한 ${n}개 다시 받기` : "재시도할 실패 항목이 없습니다";
+    delete btn.dataset.seriesRetry;
+  }
+  updateSeriesRetryButton().catch(() => {});
 }
 
 /* ── Recent files ─────────────────────────────── */
@@ -2219,27 +3805,45 @@ function computeSchedule(mode) {
   return { scheduleAt: 0, scheduleLabel: "" };
 }
 
-function renderWatchlist() {
-  const root = $("#watchList");
-  if (!root) return;
-  if (!watchlistItems.length) {
-    root.innerHTML = `
-      <div class="empty small">
-        <p>비어 있습니다.</p>
-        <p class="hint">링크 옆 「나중」또는 카드에서 추가 · 드래그로 순서 · 예약 가능</p>
-      </div>`;
-    return;
+/** Group key for watchlist series rows */
+function watchSeriesGroupKey(w) {
+  if (!w) return "";
+  if (w.seriesId) return String(w.seriesId);
+  const tags = Array.isArray(w.tags) ? w.tags : [];
+  const sid = tags.find((t) => String(t).startsWith("series:"));
+  if (sid) return String(sid);
+  if (w.seriesKey) {
+    const info = UVD.extractSeriesInfo(w.seriesKey) || UVD.extractSeriesInfo(w.title);
+    if (info?.prefix) return `series:code:${info.prefix}`;
   }
-  root.innerHTML = watchlistItems
-    .map((w, idx) => {
-      const title = w.title || "나중에 받을 영상";
-      const site = w.site || UVD.siteFromUrl(w.url || w.pageUrl) || "";
-      const hasMedia = !!(w.mediaUrl && /^https?:/i.test(w.mediaUrl));
-      const sched = formatScheduleLabel(w);
-      return `
+  const info = UVD.extractSeriesInfo(w.title || "");
+  if (info?.prefix) return `series:code:${info.prefix}`;
+  return "";
+}
+
+function watchSeriesGroupLabel(groupKey, items) {
+  if (!groupKey) return "기타";
+  if (groupKey.startsWith("series:code:")) {
+    return `시리즈 ${groupKey.slice("series:code:".length)}`;
+  }
+  if (groupKey.startsWith("series:pl:")) {
+    return items[0]?.title?.slice(0, 40) || "재생목록";
+  }
+  return items[0]?.title?.slice(0, 36) || "시리즈";
+}
+
+function renderWatchItemRow(w, idx) {
+  const title = w.title || "나중에 받을 영상";
+  const site = w.site || UVD.siteFromUrl(w.url || w.pageUrl) || "";
+  const hasMedia = !!(w.mediaUrl && /^https?:/i.test(w.mediaUrl));
+  const sched = formatScheduleLabel(w);
+  const sk = w.seriesKey ? ` · ${w.seriesKey}` : "";
+  return `
         <div class="history-item watch-item" draggable="true" data-watch-id="${escapeAttr(
           w.id
-        )}" data-index="${idx}">
+        )}" data-index="${idx}" data-series-group="${escapeAttr(
+          watchSeriesGroupKey(w) || ""
+        )}">
           <div class="history-top">
             <span class="watch-drag" title="드래그해서 순서 변경" aria-hidden="true">⋮⋮</span>
             <span class="history-status done">${idx + 1}</span>
@@ -2249,7 +3853,7 @@ function renderWatchlist() {
               )}</div>
               <div class="history-sub">${escapeHtml(
                 formatTimeAgo(w.at)
-              )} · ${escapeHtml(site)}${hasMedia ? " · 스트림" : ""}${
+              )} · ${escapeHtml(site)}${escapeHtml(sk)}${hasMedia ? " · 스트림" : ""}${
                 sched ? ` · ⏰ ${escapeHtml(sched)}` : ""
               }</div>
             </div>
@@ -2268,8 +3872,79 @@ function renderWatchlist() {
             )}">삭제</button>
           </div>
         </div>`;
-    })
-    .join("");
+}
+
+function renderWatchlist() {
+  const root = $("#watchList");
+  if (!root) return;
+  if (!watchlistItems.length) {
+    root.innerHTML = `
+      <div class="empty small">
+        <p>비어 있습니다.</p>
+        <p class="hint">링크 옆 「나중」또는 카드에서 추가 · 드래그로 순서 · 예약 가능</p>
+      </div>`;
+    return;
+  }
+
+  // Preserve overall order, group consecutive series items under headers
+  const groups = [];
+  const groupMap = new Map(); // key -> { key, items: [] } for non-flat render
+  // Render: series groups first (by first appearance), then ungrouped in order
+  const seen = new Set();
+  const orderedKeys = [];
+  for (const w of watchlistItems) {
+    const g = watchSeriesGroupKey(w) || `__single:${w.id}`;
+    if (!seen.has(g)) {
+      seen.add(g);
+      orderedKeys.push(g);
+      groupMap.set(g, []);
+    }
+    groupMap.get(g).push(w);
+  }
+
+  let globalIdx = 0;
+  const parts = [];
+  for (const gKey of orderedKeys) {
+    const items = groupMap.get(gKey) || [];
+    const isSeries = !gKey.startsWith("__single:") && items.length >= 1 && watchSeriesGroupKey(items[0]);
+    if (isSeries && items.length >= 1) {
+      const label = watchSeriesGroupLabel(gKey, items);
+      parts.push(`
+        <div class="watch-series-group" data-series-group="${escapeAttr(gKey)}">
+          <div class="watch-series-head">
+            <div class="watch-series-head-text">
+              <span class="watch-series-badge">시리즈</span>
+              <span class="watch-series-name" title="${escapeAttr(label)}">${escapeHtml(
+                label
+              )}</span>
+              <span class="watch-series-count">${items.length}편</span>
+            </div>
+            <div class="watch-series-actions">
+              <button type="button" class="btn primary tiny" data-act="watch-series-dl" data-group="${escapeAttr(
+                gKey
+              )}">묶음 받기</button>
+              <button type="button" class="btn ghost tiny" data-act="watch-series-rm" data-group="${escapeAttr(
+                gKey
+              )}">묶음 삭제</button>
+            </div>
+          </div>
+          <div class="watch-series-body">
+            ${items
+              .map((w) => {
+                globalIdx += 1;
+                return renderWatchItemRow(w, globalIdx);
+              })
+              .join("")}
+          </div>
+        </div>`);
+    } else {
+      for (const w of items) {
+        globalIdx += 1;
+        parts.push(renderWatchItemRow(w, globalIdx));
+      }
+    }
+  }
+  root.innerHTML = parts.join("");
 
   // Actions
   root.querySelectorAll("[data-act]").forEach((el) => {
@@ -2298,6 +3973,15 @@ function renderWatchlist() {
     el.addEventListener("click", async () => {
       const id = el.getAttribute("data-id") || "";
       const url = el.getAttribute("data-url") || "";
+      const group = el.getAttribute("data-group") || "";
+      if (act === "watch-series-dl" && group) {
+        await downloadWatchSeriesGroup(group);
+        return;
+      }
+      if (act === "watch-series-rm" && group) {
+        await removeWatchSeriesGroup(group);
+        return;
+      }
       if (act === "watch-dl" && url) {
         await downloadByPastedLink(url, {
           skipDupCheck: false,
@@ -2368,6 +4052,49 @@ function renderWatchlist() {
       renderWatchlist();
     });
   });
+}
+
+async function downloadWatchSeriesGroup(groupKey) {
+  const items = watchlistItems.filter((w) => watchSeriesGroupKey(w) === groupKey);
+  if (!items.length) {
+    toast("묶음에 항목이 없습니다", "error");
+    return;
+  }
+  toast(`${items.length}편 묶음 받기 시작…`, "ok");
+  switchTab("main");
+  for (const w of items) {
+    const url = w.url || w.pageUrl;
+    if (!/^https?:/i.test(url)) continue;
+    try {
+      await downloadByPastedLink(url, {
+        skipDupCheck: true,
+        mediaUrl: w.mediaUrl || "",
+        pageUrl: w.pageUrl || url,
+        title: w.title || "",
+        quality: w.quality || selectedQuality || "best"
+      });
+      await chrome.runtime
+        .sendMessage({ type: "REMOVE_WATCHLIST", id: w.id })
+        .catch(() => {});
+    } catch {
+      /* continue others */
+    }
+  }
+  await loadWatchlistUi();
+  ensureQueuePoll();
+  toast("묶음 받기 요청을 넣었습니다", "ok");
+}
+
+async function removeWatchSeriesGroup(groupKey) {
+  const items = watchlistItems.filter((w) => watchSeriesGroupKey(w) === groupKey);
+  if (!items.length) return;
+  for (const w of items) {
+    await chrome.runtime
+      .sendMessage({ type: "REMOVE_WATCHLIST", id: w.id })
+      .catch(() => {});
+  }
+  toast(`시리즈 ${items.length}편을 나중 받기에서 삭제`, "ok");
+  await loadWatchlistUi();
 }
 
 /** Any http(s) link we can try to download later (not chrome:// etc.) */
@@ -2633,6 +4360,12 @@ async function confirmNotDuplicate(url, { force = false } = {}) {
 
 /** Retry all failed history items (unique URLs) */
 async function retryFailedDownloads() {
+  const btn = $("#btnRetryFailed");
+  // If last series has failures, prefer scoped retry
+  if (btn?.dataset?.seriesRetry === "1" && lastSeriesRun?.seriesId) {
+    await retrySeriesFailed();
+    return;
+  }
   let failed = [];
   try {
     failed = await UVD.getFailedRetryable();
@@ -2716,11 +4449,9 @@ function renderPlaylistPanel() {
   box.classList.remove("hidden");
   const titleEl = $("#plTitle");
   const countEl = $("#plCount");
-  const listEl = $("#plList");
   if (playlistLoading && !playlistInfo) {
     if (titleEl) titleEl.textContent = "재생목록 불러오는 중…";
     if (countEl) countEl.textContent = "";
-    if (listEl) listEl.innerHTML = "";
     return;
   }
   const info = playlistInfo;
@@ -2729,20 +4460,7 @@ function renderPlaylistPanel() {
     const n = info.entries?.length || 0;
     const total = info.playlistCount || n;
     countEl.textContent =
-      total > n ? `${n}개 표시 · 전체 약 ${total}개` : `${n}개 영상`;
-  }
-  if (listEl) {
-    listEl.innerHTML = (info.entries || [])
-      .slice(0, 40)
-      .map((e, i) => {
-        const dur = formatDurShort(e.duration);
-        return `<li class="pl-item" title="${escapeAttr(e.title || "")}">
-          <span class="pl-item-num">${i + 1}</span>
-          <span class="pl-item-title">${escapeHtml(e.title || e.id || "영상")}</span>
-          ${dur ? `<span class="pl-item-dur">${escapeHtml(dur)}</span>` : ""}
-        </li>`;
-      })
-      .join("");
+      total > n ? `${n}개 · 전체 약 ${total}개` : `${n}개 영상`;
   }
   updatePlaylistProgressUi();
 }
@@ -2856,6 +4574,10 @@ async function loadPlaylistInfo(url, force = false) {
     };
     playlistLoading = false;
     renderPlaylistPanel();
+    // Integrate: open series selection banner with full list
+    if (playlistInfo.entries?.length) {
+      openSeriesFromPlaylist(playlistInfo, { quiet: true }).catch(() => {});
+    }
     return playlistInfo;
   } catch (e) {
     playlistLoading = false;
@@ -2866,14 +4588,33 @@ async function loadPlaylistInfo(url, force = false) {
 }
 
 function playlistMaxCount() {
-  const v = $("#plMax")?.value || "10";
-  if (v === "all") return 200;
-  return Math.max(1, parseInt(v, 10) || 10);
+  // Prefer series range chip when banner is open
+  if (seriesPending?.mode === "playlist") {
+    return seriesRangeLimit(seriesPending.rangePref || seriesRangePref);
+  }
+  return seriesRangeLimit(seriesRangePref);
+}
+
+/** Open series banner for checkbox selection (integrated flow). */
+async function selectPlaylistForDownload() {
+  if (!playlistInfo?.entries?.length) {
+    toast("재생목록이 비어 있습니다", "error");
+    return;
+  }
+  await openSeriesFromPlaylist(playlistInfo);
 }
 
 async function downloadPlaylistAll() {
   if (!playlistInfo?.entries?.length) {
     toast("재생목록이 비어 있습니다", "error");
+    return;
+  }
+  // Prefer series banner selection path when available
+  if (
+    seriesPending?.mode === "playlist" &&
+    seriesPending.items?.some((x) => x.selected !== false)
+  ) {
+    await runSeriesComplete();
     return;
   }
   await refreshHelperStatus(true);
@@ -2895,6 +4636,20 @@ async function downloadPlaylistAll() {
     jobIds: new Set()
   };
   updatePlaylistProgressUi();
+  let plSeriesId = "";
+  try {
+    const list = new URL(playlistInfo.url).searchParams.get("list");
+    plSeriesId = list
+      ? `series:pl:${list}`
+      : `series:pl:${UVD.normalizeUrlKey(playlistInfo.url)}`;
+  } catch {
+    plSeriesId = `series:pl:${Date.now()}`;
+  }
+  lastSeriesRun = {
+    seriesId: plSeriesId,
+    title: playlistInfo.title || "",
+    mode: "playlist"
+  };
   try {
     const res = await chrome.runtime.sendMessage({
       type: "DOWNLOAD_PLAYLIST",
@@ -2903,7 +4658,8 @@ async function downloadPlaylistAll() {
       entries,
       max: entries.length,
       tabId: currentTabId,
-      preferQuality: selectedQuality || "best"
+      preferQuality: selectedQuality || "best",
+      seriesId: plSeriesId
     });
     if (!res?.ok) {
       throw new Error(res?.error || "재생목록 받기 실패");
@@ -3050,8 +4806,14 @@ function renderHistory() {
     btn.addEventListener("click", async () => {
       const title = btn.getAttribute("data-title") || "";
       const url = btn.getAttribute("data-url") || "";
-      seriesPending = { title, pageUrl: url, items: [], mode: "product_code" };
-      await runSeriesComplete();
+      switchTab("main");
+      await offerSeriesComplete(title, url);
+      if (!seriesPending?.items?.length && !seriesPending?.loading) {
+        toast(
+          "시리즈 목록을 만들지 못했습니다. 제목에 품번이 있거나 재생목록이어야 합니다",
+          "error"
+        );
+      }
     });
   });
 }
@@ -3509,10 +5271,17 @@ function render() {
   card.querySelector(".btn-series")?.addEventListener("click", async () => {
     const title = item.title || item.pageTitle || name;
     const pageUrl = item.pageUrl || item.url || currentTabUrl || "";
+    toast("받을 목록을 준비 중…", "ok");
     await offerSeriesComplete(title, pageUrl);
-    if (seriesPending) {
-      // Auto-run if user already sees the banner — or just show banner
-      toast("시리즈 제안을 확인한 뒤 「완주 시작」을 누르세요", "ok");
+    if (seriesPending?.loading) {
+      /* panel shows loading */
+    } else if (seriesPending?.items?.length) {
+      toast(
+        `${seriesPending.items.length}개 항목 · 체크 확인 후 「${
+          seriesPending.mode === "playlist" ? "바로 받기" : "나중 받기"
+        }」`,
+        "ok"
+      );
     } else {
       toast(
         "시리즈 코드를 찾지 못했습니다 (예: SSIS-001) · 재생목록이면 목록 페이지에서 시도",
@@ -3648,7 +5417,7 @@ async function downloadItem(item, opts = {}) {
           : `받는 중 · ${short}`,
         "ok"
       );
-      offerSeriesComplete(title, pageUrl).catch(() => {});
+      // Series list only when user taps 「시리즈」— never auto-show
       return;
     }
 
@@ -3657,7 +5426,6 @@ async function downloadItem(item, opts = {}) {
 
     if (res == null) {
       toast("백그라운드에서 받는 중입니다", "ok");
-      offerSeriesComplete(title, pageUrl).catch(() => {});
       return;
     }
     if (res?.ok === false) {
@@ -4110,10 +5878,10 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
     return;
   }
 
-  // Pure playlist URL → load panel instead of single-video download
+  // Pure playlist URL → load panel + series selection banner
   if (UVD.isPlaylistOnlyUrl(link)) {
     await loadPlaylistInfo(link, true);
-    toast("재생목록을 불러왔습니다 · 아래에서 「목록 받기」를 누르세요", "ok");
+    toast("재생목록 불러옴 · 위 시리즈 패널에서 체크 후 받으세요", "ok");
     return;
   }
 
@@ -4364,15 +6132,29 @@ $("#btnHelperRecheck")?.addEventListener("click", async () => {
   toast(helperOk ? "도우미 연결됨" : "아직 꺼져 있습니다 · 실행 파일을 더블클릭하세요", helperOk ? "ok" : "error");
 });
 $("#btnPlDownload")?.addEventListener("click", () => downloadPlaylistAll());
+$("#btnPlSelect")?.addEventListener("click", () => selectPlaylistForDownload());
 $("#btnPlRefresh")?.addEventListener("click", () => {
   const url = playlistInfo?.url || currentTabUrl;
   if (url) loadPlaylistInfo(url, true);
 });
-$("#plMax")?.addEventListener("change", () => {
-  /* selection only affects next download */
-});
 $("#btnSeriesGo")?.addEventListener("click", () => runSeriesComplete());
 $("#btnSeriesDismiss")?.addEventListener("click", () => hideSeriesBanner());
+$("#btnSeriesRetryFailed")?.addEventListener("click", () =>
+  retrySeriesFailed()
+);
+$("#btnSeriesSelAll")?.addEventListener("click", () => setSeriesSelection("all"));
+$("#btnSeriesSelPending")?.addEventListener("click", () =>
+  setSeriesSelection("pending")
+);
+$("#btnSeriesSelNone")?.addEventListener("click", () =>
+  setSeriesSelection("none")
+);
+$("#seriesRange")?.addEventListener("click", (e) => {
+  const btn = e.target?.closest?.(".series-range-chip");
+  if (!btn) return;
+  const r = btn.getAttribute("data-range");
+  if (r) setSeriesRange(r);
+});
 
 // Library filters
 let libSearchTimer = null;

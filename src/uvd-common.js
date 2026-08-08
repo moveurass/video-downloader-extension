@@ -328,6 +328,39 @@ const UVD = (() => {
     return out;
   }
 
+  /**
+   * Highest product-code number already in history for a prefix (e.g. SSIS → 42).
+   * Used for "continue series from library".
+   */
+  function maxSeriesNumInHistory(historyList, prefix) {
+    const p = String(prefix || "").toUpperCase();
+    if (!p) return null;
+    let max = null;
+    let pad = 3;
+    let kind = "product_code";
+    let season = null;
+    for (const h of historyList || []) {
+      if (!h || h.status !== "done") continue;
+      const info =
+        extractSeriesInfo(h.title || "") ||
+        (h.seriesKey ? extractSeriesInfo(h.seriesKey) : null);
+      if (!info) continue;
+      if (String(info.prefix || "").toUpperCase() !== p) continue;
+      if (info.kind === "season_ep") {
+        if (season == null) season = info.season;
+        if (info.season !== season) continue;
+      }
+      if (max == null || info.num > max) {
+        max = info.num;
+        pad = info.pad || pad;
+        kind = info.kind || kind;
+        if (info.season != null) season = info.season;
+      }
+    }
+    if (max == null) return null;
+    return { prefix: p, num: max, pad, kind, season };
+  }
+
   /** Auto tags from title/site for library */
   function autoTags(title, site, pageUrl) {
     const tags = new Set();
@@ -353,9 +386,18 @@ const UVD = (() => {
     const pageUrl = entry.pageUrl || entry.url || "";
     const site = entry.site || siteFromUrl(pageUrl) || "";
     const series = extractSeriesInfo(title);
-    const tags = Array.isArray(entry.tags)
-      ? entry.tags
-      : autoTags(title, site, pageUrl);
+    const mergedTags = [
+      ...new Set(
+        [
+          ...autoTags(title, site, pageUrl),
+          ...(Array.isArray(entry.tags) ? entry.tags : []),
+          entry.seriesId || "",
+          entry.seriesKey || series?.key || ""
+        ]
+          .filter(Boolean)
+          .map(String)
+      )
+    ].slice(0, 16);
     const item = {
       id: entry.id || `h_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       title,
@@ -373,9 +415,11 @@ const UVD = (() => {
       mediaMode: entry.mediaMode || "video",
       site,
       thumbnail: entry.thumbnail || "",
-      tags,
+      tags: mergedTags,
       seriesKey: series?.key || entry.seriesKey || "",
       seriesPrefix: series?.prefix || entry.seriesPrefix || "",
+      seriesId: entry.seriesId || "",
+      seriesIndex: entry.seriesIndex || 0,
       note: entry.note || "",
       at: entry.at || Date.now()
     };
@@ -534,6 +578,21 @@ const UVD = (() => {
     const filtered = list.filter((x) => normalizeUrlKey(x.url || x.pageUrl || "") !== key);
     const mediaUrl =
       entry.mediaUrl && /^https?:/i.test(entry.mediaUrl) ? entry.mediaUrl : "";
+    const series =
+      entry.seriesKey || extractSeriesInfo(entry.title || "")?.key || "";
+    const seriesId = entry.seriesId || (series ? `series:code:${String(series).split("-")[0]}` : "");
+    const tags = [
+      ...new Set(
+        [
+          ...(Array.isArray(entry.tags) ? entry.tags : []),
+          seriesId,
+          series,
+          "series"
+        ]
+          .filter(Boolean)
+          .map(String)
+      )
+    ].slice(0, 16);
     const item = {
       id: entry.id || `w_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       title: entry.title || entry.filename || "나중에 받을 영상",
@@ -544,6 +603,9 @@ const UVD = (() => {
       thumbnail: entry.thumbnail || "",
       quality: entry.quality || "",
       site: entry.site || siteFromUrl(url),
+      tags,
+      seriesId: seriesId || "",
+      seriesKey: series || entry.seriesKey || "",
       // Optional deferred download (ms epoch). 0 / missing = manual only
       scheduleAt: Number(entry.scheduleAt) > 0 ? Number(entry.scheduleAt) : 0,
       scheduleLabel: entry.scheduleLabel || "",
@@ -1041,15 +1103,79 @@ const UVD = (() => {
     );
   }
 
+  /**
+   * Whether a history row matches a series preview entry (url / yt id / product key).
+   */
+  function historyMatchesEntry(h, entry) {
+    if (!h || !entry) return false;
+    const eUrl = entry.url || entry.pageUrl || "";
+    const eKey = String(entry.key || entry.id || entry.seriesKey || "").toUpperCase();
+    const hUrl = h.pageUrl || h.url || "";
+    if (eUrl && hUrl) {
+      const a = normalizeUrlKey(eUrl);
+      const b = normalizeUrlKey(hUrl);
+      if (a && b && a === b) return true;
+    }
+    // YouTube id match
+    const idFrom = (u) => {
+      try {
+        const x = new URL(u);
+        if (/youtu\.be/i.test(x.hostname)) {
+          return x.pathname.replace(/^\//, "").split("/")[0] || "";
+        }
+        return x.searchParams.get("v") || "";
+      } catch {
+        return "";
+      }
+    };
+    const eid = String(entry.id || entry.key || idFrom(eUrl) || "");
+    const hid = idFrom(hUrl);
+    if (eid && hid && eid === hid && /^[\w-]{11}$/.test(eid)) return true;
+    // Product / series key
+    if (eKey && (String(h.seriesKey || "").toUpperCase() === eKey ||
+        String(h.title || "").toUpperCase().includes(eKey))) {
+      return true;
+    }
+    return false;
+  }
+
+  /** Mark series preview rows that already exist as done in history. */
+  function annotateSeriesDownloaded(entries, historyList) {
+    const list = Array.isArray(historyList) ? historyList : [];
+    const done = list.filter((h) => h && h.status === "done");
+    return (entries || []).map((e) => {
+      const hit = done.find((h) => historyMatchesEntry(h, e));
+      if (hit) {
+        return {
+          ...e,
+          downloaded: true,
+          selected: false,
+          doneTitle: hit.title || e.title
+        };
+      }
+      return { ...e, downloaded: !!e.downloaded };
+    });
+  }
+
   /** Failed history items that still have a retryable URL */
-  async function getFailedRetryable() {
+  async function getFailedRetryable(opts = {}) {
     const list = await getHistory();
+    const seriesId = String(opts.seriesId || "").trim();
     const seen = new Set();
     const out = [];
     for (const h of list) {
       if (!h || h.status !== "error") continue;
       const u = h.pageUrl || h.url || "";
       if (!/^https?:/i.test(u)) continue;
+      if (seriesId) {
+        const tags = Array.isArray(h.tags) ? h.tags : [];
+        const sid = String(h.seriesId || "");
+        const ok =
+          sid === seriesId ||
+          tags.includes(seriesId) ||
+          tags.some((t) => String(t) === seriesId || String(t).startsWith(seriesId));
+        if (!ok) continue;
+      }
       const key = normalizeUrlKey(u);
       if (!key || seen.has(key)) continue;
       seen.add(key);
@@ -1081,6 +1207,7 @@ const UVD = (() => {
     queryLibrary,
     extractSeriesInfo,
     nextSeriesKeys,
+    maxSeriesNumInHistory,
     autoTags,
     getSitePacks,
     setSitePacks,
@@ -1105,6 +1232,8 @@ const UVD = (() => {
     qualityForSite,
     findDuplicateDone,
     getFailedRetryable,
+    historyMatchesEntry,
+    annotateSeriesDownloaded,
     mediaModeLabel,
     sanitizeNamePart,
     formatDate

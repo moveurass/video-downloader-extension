@@ -184,6 +184,75 @@ const Naming = (() => {
     return full;
   }
 
+  /**
+   * Series-aware filename:
+   *  playlist → "Playlist - 03. Title.mp4"
+   *  product  → "SSIS-003 Title.mp4"
+   */
+  function buildSeriesFilename(opts = {}) {
+    const {
+      title = "",
+      pageTitle = "",
+      quality = "",
+      type = "video",
+      seriesKey = "",
+      playlistTitle = "",
+      index = 0, // 1-based preferred; 0 = omit number
+      total = 0
+    } = opts;
+    const isAudio = type === "audio";
+    const ext = isAudio ? "mp3" : "mp4";
+
+    let base = pickBestTitle(title, pageTitle) || (isAudio ? "오디오" : "영상");
+    base = base.replace(/^\(\d{1,4}\)\s*/, "").trim() || base;
+
+    const key = String(seriesKey || "").trim();
+    const pl = sanitize(playlistTitle || "", 40);
+    const idx = Number(index) > 0 ? Number(index) : 0;
+    const pad = total >= 100 ? 3 : 2;
+
+    // Drop redundant key/playlist prefix already in title
+    if (key && base.toUpperCase().startsWith(key.toUpperCase())) {
+      /* keep as-is */
+    } else if (key && !new RegExp(key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"), "i").test(base)) {
+      base = `${key} ${base}`;
+    }
+
+    if (pl) {
+      const num = idx > 0 ? `${String(idx).padStart(pad, "0")}. ` : "";
+      // Avoid "PL - PL - title"
+      if (!base.toLowerCase().startsWith(pl.toLowerCase())) {
+        base = `${pl} - ${num}${base}`;
+      } else if (idx > 0 && !/\d{2,3}\.\s/.test(base.slice(0, 12))) {
+        const plEsc = pl.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+        base = base.replace(
+          new RegExp(`^${plEsc}\\s*-\\s*`, "i"),
+          `${pl} - ${num}`
+        );
+      }
+    } else if (idx > 0 && !key) {
+      base = `${String(idx).padStart(pad, "0")}. ${base}`;
+    }
+
+    let q = quality && !/^(best|all|unknown|highest|default)$/i.test(String(quality))
+      ? String(quality).replace(/[()]/g, "").trim()
+      : "";
+    if (q && base.includes(q)) q = "";
+    if (base.length > 72) {
+      base = base.slice(0, 70).replace(/\s+\S*$/, "") || base.slice(0, 70);
+    }
+    let body = q ? `${base}_${q}` : base;
+    let full = `${body}.${ext}`;
+    full = full
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (full.length > 110) {
+      full = `${body.slice(0, 100).trim()}.${ext}`;
+    }
+    return full;
+  }
+
   function displayTitle(opts = {}) {
     const { title = "", pageTitle = "", type = "video" } = opts;
     let base = pickBestTitle(title, pageTitle);
@@ -293,6 +362,7 @@ const Naming = (() => {
     isUglyBase,
     extFromUrl,
     buildFilename,
+    buildSeriesFilename,
     displayTitle,
     isJunkMedia,
     mediaScore

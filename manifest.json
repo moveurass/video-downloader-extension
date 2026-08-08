@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.22.0",
-  "description": "로컬 서재 · 사이트 팩 · 시리즈 완주",
+  "version": "1.23.0",
+  "description": "시리즈 검증 · 나중받기 묶음 · 이어받기",
   "permissions": [
     "downloads",
     "storage",
