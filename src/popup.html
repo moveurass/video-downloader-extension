@@ -24,7 +24,7 @@
   <nav class="tabs" role="tablist">
     <button type="button" class="tab active" data-tab="main" role="tab">받기</button>
     <button type="button" class="tab" data-tab="watch" role="tab">나중</button>
-    <button type="button" class="tab" data-tab="history" role="tab">기록</button>
+    <button type="button" class="tab" data-tab="history" role="tab">서재</button>
     <button type="button" class="tab" data-tab="settings" role="tab">설정</button>
   </nav>
 
@@ -68,6 +68,16 @@
       </div>
     </section>
 
+    <!-- Series complete suggestion -->
+    <section id="seriesBanner" class="series-banner hidden">
+      <span class="series-banner-title" id="seriesBannerTitle">시리즈 완주</span>
+      <div class="series-banner-list" id="seriesBannerList"></div>
+      <div class="series-banner-actions">
+        <button type="button" id="btnSeriesGo" class="btn primary tiny">완주 시작</button>
+        <button type="button" id="btnSeriesDismiss" class="btn ghost tiny">닫기</button>
+      </div>
+    </section>
+
     <!-- Video card first so Download is above the fold -->
     <main id="list" class="list">
       <div class="empty" id="empty">
@@ -102,6 +112,38 @@
         <button type="button" class="q-chip" data-quality="720p">720p</button>
         <button type="button" class="q-chip" data-quality="480p">480p</button>
       </div>
+    </section>
+
+    <!-- YouTube playlist panel -->
+    <section id="playlistBox" class="playlist-box hidden" aria-label="재생목록">
+      <div class="pl-head">
+        <div class="pl-head-text">
+          <span class="pl-badge">재생목록</span>
+          <span id="plTitle" class="pl-title">—</span>
+          <span id="plCount" class="pl-count"></span>
+        </div>
+        <button type="button" id="btnPlRefresh" class="btn ghost tiny" title="목록 다시 불러오기">↻</button>
+      </div>
+      <div id="plProgress" class="pl-progress hidden">
+        <div class="pl-progress-bar"><div id="plProgressFill" class="pl-progress-fill"></div></div>
+        <span id="plProgressText" class="pl-progress-text">대기</span>
+      </div>
+      <div class="pl-controls">
+        <label class="pl-max-label">
+          최대
+          <select id="plMax" class="pl-max">
+            <option value="5">5개</option>
+            <option value="10" selected>10개</option>
+            <option value="25">25개</option>
+            <option value="50">50개</option>
+            <option value="100">100개</option>
+            <option value="all">전체</option>
+          </select>
+        </label>
+        <button type="button" id="btnPlDownload" class="btn primary tiny">목록 받기</button>
+      </div>
+      <ul id="plList" class="pl-list"></ul>
+      <p id="plHint" class="pl-hint">화질 칩이 각 영상에 적용됩니다 · 도우미 필요</p>
     </section>
 
     <section class="link-box compact" id="linkBox">
@@ -150,10 +192,10 @@
     </div>
   </div>
 
-  <!-- ═══════ HISTORY TAB ═══════ -->
+  <!-- ═══════ LIBRARY / HISTORY TAB ═══════ -->
   <div id="tab-history" class="tab-panel hidden">
     <div class="panel-toolbar history-toolbar">
-      <span class="panel-title">최근 다운로드</span>
+      <span class="panel-title">로컬 서재</span>
       <div class="panel-toolbar-actions">
         <button type="button" id="btnRetryFailed" class="btn ghost tiny" title="실패한 항목만 다시 받기">
           실패 재시도
@@ -163,9 +205,32 @@
         </button>
       </div>
     </div>
+    <div class="lib-filters">
+      <input
+        id="libSearch"
+        class="field-input lib-search"
+        type="search"
+        placeholder="제목·품번·태그 검색"
+        autocomplete="off"
+      />
+      <div class="lib-filter-row">
+        <select id="libStatus" class="field-input sq-select">
+          <option value="done" selected>완료만</option>
+          <option value="error">실패만</option>
+          <option value="all">전체</option>
+        </select>
+        <select id="libSite" class="field-input sq-select">
+          <option value="">모든 사이트</option>
+        </select>
+        <select id="libSeries" class="field-input sq-select">
+          <option value="">모든 시리즈</option>
+        </select>
+      </div>
+    </div>
     <div id="historyList" class="history-list">
       <div class="empty small">
-        <p>기록이 없습니다.</p>
+        <p>서재가 비어 있습니다.</p>
+        <p class="hint">받은 영상이 제목·품번·태그로 자동 분류됩니다</p>
       </div>
     </div>
   </div>
@@ -266,6 +331,26 @@
           <span class="field-hint">받는 중 개수를 확장 아이콘에 표시</span>
         </span>
       </label>
+      <label class="field check-field">
+        <input type="checkbox" id="setSeriesComplete" checked />
+        <span>
+          <span class="field-label">시리즈 완주 제안</span>
+          <span class="field-hint">받기 후 다음 편·재생목록 나머지 제안</span>
+        </span>
+      </label>
+      <label class="field">
+        <span class="field-label">시리즈 완주 개수</span>
+        <select id="setSeriesCount" class="field-input">
+          <option value="3">3편</option>
+          <option value="5" selected>5편</option>
+          <option value="10">10편</option>
+        </select>
+      </label>
+      <div class="field">
+        <span class="field-label">사이트 팩 (적응형 규칙)</span>
+        <div id="sitePackList" class="site-pack-list"></div>
+        <span class="field-hint">사이트별 403·쿠키·시리즈 힌트 · 체크 해제 시 비활성</span>
+      </div>
       <label class="field check-field hidden" id="setCompactWrap">
         <input type="checkbox" id="setCompact" checked />
         <span>
@@ -371,7 +456,7 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.20.0</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.22.0</p>
   </footer>
 
   <script src="uvd-common.js"></script>

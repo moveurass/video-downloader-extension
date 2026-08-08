@@ -40,6 +40,19 @@ let watchlistItems = [];
 let recentItems = [];
 let activeTabName = "main";
 
+/** @type {{ url: string, title: string, entries: Array, playlistCount: number } | null} */
+let playlistInfo = null;
+let playlistLoading = false;
+/** Playlist download progress tracking for UI */
+let playlistDl = { active: false, total: 0, done: 0, jobIds: new Set() };
+
+/** Series complete pending payload */
+let seriesPending = null;
+/** Library filter state */
+let libFilter = { q: "", status: "done", site: "", series: "" };
+/** Cached site packs for settings */
+let sitePacksCache = [];
+
 const $ = (sel) => document.querySelector(sel);
 const listEl = $("#list");
 const emptyEl = $("#empty");
@@ -1423,6 +1436,8 @@ function renderDownloadQueue() {
 
   bindRecoveryButtons(dlQueueList);
   syncDownloadingFlag();
+  // Keep playlist progress in sync with queue
+  if (playlistDl.jobIds.size) updatePlaylistProgressUi();
 }
 
 function recoveryActionsHtml(errMeta, pageUrl, job) {
@@ -1670,7 +1685,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.20.0`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.22.0`;
 }
 
 function fillSettingsForm() {
@@ -1702,8 +1717,16 @@ function fillSettingsForm() {
   if (width) width.value = uvdSettings.popupWidth || "normal";
   const badge = $("#setShowBadge");
   if (badge) badge.checked = uvdSettings.showBadge !== false;
+  const seriesC = $("#setSeriesComplete");
+  if (seriesC) seriesC.checked = uvdSettings.seriesComplete !== false;
+  const seriesN = $("#setSeriesCount");
+  if (seriesN) {
+    const n = String(uvdSettings.seriesCompleteCount || 5);
+    if ([...seriesN.options].some((o) => o.value === n)) seriesN.value = n;
+  }
   const compact = $("#setCompact");
   if (compact) compact.checked = uvdSettings.compactUi !== false;
+  loadSitePacksUi();
   const setSel = (id, val) => {
     const el = $(id);
     if (!el) return;
@@ -1764,6 +1787,8 @@ async function saveSettingsFromForm() {
     compactUi: uiDensity !== "full",
     popupWidth: $("#setPopupWidth")?.value || "normal",
     showBadge: $("#setShowBadge")?.checked !== false,
+    seriesComplete: $("#setSeriesComplete")?.checked !== false,
+    seriesCompleteCount: parseInt($("#setSeriesCount")?.value || "5", 10) || 5,
     codecPref: $("#setCodecPref")?.value || "best",
     qualityBySite: {
       default: $("#setQDefault")?.value || "best",
@@ -1856,13 +1881,219 @@ function setupClipboardWatch() {
 
 async function loadHistoryUi() {
   try {
-    const res = await chrome.runtime.sendMessage({ type: "GET_HISTORY" });
-    historyItems = res?.history || [];
+    const res = await chrome.runtime.sendMessage({
+      type: "QUERY_LIBRARY",
+      query: {
+        q: libFilter.q,
+        status: libFilter.status || "done",
+        site: libFilter.site || "",
+        series: libFilter.series || ""
+      }
+    });
+    if (res?.ok && Array.isArray(res.items)) {
+      historyItems = res.items;
+    } else {
+      const all = await chrome.runtime.sendMessage({ type: "GET_HISTORY" });
+      historyItems = all?.history || [];
+    }
   } catch {
-    historyItems = await UVD.getHistory().catch(() => []);
+    try {
+      historyItems = await UVD.queryLibrary(libFilter);
+    } catch {
+      historyItems = await UVD.getHistory().catch(() => []);
+    }
   }
+  fillLibraryFilterOptions();
   renderHistory();
   updateRetryFailedButton();
+}
+
+async function fillLibraryFilterOptions() {
+  const siteSel = $("#libSite");
+  const seriesSel = $("#libSeries");
+  let all = [];
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_HISTORY" });
+    all = res?.history || [];
+  } catch {
+    all = await UVD.getHistory().catch(() => []);
+  }
+  const sites = new Set();
+  const series = new Set();
+  for (const h of all) {
+    if (h?.site) sites.add(h.site);
+    if (h?.seriesPrefix) series.add(h.seriesPrefix);
+    else if (h?.seriesKey) series.add(String(h.seriesKey).split("-")[0]);
+  }
+  if (siteSel) {
+    const cur = libFilter.site || siteSel.value || "";
+    siteSel.innerHTML =
+      `<option value="">모든 사이트</option>` +
+      [...sites]
+        .sort()
+        .map(
+          (s) =>
+            `<option value="${escapeAttr(s)}" ${
+              cur === s ? "selected" : ""
+            }>${escapeHtml(s)}</option>`
+        )
+        .join("");
+  }
+  if (seriesSel) {
+    const cur = libFilter.series || seriesSel.value || "";
+    seriesSel.innerHTML =
+      `<option value="">모든 시리즈</option>` +
+      [...series]
+        .sort()
+        .map(
+          (s) =>
+            `<option value="${escapeAttr(s)}" ${
+              cur === s ? "selected" : ""
+            }>${escapeHtml(s)}</option>`
+        )
+        .join("");
+  }
+}
+
+async function loadSitePacksUi() {
+  const root = $("#sitePackList");
+  if (!root) return;
+  try {
+    const res = await chrome.runtime.sendMessage({ type: "GET_SITE_PACKS" });
+    sitePacksCache = res?.packs || UVD.BUILTIN_SITE_PACKS || [];
+  } catch {
+    sitePacksCache = UVD.BUILTIN_SITE_PACKS || [];
+  }
+  root.innerHTML = sitePacksCache
+    .map(
+      (p) => `
+    <label class="site-pack-row">
+      <input type="checkbox" data-pack-id="${escapeAttr(p.id)}" ${
+        p.enabled !== false ? "checked" : ""
+      } />
+      <span class="site-pack-meta">
+        <span class="site-pack-name">${escapeHtml(p.name || p.id)}</span>
+        <span class="site-pack-note">${escapeHtml(
+          p.rules?.note || (p.hosts || []).slice(0, 3).join(", ")
+        )}</span>
+      </span>
+    </label>`
+    )
+    .join("");
+  root.querySelectorAll("input[data-pack-id]").forEach((inp) => {
+    inp.addEventListener("change", async () => {
+      const id = inp.getAttribute("data-pack-id");
+      sitePacksCache = sitePacksCache.map((p) =>
+        p.id === id ? { ...p, enabled: inp.checked } : p
+      );
+      await chrome.runtime
+        .sendMessage({ type: "SET_SITE_PACKS", packs: sitePacksCache })
+        .catch(() => {});
+      toast(inp.checked ? `${id} 팩 사용` : `${id} 팩 끔`, "ok");
+    });
+  });
+}
+
+function hideSeriesBanner() {
+  seriesPending = null;
+  $("#seriesBanner")?.classList.add("hidden");
+}
+
+function showSeriesBanner(payload) {
+  seriesPending = payload;
+  const ban = $("#seriesBanner");
+  const title = $("#seriesBannerTitle");
+  const list = $("#seriesBannerList");
+  if (!ban) return;
+  ban.classList.remove("hidden");
+  if (title) {
+    title.textContent =
+      payload.mode === "playlist"
+        ? `재생목록 나머지 ${payload.items?.length || 0}편`
+        : `시리즈 완주 · ${payload.seriesKey || ""} 다음 ${
+            payload.items?.length || 0
+          }편`;
+  }
+  if (list) {
+    list.textContent = (payload.items || [])
+      .slice(0, 8)
+      .map((x) => x.title || x.key || x.label)
+      .join(" · ");
+  }
+}
+
+async function offerSeriesComplete(title, pageUrl) {
+  if (uvdSettings.seriesComplete === false) return;
+  const info = UVD.extractSeriesInfo(title || "");
+  const hasPl =
+    UVD.isPlaylistOnlyUrl(pageUrl) || UVD.isWatchInPlaylistUrl?.(pageUrl);
+  if (!info && !hasPl) return;
+  // Soft preview without starting downloads
+  if (hasPl) {
+    showSeriesBanner({
+      mode: "playlist",
+      title,
+      pageUrl,
+      items: [{ title: "재생목록 나머지 받기" }],
+      seriesKey: info?.key || ""
+    });
+    return;
+  }
+  if (info) {
+    const nexts = UVD.nextSeriesKeys(
+      info,
+      uvdSettings.seriesCompleteCount || 5
+    );
+    showSeriesBanner({
+      mode: "product_code",
+      title,
+      pageUrl,
+      seriesKey: info.key,
+      items: nexts.map((n) => ({ title: n.label, key: n.key }))
+    });
+  }
+}
+
+async function runSeriesComplete() {
+  if (!seriesPending) return;
+  const btn = $("#btnSeriesGo");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "…";
+  }
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "SERIES_COMPLETE",
+      title: seriesPending.title,
+      pageUrl: seriesPending.pageUrl,
+      count: uvdSettings.seriesCompleteCount || 5,
+      preferQuality: selectedQuality || "best",
+      tabId: currentTabId
+    });
+    if (!res?.ok) {
+      toast(userError(res?.error) || "시리즈 완주 실패", "error");
+      return;
+    }
+    if (res.mode === "playlist") {
+      toast(`시리즈(목록) ${res.queued || 0}개 받기 시작`, "ok");
+      ensureQueuePoll();
+      await refreshJobsFromBackground();
+    } else {
+      toast(
+        `다음 ${res.queued || 0}편을 나중 받기에 넣었습니다`,
+        "ok"
+      );
+      await loadWatchlistUi();
+    }
+    hideSeriesBanner();
+  } catch (e) {
+    toast(userError(e?.message) || "시리즈 완주 실패", "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "완주 시작";
+    }
+  }
 }
 
 function updateRetryFailedButton() {
@@ -2459,11 +2690,255 @@ function formatTimeAgo(ts) {
   return `${Math.floor(d / 86400_000)}일 전`;
 }
 
+function formatDurShort(sec) {
+  if (!sec || sec < 1) return "";
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  if (m >= 60) {
+    const h = Math.floor(m / 60);
+    return `${h}:${String(m % 60).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
+  }
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function hidePlaylistBox() {
+  playlistInfo = null;
+  $("#playlistBox")?.classList.add("hidden");
+}
+
+function renderPlaylistPanel() {
+  const box = $("#playlistBox");
+  if (!box) return;
+  if (!playlistInfo?.entries?.length && !playlistLoading) {
+    box.classList.add("hidden");
+    return;
+  }
+  box.classList.remove("hidden");
+  const titleEl = $("#plTitle");
+  const countEl = $("#plCount");
+  const listEl = $("#plList");
+  if (playlistLoading && !playlistInfo) {
+    if (titleEl) titleEl.textContent = "재생목록 불러오는 중…";
+    if (countEl) countEl.textContent = "";
+    if (listEl) listEl.innerHTML = "";
+    return;
+  }
+  const info = playlistInfo;
+  if (titleEl) titleEl.textContent = info.title || "재생목록";
+  if (countEl) {
+    const n = info.entries?.length || 0;
+    const total = info.playlistCount || n;
+    countEl.textContent =
+      total > n ? `${n}개 표시 · 전체 약 ${total}개` : `${n}개 영상`;
+  }
+  if (listEl) {
+    listEl.innerHTML = (info.entries || [])
+      .slice(0, 40)
+      .map((e, i) => {
+        const dur = formatDurShort(e.duration);
+        return `<li class="pl-item" title="${escapeAttr(e.title || "")}">
+          <span class="pl-item-num">${i + 1}</span>
+          <span class="pl-item-title">${escapeHtml(e.title || e.id || "영상")}</span>
+          ${dur ? `<span class="pl-item-dur">${escapeHtml(dur)}</span>` : ""}
+        </li>`;
+      })
+      .join("");
+  }
+  updatePlaylistProgressUi();
+}
+
+function updatePlaylistProgressUi() {
+  const bar = $("#plProgress");
+  const fill = $("#plProgressFill");
+  const text = $("#plProgressText");
+  if (!bar) return;
+  if (!playlistDl.active) {
+    // Derive from uiJobs matching playlist job ids
+    if (playlistDl.jobIds.size) {
+      let done = 0;
+      let running = 0;
+      for (const id of playlistDl.jobIds) {
+        const j = uiJobs.get(id);
+        if (!j) continue;
+        if (j.status === "done" || j.status === "error" || j.status === "cancelled") {
+          done += 1;
+        } else if (j.status === "running" || j.status === "paused") {
+          running += 1;
+        }
+      }
+      const total = playlistDl.total || playlistDl.jobIds.size;
+      if (done + running > 0 && done < total) {
+        bar.classList.remove("hidden");
+        const pct = Math.round((done / total) * 100);
+        if (fill) fill.style.width = `${pct}%`;
+        if (text) {
+          text.textContent = `목록 진행 ${done}/${total}${
+            running ? ` · 받는 중 ${running}` : ""
+          }`;
+        }
+        return;
+      }
+      if (done >= total && total > 0) {
+        bar.classList.remove("hidden");
+        if (fill) fill.style.width = "100%";
+        if (text) text.textContent = `목록 완료 ${done}/${total}`;
+        playlistDl.active = false;
+        return;
+      }
+    }
+    bar.classList.add("hidden");
+    return;
+  }
+  bar.classList.remove("hidden");
+  const total = playlistDl.total || 1;
+  const done = playlistDl.done || 0;
+  if (fill) fill.style.width = `${Math.round((done / total) * 100)}%`;
+  if (text) text.textContent = `시작 중… ${done}/${total}`;
+}
+
+async function loadPlaylistInfo(url, force = false) {
+  const target = url || currentTabUrl || "";
+  if (!target || !UVD.isPlaylistOnlyUrl(target)) {
+    // watch with list= — offer expand? show subtle if list present
+    if (target && UVD.isWatchInPlaylistUrl?.(target)) {
+      // still load playlist from list= param for optional "전체 받기"
+      try {
+        const u = new URL(target);
+        const listId = u.searchParams.get("list");
+        if (listId) {
+          const plUrl = `https://www.youtube.com/playlist?list=${listId}`;
+          return loadPlaylistInfo(plUrl, force);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    hidePlaylistBox();
+    return null;
+  }
+  if (
+    !force &&
+    playlistInfo?.url === target &&
+    playlistInfo.entries?.length
+  ) {
+    renderPlaylistPanel();
+    return playlistInfo;
+  }
+  playlistLoading = true;
+  renderPlaylistPanel();
+  try {
+    await refreshHelperStatus(true);
+    if (!helperOk) {
+      playlistInfo = {
+        url: target,
+        title: "재생목록 (도우미 필요)",
+        entries: [],
+        playlistCount: 0
+      };
+      playlistLoading = false;
+      renderPlaylistPanel();
+      toast("재생목록은 로컬 도우미가 필요합니다", "error");
+      return null;
+    }
+    const res = await chrome.runtime.sendMessage({
+      type: "LIST_PLAYLIST",
+      pageUrl: target,
+      max: 200
+    });
+    if (!res?.ok) {
+      throw new Error(res?.error || "재생목록을 불러오지 못했습니다");
+    }
+    playlistInfo = {
+      url: target,
+      title: res.title || "재생목록",
+      entries: res.entries || [],
+      playlistCount: res.playlistCount || res.count || 0
+    };
+    playlistLoading = false;
+    renderPlaylistPanel();
+    return playlistInfo;
+  } catch (e) {
+    playlistLoading = false;
+    hidePlaylistBox();
+    toast(userError(e?.message) || "재생목록 조회 실패", "error");
+    return null;
+  }
+}
+
+function playlistMaxCount() {
+  const v = $("#plMax")?.value || "10";
+  if (v === "all") return 200;
+  return Math.max(1, parseInt(v, 10) || 10);
+}
+
+async function downloadPlaylistAll() {
+  if (!playlistInfo?.entries?.length) {
+    toast("재생목록이 비어 있습니다", "error");
+    return;
+  }
+  await refreshHelperStatus(true);
+  if (!helperOk) {
+    toast("재생목록 받기에는 도우미가 필요합니다", "error");
+    return;
+  }
+  const max = playlistMaxCount();
+  const entries = playlistInfo.entries.slice(0, max);
+  const btn = $("#btnPlDownload");
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = "시작…";
+  }
+  playlistDl = {
+    active: true,
+    total: entries.length,
+    done: 0,
+    jobIds: new Set()
+  };
+  updatePlaylistProgressUi();
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "DOWNLOAD_PLAYLIST",
+      pageUrl: playlistInfo.url,
+      title: playlistInfo.title,
+      entries,
+      max: entries.length,
+      tabId: currentTabId,
+      preferQuality: selectedQuality || "best"
+    });
+    if (!res?.ok) {
+      throw new Error(res?.error || "재생목록 받기 실패");
+    }
+    for (const id of res.jobIds || []) {
+      playlistDl.jobIds.add(id);
+      trackedJobIds.add(id);
+    }
+    playlistDl.active = true;
+    playlistDl.total = res.count || entries.length;
+    toast(
+      `재생목록 ${res.count || entries.length}개 받기 시작 · 화질 ${
+        selectedQuality === "best" ? "최고" : selectedQuality
+      }`,
+      "ok"
+    );
+    ensureQueuePoll();
+    await refreshJobsFromBackground();
+    updatePlaylistProgressUi();
+  } catch (e) {
+    playlistDl.active = false;
+    toast(userError(e?.message) || "재생목록 받기 실패", "error");
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = "목록 받기";
+    }
+  }
+}
+
 function renderHistory() {
   const root = $("#historyList");
   if (!root) return;
   if (!historyItems.length) {
-    root.innerHTML = `<div class="empty small"><p>기록이 없습니다.</p></div>`;
+    root.innerHTML = `<div class="empty small"><p>검색 결과가 없습니다.</p><p class="hint">필터를 바꾸거나 영상을 받아 보세요</p></div>`;
     return;
   }
   root.innerHTML = historyItems
@@ -2471,14 +2946,22 @@ function renderHistory() {
       const ok = h.status === "done";
       const errMeta = !ok ? UVD.classifyError(h.error || "") : null;
       const sub = ok
-        ? `${formatTimeAgo(h.at)} · ${h.mediaMode === "audio" ? "오디오" : h.mediaMode === "video_subs" ? "영상+자막" : "영상"}${
-            h.size ? ` · ${(h.size / 1024 / 1024).toFixed(1)}MB` : ""
+        ? `${formatTimeAgo(h.at)} · ${h.site || "?"} · ${
+            h.mediaMode === "audio" ? "오디오" : h.mediaMode === "video_subs" ? "영상+자막" : "영상"
+          }${h.size ? ` · ${(h.size / 1024 / 1024).toFixed(1)}MB` : ""}${
+            h.seriesKey ? ` · ${h.seriesKey}` : ""
           }`
         : `${formatTimeAgo(h.at)} · ${errMeta?.label || "실패"}`;
       const errHint =
         !ok && errMeta?.hint
           ? `<div class="history-err-hint">${escapeHtml(errMeta.hint)}</div>`
           : "";
+      const tags = (h.tags || []).slice(0, 6);
+      const tagsHtml = tags.length
+        ? `<div class="lib-tags">${tags
+            .map((t) => `<span class="lib-tag">${escapeHtml(t)}</span>`)
+            .join("")}</div>`
+        : "";
       const acts = [];
       if (ok && (h.pageUrl || h.url)) {
         acts.push(
@@ -2493,6 +2976,17 @@ function renderHistory() {
             h.path || ""
           )}" data-did="${escapeAttr(h.downloadId ?? "")}">폴더</button>`
         );
+        if (
+          h.seriesKey ||
+          UVD.isPlaylistOnlyUrl(h.pageUrl || h.url) ||
+          UVD.isWatchInPlaylistUrl?.(h.pageUrl || h.url)
+        ) {
+          acts.push(
+            `<button type="button" class="btn" data-act="series" data-title="${escapeAttr(
+              h.title || ""
+            )}" data-url="${escapeAttr(h.pageUrl || h.url || "")}">시리즈</button>`
+          );
+        }
       } else if (errMeta) {
         if (errMeta.actions.includes("retry") && (h.pageUrl || h.url)) {
           acts.push(
@@ -2544,6 +3038,7 @@ function renderHistory() {
                 h.title || ""
               )}">${escapeHtml(h.title || "영상")}</div>
               <div class="history-sub">${escapeHtml(sub)}${errHint}</div>
+              ${tagsHtml}
             </div>
           </div>
           <div class="history-actions">${acts.join("")}</div>
@@ -2551,6 +3046,14 @@ function renderHistory() {
     })
     .join("");
   bindRecoveryButtons(root);
+  root.querySelectorAll('[data-act="series"]').forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const title = btn.getAttribute("data-title") || "";
+      const url = btn.getAttribute("data-url") || "";
+      seriesPending = { title, pageUrl: url, items: [], mode: "product_code" };
+      await runSeriesComplete();
+    });
+  });
 }
 
 function updateLinkCount() {
@@ -2941,6 +3444,7 @@ function render() {
     <div class="card-actions card-actions-row">
       <button type="button" class="btn primary btn-dl">${escapeHtml(btnLabel)}</button>
       <button type="button" class="btn btn-watch" title="나중에 받기">나중</button>
+      <button type="button" class="btn btn-series" title="시리즈 완주">시리즈</button>
     </div>
     <details class="card-details">
       <summary class="card-details-sum">저장 이름 · 상세</summary>
@@ -3000,6 +3504,21 @@ function render() {
       item.pageUrl ||
       item.url;
     await addCurrentToWatchlist(url);
+  });
+
+  card.querySelector(".btn-series")?.addEventListener("click", async () => {
+    const title = item.title || item.pageTitle || name;
+    const pageUrl = item.pageUrl || item.url || currentTabUrl || "";
+    await offerSeriesComplete(title, pageUrl);
+    if (seriesPending) {
+      // Auto-run if user already sees the banner — or just show banner
+      toast("시리즈 제안을 확인한 뒤 「완주 시작」을 누르세요", "ok");
+    } else {
+      toast(
+        "시리즈 코드를 찾지 못했습니다 (예: SSIS-001) · 재생목록이면 목록 페이지에서 시도",
+        "error"
+      );
+    }
   });
 
   listEl.appendChild(card);
@@ -3129,6 +3648,7 @@ async function downloadItem(item, opts = {}) {
           : `받는 중 · ${short}`,
         "ok"
       );
+      offerSeriesComplete(title, pageUrl).catch(() => {});
       return;
     }
 
@@ -3137,6 +3657,7 @@ async function downloadItem(item, opts = {}) {
 
     if (res == null) {
       toast("백그라운드에서 받는 중입니다", "ok");
+      offerSeriesComplete(title, pageUrl).catch(() => {});
       return;
     }
     if (res?.ok === false) {
@@ -3350,6 +3871,17 @@ async function loadMedia() {
     qualitiesLoading = false;
   }
   render();
+
+  // Playlist panel (YouTube /playlist?list= or watch+list)
+  if (
+    currentTabUrl &&
+    (UVD.isPlaylistOnlyUrl(currentTabUrl) ||
+      UVD.isWatchInPlaylistUrl?.(currentTabUrl))
+  ) {
+    loadPlaylistInfo(currentTabUrl).catch(() => {});
+  } else {
+    hidePlaylistBox();
+  }
 }
 
 function siteDisplayName(url) {
@@ -3575,6 +4107,13 @@ async function downloadByPastedLink(forcedUrl, opts = {}) {
   applySiteDefaultQuality(link);
   if (!isWatchlistableUrl(link) && !looksLikeDirectMedia(link)) {
     toast("유효한 http(s) 링크가 필요합니다", "error");
+    return;
+  }
+
+  // Pure playlist URL → load panel instead of single-video download
+  if (UVD.isPlaylistOnlyUrl(link)) {
+    await loadPlaylistInfo(link, true);
+    toast("재생목록을 불러왔습니다 · 아래에서 「목록 받기」를 누르세요", "ok");
     return;
   }
 
@@ -3823,6 +4362,38 @@ $("#btnHelperRecheck")?.addEventListener("click", async () => {
   toast("도우미 상태 확인 중…", "ok");
   await refreshHelperStatus(true);
   toast(helperOk ? "도우미 연결됨" : "아직 꺼져 있습니다 · 실행 파일을 더블클릭하세요", helperOk ? "ok" : "error");
+});
+$("#btnPlDownload")?.addEventListener("click", () => downloadPlaylistAll());
+$("#btnPlRefresh")?.addEventListener("click", () => {
+  const url = playlistInfo?.url || currentTabUrl;
+  if (url) loadPlaylistInfo(url, true);
+});
+$("#plMax")?.addEventListener("change", () => {
+  /* selection only affects next download */
+});
+$("#btnSeriesGo")?.addEventListener("click", () => runSeriesComplete());
+$("#btnSeriesDismiss")?.addEventListener("click", () => hideSeriesBanner());
+
+// Library filters
+let libSearchTimer = null;
+$("#libSearch")?.addEventListener("input", () => {
+  clearTimeout(libSearchTimer);
+  libSearchTimer = setTimeout(() => {
+    libFilter.q = $("#libSearch")?.value || "";
+    loadHistoryUi();
+  }, 220);
+});
+$("#libStatus")?.addEventListener("change", () => {
+  libFilter.status = $("#libStatus")?.value || "done";
+  loadHistoryUi();
+});
+$("#libSite")?.addEventListener("change", () => {
+  libFilter.site = $("#libSite")?.value || "";
+  loadHistoryUi();
+});
+$("#libSeries")?.addEventListener("change", () => {
+  libFilter.series = $("#libSeries")?.value || "";
+  loadHistoryUi();
 });
 $("#btnAddWatch")?.addEventListener("click", () => addCurrentToWatchlist());
 $("#btnWatchDlAll")?.addEventListener("click", () => downloadAllWatchlist());

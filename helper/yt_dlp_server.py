@@ -1499,6 +1499,137 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
+        # Flat playlist listing (YouTube etc.) — no download
+        if self.path == "/playlist" or self.path.startswith("/playlist?"):
+            payload = read_json(self)
+            bin_path = find_ytdlp()
+            if not bin_path:
+                send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "error": "yt-dlp not installed",
+                        "hint": "pip install -U yt-dlp",
+                    },
+                )
+                return
+            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
+            if not url:
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            max_items = payload.get("max") or payload.get("limit") or 200
+            try:
+                max_items = int(max_items)
+            except (TypeError, ValueError):
+                max_items = 200
+            max_items = max(1, min(500, max_items))
+            cookies_file = None
+            try:
+                cookies_list = payload.get("cookiesList") or payload.get("cookies")
+                if isinstance(cookies_list, list) and cookies_list:
+                    cpath = COOKIE_DIR / f"pl_cookies_{os.getpid()}.txt"
+                    n = write_netscape_cookies(cookies_list, cpath)
+                    if n > 0:
+                        cookies_file = str(cpath)
+                cmd = [
+                    bin_path,
+                    "--flat-playlist",
+                    "--skip-download",
+                    "--ignore-config",
+                    "-J",
+                    "--playlist-end",
+                    str(max_items),
+                ]
+                if cookies_file:
+                    cmd.extend(["--cookies", cookies_file])
+                cookie_header = (payload.get("cookieHeader") or "").strip()
+                if cookie_header and not cookies_file:
+                    cmd.extend(["--add-header", f"Cookie:{cookie_header}"])
+                cmd.append(url)
+                out = subprocess.check_output(
+                    cmd,
+                    text=True,
+                    timeout=120,
+                    stderr=subprocess.STDOUT,
+                )
+                text = out.strip()
+                info = None
+                for line in reversed(text.splitlines()):
+                    line = line.strip()
+                    if line.startswith("{") and line.endswith("}"):
+                        try:
+                            info = json.loads(line)
+                            break
+                        except json.JSONDecodeError:
+                            continue
+                if info is None:
+                    info = json.loads(text[text.find("{") : text.rfind("}") + 1])
+            except subprocess.TimeoutExpired:
+                send_json(self, 504, {"ok": False, "error": "재생목록 조회 시간 초과"})
+                return
+            except Exception as e:
+                send_json(
+                    self,
+                    500,
+                    {"ok": False, "error": f"재생목록 조회 실패: {e}"},
+                )
+                return
+            finally:
+                if cookies_file:
+                    try:
+                        Path(cookies_file).unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
+            raw_entries = info.get("entries") or []
+            pl_title = info.get("title") or info.get("playlist_title") or "재생목록"
+            entries_out = []
+            for e in raw_entries:
+                if not e or e.get("entries"):
+                    continue
+                eid = e.get("id") or e.get("url") or ""
+                etitle = (e.get("title") or e.get("id") or "영상").strip()
+                eurl = e.get("url") or e.get("webpage_url") or ""
+                if not eurl and eid and "youtube" in url.lower():
+                    eurl = f"https://www.youtube.com/watch?v={eid}"
+                if not eurl and eid:
+                    eurl = str(eid) if str(eid).startswith("http") else ""
+                if not eurl:
+                    continue
+                dur = e.get("duration") or 0
+                try:
+                    dur = float(dur or 0)
+                except (TypeError, ValueError):
+                    dur = 0
+                entries_out.append(
+                    {
+                        "id": str(eid),
+                        "title": etitle[:120],
+                        "url": eurl,
+                        "duration": int(dur) if dur >= 1 else 0,
+                        "thumbnail": (e.get("thumbnail") or "") or "",
+                    }
+                )
+                if len(entries_out) >= max_items:
+                    break
+
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "url": url,
+                    "title": pl_title,
+                    "count": len(entries_out),
+                    "playlistCount": info.get("playlist_count")
+                    or info.get("n_entries")
+                    or len(entries_out),
+                    "entries": entries_out,
+                },
+            )
+            return
+
         if self.path == "/download" or self.path.startswith("/download?"):
             payload = read_json(self)
             bin_path = find_ytdlp()

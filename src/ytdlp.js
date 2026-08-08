@@ -92,6 +92,23 @@ const YtDlp = (() => {
   }
 
   /**
+   * List playlist entries (flat, no download).
+   * @returns {Promise<{title:string, count:number, entries:Array<{id,title,url,duration}>}>}
+   */
+  async function listPlaylist(url, extra = {}) {
+    const res = await fetch(`${BASE}/playlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, pageUrl: url, ...extra })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `playlist HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  /**
    * Start download and poll until done/error.
    * onProgress({ percent, message, status })
    */
@@ -153,6 +170,7 @@ const YtDlp = (() => {
     getJob,
     cancelJob,
     downloadAndWait,
-    listFormats
+    listFormats,
+    listPlaylist
   };
 })();

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.20.0",
-  "description": "실패 원클릭 · 도우미 실행 · 속도 · UI 너비 · 배지",
+  "version": "1.22.0",
+  "description": "로컬 서재 · 사이트 팩 · 시리즈 완주",
   "permissions": [
     "downloads",
     "storage",

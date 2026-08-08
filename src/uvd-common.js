@@ -47,12 +47,91 @@ const UVD = (() => {
     /** Popup width: narrow 320 · normal 380 · wide 440 */
     popupWidth: "normal",
     /** Show count badge on extension icon while downloading */
-    showBadge: true
+    showBadge: true,
+    /** Auto-suggest series complete after a download */
+    seriesComplete: true,
+    /** Max next episodes to queue in series complete mode */
+    seriesCompleteCount: 5
   };
 
   const HISTORY_KEY = "uvdHistory";
   const SETTINGS_KEY = "uvdSettings";
   const WATCHLIST_KEY = "uvdWatchlist";
+  const SITE_PACKS_KEY = "uvdSitePacks";
+
+  /**
+   * Built-in site packs — adaptive download hints per host.
+   * Custom packs merge on top via storage.
+   */
+  const BUILTIN_SITE_PACKS = [
+    {
+      id: "jav-hls",
+      name: "JAV HLS (123av/missav 계열)",
+      enabled: true,
+      hosts: [
+        "123av.com",
+        "missav.com",
+        "missav.ws",
+        "jable.tv",
+        "javplayer",
+        "netflav.com",
+        "supjav.com",
+        "thisav.com",
+        "spankbang.com",
+        "hanime.tv",
+        "njav.tv"
+      ],
+      rules: {
+        tryPageFirst: true,
+        preferPageHls: true,
+        needPlayFirst: true,
+        seriesMode: "product_code",
+        note: "재생 후 스트림 캡처 · 403 시 페이지 우선"
+      }
+    },
+    {
+      id: "youtube",
+      name: "YouTube",
+      enabled: true,
+      hosts: ["youtube.com", "youtu.be", "music.youtube.com", "youtube-nocookie.com"],
+      rules: {
+        needYtDlp: true,
+        seriesMode: "playlist",
+        note: "재생목록·시리즈는 목록 받기 권장"
+      }
+    },
+    {
+      id: "social",
+      name: "소셜 (TT/IG/X/FB)",
+      enabled: true,
+      hosts: [
+        "tiktok.com",
+        "instagram.com",
+        "instagr.am",
+        "x.com",
+        "twitter.com",
+        "facebook.com",
+        "fb.watch",
+        "fb.com"
+      ],
+      rules: {
+        needYtDlp: true,
+        needCookies: true,
+        note: "로그인 쿠키 권장"
+      }
+    },
+    {
+      id: "bilibili",
+      name: "Bilibili",
+      enabled: true,
+      hosts: ["bilibili.com", "bilibili.tv", "b23.tv"],
+      rules: {
+        needYtDlp: true,
+        seriesMode: "playlist",
+        note: "yt-dlp 경로"
+      }
+    }
+  ];
 
   function mergeSettings(raw) {
     const next = { ...DEFAULT_SETTINGS, ...(raw || {}) };
@@ -129,6 +208,11 @@ const UVD = (() => {
     next.saveThumbnail = next.saveThumbnail !== false;
     next.compactUi = next.compactUi !== false;
     next.showBadge = next.showBadge !== false;
+    next.seriesComplete = next.seriesComplete !== false;
+    next.seriesCompleteCount = Math.min(
+      20,
+      Math.max(1, Number(next.seriesCompleteCount) || 5)
+    );
     if (!["full", "compact", "ultra"].includes(String(next.uiDensity || ""))) {
       next.uiDensity = next.compactUi === false ? "full" : "compact";
     }
@@ -165,15 +249,119 @@ const UVD = (() => {
     }
   }
 
+  /**
+   * Extract series / product code from a title for library grouping & complete mode.
+   * e.g. "SSIS-001 …" → { key: "SSIS-001", prefix: "SSIS", num: 1, pad: 3 }
+   */
+  function extractSeriesInfo(title) {
+    const t = String(title || "");
+    // JAV-style: ABC-123, ABCD-001, abc_012
+    let m = t.match(/\b([A-Za-z]{2,8})[-_ ]?(\d{2,5})\b/);
+    if (m && !/^(http|https|www|mp4|HD|FHD|4K)$/i.test(m[1])) {
+      const prefix = m[1].toUpperCase();
+      const num = parseInt(m[2], 10);
+      const pad = m[2].length;
+      if (Number.isFinite(num) && num > 0 && num < 100000) {
+        return {
+          key: `${prefix}-${String(num).padStart(pad, "0")}`,
+          prefix,
+          num,
+          pad,
+          kind: "product_code"
+        };
+      }
+    }
+    // Season episode: S01E02
+    m = t.match(/\bS(\d{1,2})E(\d{1,3})\b/i);
+    if (m) {
+      const season = parseInt(m[1], 10);
+      const ep = parseInt(m[2], 10);
+      return {
+        key: `S${String(season).padStart(2, "0")}E${String(ep).padStart(2, "0")}`,
+        prefix: `S${String(season).padStart(2, "0")}E`,
+        num: ep,
+        pad: Math.max(2, String(ep).length),
+        kind: "season_ep",
+        season
+      };
+    }
+    // Episode N
+    m = t.match(/(?:ep|episode|제)\s*(\d{1,4})\b/i);
+    if (m) {
+      const num = parseInt(m[1], 10);
+      return {
+        key: `EP-${num}`,
+        prefix: "EP",
+        num,
+        pad: String(m[1]).length,
+        kind: "episode"
+      };
+    }
+    return null;
+  }
+
+  function nextSeriesKeys(info, count = 5) {
+    if (!info || !info.prefix || !Number.isFinite(info.num)) return [];
+    const out = [];
+    for (let i = 1; i <= count; i++) {
+      const n = info.num + i;
+      if (info.kind === "season_ep") {
+        out.push({
+          key: `S${String(info.season).padStart(2, "0")}E${String(n).padStart(info.pad, "0")}`,
+          label: `S${String(info.season).padStart(2, "0")}E${String(n).padStart(info.pad, "0")}`,
+          num: n
+        });
+      } else if (info.kind === "episode") {
+        out.push({
+          key: `EP-${n}`,
+          label: `Episode ${n}`,
+          num: n
+        });
+      } else {
+        out.push({
+          key: `${info.prefix}-${String(n).padStart(info.pad, "0")}`,
+          label: `${info.prefix}-${String(n).padStart(info.pad, "0")}`,
+          num: n
+        });
+      }
+    }
+    return out;
+  }
+
+  /** Auto tags from title/site for library */
+  function autoTags(title, site, pageUrl) {
+    const tags = new Set();
+    if (site) tags.add(String(site));
+    const info = extractSeriesInfo(title);
+    if (info) {
+      tags.add("series");
+      tags.add(info.prefix);
+      tags.add(info.key);
+    }
+    if (/playlist|재생목록/i.test(title || "") || isPlaylistUrl(pageUrl || "")) {
+      tags.add("playlist");
+    }
+    if (/\b(4K|2160p|UHD)\b/i.test(title || "")) tags.add("4K");
+    if (/\b(FHD|1080p)\b/i.test(title || "")) tags.add("1080p");
+    return [...tags].slice(0, 12);
+  }
+
   async function appendHistory(entry) {
     const settings = await getSettings();
     const list = await getHistory();
+    const title = entry.title || entry.filename || "영상";
+    const pageUrl = entry.pageUrl || entry.url || "";
+    const site = entry.site || siteFromUrl(pageUrl) || "";
+    const series = extractSeriesInfo(title);
+    const tags = Array.isArray(entry.tags)
+      ? entry.tags
+      : autoTags(title, site, pageUrl);
     const item = {
       id: entry.id || `h_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      title: entry.title || entry.filename || "영상",
+      title,
       filename: entry.filename || "",
-      url: entry.url || entry.pageUrl || "",
-      pageUrl: entry.pageUrl || entry.url || "",
+      url: entry.url || pageUrl,
+      pageUrl,
       path: entry.path || "",
       downloadId: entry.downloadId ?? null,
       status: entry.status || "done", // done | error
@@ -183,13 +371,32 @@ const UVD = (() => {
       method: entry.method || "",
       quality: entry.quality || "",
       mediaMode: entry.mediaMode || "video",
-      site: entry.site || "",
+      site,
       thumbnail: entry.thumbnail || "",
+      tags,
+      seriesKey: series?.key || entry.seriesKey || "",
+      seriesPrefix: series?.prefix || entry.seriesPrefix || "",
+      note: entry.note || "",
       at: entry.at || Date.now()
     };
-    const next = [item, ...list.filter((x) => x.id !== item.id)].slice(
-      0,
-      settings.maxHistory || 50
+    // Library: keep more successful items (up to 200)
+    const cap = Math.max(settings.maxHistory || 50, 200);
+    const next = [item, ...list.filter((x) => x.id !== item.id)].slice(0, cap);
+    await chrome.storage.local.set({ [HISTORY_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "HISTORY_UPDATED", history: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+
+  async function updateHistoryItem(id, patch) {
+    const list = await getHistory();
+    const next = list.map((x) =>
+      x.id === id ? { ...x, ...(patch || {}), id: x.id } : x
     );
     await chrome.storage.local.set({ [HISTORY_KEY]: next });
     try {
@@ -200,6 +407,103 @@ const UVD = (() => {
       /* ignore */
     }
     return next;
+  }
+
+  /**
+   * Library query: filter history (default: done only).
+   * @param {{ q?: string, site?: string, series?: string, tag?: string, status?: string }} opts
+   */
+  async function queryLibrary(opts = {}) {
+    const list = await getHistory();
+    const q = String(opts.q || "")
+      .trim()
+      .toLowerCase();
+    const site = String(opts.site || "").trim().toLowerCase();
+    const series = String(opts.series || "").trim().toUpperCase();
+    const tag = String(opts.tag || "").trim().toLowerCase();
+    const status = opts.status || "done";
+    return list.filter((h) => {
+      if (!h) return false;
+      if (status !== "all" && h.status !== status) return false;
+      if (site && String(h.site || "").toLowerCase() !== site) return false;
+      if (series) {
+        const sk = String(h.seriesKey || h.seriesPrefix || "").toUpperCase();
+        if (!sk.includes(series) && !String(h.title || "").toUpperCase().includes(series)) {
+          return false;
+        }
+      }
+      if (tag) {
+        const tags = (h.tags || []).map((t) => String(t).toLowerCase());
+        if (!tags.includes(tag) && !String(h.title || "").toLowerCase().includes(tag)) {
+          return false;
+        }
+      }
+      if (q) {
+        const blob = [
+          h.title,
+          h.filename,
+          h.site,
+          h.seriesKey,
+          h.note,
+          ...(h.tags || [])
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!blob.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  async function getSitePacks() {
+    try {
+      const data = await chrome.storage.local.get(SITE_PACKS_KEY);
+      const custom = Array.isArray(data[SITE_PACKS_KEY]) ? data[SITE_PACKS_KEY] : [];
+      // Merge: custom overrides same id, then builtins not overridden
+      const byId = new Map();
+      for (const p of BUILTIN_SITE_PACKS) byId.set(p.id, { ...p, builtin: true });
+      for (const p of custom) {
+        if (p && p.id) byId.set(p.id, { ...byId.get(p.id), ...p, builtin: !!byId.get(p.id)?.builtin });
+      }
+      return [...byId.values()];
+    } catch {
+      return BUILTIN_SITE_PACKS.map((p) => ({ ...p, builtin: true }));
+    }
+  }
+
+  async function setSitePacks(packs) {
+    const custom = (Array.isArray(packs) ? packs : []).filter((p) => p && p.id && !p.builtin);
+    // Also store enabled overrides for builtins
+    const overrides = (Array.isArray(packs) ? packs : [])
+      .filter((p) => p && p.id)
+      .map((p) => ({
+        id: p.id,
+        enabled: p.enabled !== false,
+        hosts: p.hosts,
+        rules: p.rules,
+        name: p.name
+      }));
+    await chrome.storage.local.set({ [SITE_PACKS_KEY]: overrides });
+    return getSitePacks();
+  }
+
+  /** Match first enabled pack for a URL */
+  async function getSitePackForUrl(url) {
+    const packs = await getSitePacks();
+    let host = "";
+    try {
+      host = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+    } catch {
+      return null;
+    }
+    for (const p of packs) {
+      if (p.enabled === false) continue;
+      const hosts = p.hosts || [];
+      if (hosts.some((h) => host === h || host.endsWith("." + h) || host.includes(h))) {
+        return p;
+      }
+    }
+    return null;
   }
 
   async function clearHistory() {
@@ -486,6 +790,41 @@ const UVD = (() => {
     return false;
   }
 
+  /**
+   * Pure playlist page (not a single watch video with &list=).
+   * e.g. youtube.com/playlist?list=…  or  music.youtube.com/playlist?list=…
+   */
+  function isPlaylistOnlyUrl(url) {
+    if (!url) return false;
+    try {
+      const u = new URL(url);
+      const h = u.hostname.replace(/^www\./i, "").toLowerCase();
+      const path = u.pathname || "";
+      if (/youtube\.com|youtu\.be|music\.youtube/i.test(h)) {
+        if (/\/playlist/i.test(path) && u.searchParams.has("list")) return true;
+        // list without v= on non-watch pages
+        if (u.searchParams.has("list") && !u.searchParams.get("v") && !/\/watch/i.test(path)) {
+          return true;
+        }
+      }
+      // Bilibili multi-part is not handled here
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }
+
+  /** Single video that is part of a playlist (watch?v=…&list=…) */
+  function isWatchInPlaylistUrl(url) {
+    if (!url) return false;
+    try {
+      const u = new URL(url);
+      return !!(u.searchParams.get("v") && u.searchParams.get("list"));
+    } catch {
+      return false;
+    }
+  }
+
   function classifyError(msg) {
     const s = String(msg || "");
     if (/도우미|8787|yt-dlp not|start\.command|install_autostart|연결할 수 없|헬퍼/i.test(s)) {
@@ -730,12 +1069,22 @@ const UVD = (() => {
     HISTORY_KEY,
     SETTINGS_KEY,
     WATCHLIST_KEY,
+    SITE_PACKS_KEY,
+    BUILTIN_SITE_PACKS,
     getSettings,
     setSettings,
     getHistory,
     appendHistory,
+    updateHistoryItem,
     clearHistory,
     getRecentDone,
+    queryLibrary,
+    extractSeriesInfo,
+    nextSeriesKeys,
+    autoTags,
+    getSitePacks,
+    setSitePacks,
+    getSitePackForUrl,
     getWatchlist,
     addWatchlist,
     removeWatchlist,
@@ -747,6 +1096,8 @@ const UVD = (() => {
     downloadRelPath,
     parseUrlsFromText,
     isPlaylistUrl,
+    isPlaylistOnlyUrl,
+    isWatchInPlaylistUrl,
     classifyError,
     formatSpeed,
     siteFromUrl,

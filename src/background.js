@@ -742,7 +742,10 @@ async function ytdlpExtraFromSettings(pageUrl, force = {}) {
     writeThumbnail: saveThumb && mediaMode !== "audio",
     mediaMode,
     codecPref: s.codecPref || "best",
-    yesPlaylist: UVD.isPlaylistUrl(pageUrl),
+    // Only pure playlist URLs auto-expand; single watch+list stays one video
+    yesPlaylist: UVD.isPlaylistOnlyUrl
+      ? UVD.isPlaylistOnlyUrl(pageUrl)
+      : UVD.isPlaylistUrl(pageUrl),
     subfolder: s.subfolder
   };
 }
@@ -3992,7 +3995,18 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
     emitDownloadProgress(tabId, 6, "스트림 받는 중…", "playlist", jid);
     // Prefer page-context first on sites that often 403 extension SW fetches
     // (page has real cookies + referer of the player).
+    // Site pack + legacy host heuristics for 403-prone CDNs
+    let packTryPage = false;
+    try {
+      const pack = await UVD.getSitePackForUrl(pageUrl || workUrl);
+      packTryPage = !!(
+        pack?.rules?.tryPageFirst || pack?.rules?.preferPageHls
+      );
+    } catch {
+      /* ignore */
+    }
     const tryPageFirst =
+      packTryPage ||
       /surrit|javplayer|missav|njav|jable|avgle|hanime|hls|cdn|123av|thisav|netflav|supjav|spankbang/i.test(
         workUrl + (pageUrl || "")
       );
@@ -4355,6 +4369,192 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })();
       return true;
     }
+    case "LIST_PLAYLIST": {
+      const pageUrl = msg.pageUrl || msg.url || "";
+      if (!pageUrl || !/^https?:/i.test(pageUrl)) {
+        sendResponse({ ok: false, error: "재생목록 주소가 없습니다", entries: [] });
+        break;
+      }
+      (async () => {
+        try {
+          const up = await YtDlp.available().catch(() => false);
+          if (!up) {
+            sendResponse({
+              ok: false,
+              error: "로컬 도우미가 필요합니다",
+              entries: []
+            });
+            return;
+          }
+          const cookieHeader = await getCookieHeaderForUrl(pageUrl);
+          const cookiesList = await collectCookiesForUrl(pageUrl);
+          const data = await YtDlp.listPlaylist(pageUrl, {
+            cookieHeader: cookieHeader || undefined,
+            cookiesList: cookiesList?.length ? cookiesList : undefined,
+            max: msg.max || 200
+          });
+          sendResponse({
+            ok: true,
+            title: data.title || "재생목록",
+            count: data.count || (data.entries || []).length,
+            playlistCount: data.playlistCount || data.count || 0,
+            entries: data.entries || [],
+            url: pageUrl
+          });
+        } catch (e) {
+          sendResponse({
+            ok: false,
+            error: String(e?.message || e),
+            entries: []
+          });
+        }
+      })();
+      return true;
+    }
+    case "DOWNLOAD_PLAYLIST": {
+      // Expand playlist to video URLs and start concurrent jobs
+      const pageUrl = msg.pageUrl || msg.url || "";
+      const tid = msg.tabId ?? tabId;
+      const preferQuality = msg.preferQuality || "best";
+      const maxN = Math.min(200, Math.max(1, Number(msg.max) || 50));
+      (async () => {
+        try {
+          let entries = Array.isArray(msg.entries) ? msg.entries : [];
+          if (!entries.length && pageUrl) {
+            const cookieHeader = await getCookieHeaderForUrl(pageUrl);
+            const cookiesList = await collectCookiesForUrl(pageUrl);
+            const data = await YtDlp.listPlaylist(pageUrl, {
+              cookieHeader: cookieHeader || undefined,
+              cookiesList: cookiesList?.length ? cookiesList : undefined,
+              max: maxN
+            });
+            entries = data.entries || [];
+          }
+          const urls = entries
+            .map((e) => e.url || e.webpage_url || "")
+            .filter((u) => /^https?:/i.test(u))
+            .slice(0, maxN);
+          if (!urls.length) {
+            sendResponse({ ok: false, error: "재생목록에 받을 영상이 없습니다" });
+            return;
+          }
+          const settings = await UVD.getSettings();
+          const started = [];
+          const plTitle = msg.title || "재생목록";
+          for (let i = 0; i < urls.length; i++) {
+            if (started.length >= MAX_CONCURRENT_STARTS_BG()) {
+              // Queue remaining by waiting for slots would be complex;
+              // start up to concurrent limit; user can re-run for rest
+              break;
+            }
+            const videoUrl = urls[i];
+            const entry = entries[i] || {};
+            const title =
+              entry.title ||
+              `${plTitle} (${i + 1}/${urls.length})`;
+            const fname = await buildSaveFilename({
+              title,
+              quality: preferQuality,
+              pageUrl: videoUrl,
+              mediaMode: settings.mediaMode
+            });
+            const jobId = createDownloadJob({
+              tabId: tid,
+              title,
+              pageUrl: videoUrl,
+              filename: fname || "",
+              mediaMode: settings.mediaMode,
+              quality: preferQuality
+            });
+            const keep = startKeepAlive();
+            started.push({ jobId, url: videoUrl, title });
+            withJobContext(jobId, () =>
+              downloadViaYtDlp(
+                tid,
+                videoUrl,
+                videoUrl,
+                fname || undefined,
+                preferQuality,
+                jobId,
+                { mediaMode: settings.mediaMode }
+              )
+            )
+              .then((r) => {
+                settleTrackedJob(jobId, r, null);
+                stopKeepAlive(keep);
+              })
+              .catch((err) => {
+                settleTrackedJob(jobId, null, err);
+                stopKeepAlive(keep);
+              });
+          }
+          // Remaining videos beyond concurrent: fire more after a delay chain
+          const rest = urls.slice(started.length);
+          if (rest.length) {
+            // Start rest with staggered concurrency (reuse simple loop)
+            (async () => {
+              for (let i = started.length; i < urls.length; i++) {
+                // Wait until running < max
+                while (
+                  [...activeDownloads.values()].filter((j) => j.status === "running")
+                    .length >= MAX_CONCURRENT_STARTS_BG()
+                ) {
+                  await new Promise((r) => setTimeout(r, 800));
+                }
+                const videoUrl = urls[i];
+                const entry = entries[i] || {};
+                const title =
+                  entry.title || `${plTitle} (${i + 1}/${urls.length})`;
+                const fname = await buildSaveFilename({
+                  title,
+                  quality: preferQuality,
+                  pageUrl: videoUrl,
+                  mediaMode: settings.mediaMode
+                });
+                const jobId = createDownloadJob({
+                  tabId: tid,
+                  title,
+                  pageUrl: videoUrl,
+                  filename: fname || "",
+                  mediaMode: settings.mediaMode,
+                  quality: preferQuality
+                });
+                const keep = startKeepAlive();
+                try {
+                  const r = await withJobContext(jobId, () =>
+                    downloadViaYtDlp(
+                      tid,
+                      videoUrl,
+                      videoUrl,
+                      fname || undefined,
+                      preferQuality,
+                      jobId,
+                      { mediaMode: settings.mediaMode }
+                    )
+                  );
+                  settleTrackedJob(jobId, r, null);
+                } catch (err) {
+                  settleTrackedJob(jobId, null, err);
+                } finally {
+                  stopKeepAlive(keep);
+                }
+              }
+            })().catch(() => {});
+          }
+          sendResponse({
+            ok: true,
+            started: true,
+            count: urls.length,
+            concurrent: started.length,
+            jobIds: started.map((x) => x.jobId),
+            title: plTitle
+          });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e?.message || e) });
+        }
+      })();
+      return true;
+    }
     case "DOWNLOAD_PAGE": {
       // Download by page URL — social via yt-dlp, others open+scan (123av etc.)
       const tid = msg.tabId ?? tabId;
@@ -4438,6 +4638,221 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       UVD.getHistory()
         .then((history) => sendResponse({ ok: true, history }))
         .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "QUERY_LIBRARY": {
+      UVD.queryLibrary(msg.query || msg.opts || {})
+        .then((items) => sendResponse({ ok: true, items }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e), items: [] }));
+      return true;
+    }
+    case "UPDATE_HISTORY_ITEM": {
+      UVD.updateHistoryItem(msg.id, msg.patch || {})
+        .then((history) => sendResponse({ ok: true, history }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "GET_SITE_PACKS": {
+      UVD.getSitePacks()
+        .then((packs) => sendResponse({ ok: true, packs }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "SET_SITE_PACKS": {
+      UVD.setSitePacks(msg.packs || [])
+        .then((packs) => sendResponse({ ok: true, packs }))
+        .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));
+      return true;
+    }
+    case "SERIES_COMPLETE": {
+      // Queue next N product codes / playlist remainder
+      (async () => {
+        try {
+          const settings = await UVD.getSettings();
+          const title = msg.title || "";
+          const pageUrl = msg.pageUrl || msg.url || "";
+          const count = Math.min(
+            20,
+            Math.max(1, Number(msg.count) || settings.seriesCompleteCount || 5)
+          );
+          const info = UVD.extractSeriesInfo(title);
+          const results = { mode: null, queued: 0, items: [] };
+
+          // 1) Playlist remainder
+          if (
+            UVD.isPlaylistOnlyUrl(pageUrl) ||
+            UVD.isWatchInPlaylistUrl(pageUrl)
+          ) {
+            let listUrl = pageUrl;
+            if (UVD.isWatchInPlaylistUrl(pageUrl)) {
+              try {
+                const u = new URL(pageUrl);
+                const listId = u.searchParams.get("list");
+                if (listId) {
+                  listUrl = `https://www.youtube.com/playlist?list=${listId}`;
+                }
+              } catch {
+                /* ignore */
+              }
+            }
+            const cookieHeader = await getCookieHeaderForUrl(listUrl);
+            const cookiesList = await collectCookiesForUrl(listUrl);
+            const data = await YtDlp.listPlaylist(listUrl, {
+              cookieHeader: cookieHeader || undefined,
+              cookiesList: cookiesList?.length ? cookiesList : undefined,
+              max: 200
+            });
+            let entries = data.entries || [];
+            // Skip current video if present
+            const curKey = UVD.normalizeUrlKey(pageUrl);
+            entries = entries.filter(
+              (e) => UVD.normalizeUrlKey(e.url || "") !== curKey
+            );
+            // If watch in playlist, skip until after current
+            if (UVD.isWatchInPlaylistUrl(pageUrl)) {
+              try {
+                const vid = new URL(pageUrl).searchParams.get("v");
+                const idx = entries.findIndex(
+                  (e) => e.id === vid || (e.url || "").includes(vid)
+                );
+                if (idx >= 0) entries = entries.slice(idx + 1);
+              } catch {
+                /* ignore */
+              }
+            }
+            entries = entries.slice(0, count);
+            results.mode = "playlist";
+            results.items = entries;
+            if (entries.length) {
+              const res = await new Promise((resolve) => {
+                // reuse DOWNLOAD_PLAYLIST logic inline
+                const preferQuality = msg.preferQuality || "best";
+                (async () => {
+                  const urls = entries.map((e) => e.url).filter(Boolean);
+                  const started = [];
+                  for (let i = 0; i < urls.length; i++) {
+                    while (
+                      [...activeDownloads.values()].filter(
+                        (j) => j.status === "running"
+                      ).length >= MAX_CONCURRENT_STARTS_BG()
+                    ) {
+                      await new Promise((r) => setTimeout(r, 600));
+                    }
+                    const videoUrl = urls[i];
+                    const entry = entries[i] || {};
+                    const t =
+                      entry.title ||
+                      `${data.title || "시리즈"} (${i + 1}/${urls.length})`;
+                    const fname = await buildSaveFilename({
+                      title: t,
+                      quality: preferQuality,
+                      pageUrl: videoUrl,
+                      mediaMode: settings.mediaMode
+                    });
+                    const jobId = createDownloadJob({
+                      tabId: msg.tabId ?? -1,
+                      title: t,
+                      pageUrl: videoUrl,
+                      filename: fname || "",
+                      mediaMode: settings.mediaMode,
+                      quality: preferQuality
+                    });
+                    const keep = startKeepAlive();
+                    started.push(jobId);
+                    withJobContext(jobId, () =>
+                      downloadViaYtDlp(
+                        msg.tabId ?? -1,
+                        videoUrl,
+                        videoUrl,
+                        fname || undefined,
+                        preferQuality,
+                        jobId,
+                        { mediaMode: settings.mediaMode }
+                      )
+                    )
+                      .then((r) => {
+                        settleTrackedJob(jobId, r, null);
+                        stopKeepAlive(keep);
+                      })
+                      .catch((err) => {
+                        settleTrackedJob(jobId, null, err);
+                        stopKeepAlive(keep);
+                      });
+                  }
+                  resolve({ ok: true, count: started.length, jobIds: started });
+                })().catch((e) =>
+                  resolve({ ok: false, error: String(e?.message || e) })
+                );
+              });
+              results.queued = res.count || 0;
+              results.jobIds = res.jobIds || [];
+            }
+            sendResponse({ ok: true, ...results });
+            return;
+          }
+
+          // 2) Product code series → watchlist next N codes (URLs guessed per pack)
+          if (info) {
+            const nexts = UVD.nextSeriesKeys(info, count);
+            const pack = await UVD.getSitePackForUrl(pageUrl);
+            let host = "";
+            try {
+              host = new URL(pageUrl).origin;
+            } catch {
+              host = "";
+            }
+            for (const n of nexts) {
+              // Best-effort URL: keep same path pattern replacing code
+              let nextUrl = "";
+              if (pageUrl && info.key) {
+                nextUrl = pageUrl.replace(
+                  new RegExp(info.key.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"), "i"),
+                  n.key
+                );
+                if (nextUrl === pageUrl) {
+                  nextUrl = pageUrl.replace(
+                    new RegExp(
+                      `${info.prefix}[-_]?${info.num}`,
+                      "i"
+                    ),
+                    n.key
+                  );
+                }
+              }
+              if (!nextUrl || nextUrl === pageUrl) {
+                // site search fallback
+                if (host) {
+                  nextUrl = `${host}/search?q=${encodeURIComponent(n.key)}`;
+                } else {
+                  nextUrl = `https://www.google.com/search?q=${encodeURIComponent(n.key + " video")}`;
+                }
+              }
+              await UVD.addWatchlist({
+                url: nextUrl,
+                pageUrl: nextUrl,
+                title: n.label,
+                quality: msg.preferQuality || "best",
+                site: UVD.siteFromUrl(pageUrl) || "",
+                tags: ["series", info.prefix, n.key]
+              });
+              results.items.push({ key: n.key, url: nextUrl, title: n.label });
+              results.queued += 1;
+            }
+            results.mode = "product_code";
+            sendResponse({ ok: true, ...results });
+            return;
+          }
+
+          sendResponse({
+            ok: false,
+            error:
+              "시리즈 코드를 찾지 못했습니다. 재생목록 페이지이거나 제목에 SSIS-001 같은 품번이 있으면 동작합니다",
+            ...results
+          });
+        } catch (e) {
+          sendResponse({ ok: false, error: String(e?.message || e) });
+        }
+      })();
       return true;
     }
     case "CLEAR_HISTORY": {
@@ -4749,7 +5164,7 @@ exit 1
       break;
     }
     case "PING":
-      sendResponse({ ok: true, version: "1.20.0" });
+      sendResponse({ ok: true, version: "1.21.0" });
       break;
     case "DOWNLOAD_CURRENT_PAGE": {
       const tid = msg.tabId ?? tabId;
@@ -5036,4 +5451,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-console.log("[VideoDownloader] ready v1.20.0");
+console.log("[VideoDownloader] ready v1.21.0");
