@@ -47,6 +47,12 @@
           <span id="dlQueueBadge" class="dl-queue-badge hidden">0</span>
         </div>
         <span id="dlQueueSub" class="dl-queue-sub">동시에 받을 수 있어요</span>
+        <div id="dlQueueFilters" class="dl-queue-filters hidden" role="tablist">
+          <button type="button" class="dl-qf active" data-qf="all">전체</button>
+          <button type="button" class="dl-qf" data-qf="running">받는 중</button>
+          <button type="button" class="dl-qf" data-qf="done">완료</button>
+          <button type="button" class="dl-qf" data-qf="error">실패</button>
+        </div>
       </div>
       <div id="dlQueueList" class="dl-queue-list"></div>
     </section>

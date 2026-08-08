@@ -649,12 +649,16 @@ body.compact-ui .recent-item-title {
 
 body.compact-ui .dl-queue {
   margin: 4px 8px 0;
-  max-height: 88px;
-  padding: 5px 6px;
+  max-height: none;
+  padding: 6px 7px;
 }
 
 body.compact-ui .dl-queue-list {
-  max-height: 48px;
+  max-height: 200px;
+}
+
+body.compact-ui .dl-queue.is-multi .dl-queue-list {
+  max-height: 260px;
 }
 
 body.compact-ui .footer {
@@ -1977,15 +1981,20 @@ body.ultra-ui .pl-hint {
 /* ── Multi download queue ───────────────────────── */
 .dl-queue {
   margin: 6px 10px 0;
-  padding: 8px 9px 7px;
+  padding: 8px 9px 8px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  max-height: 220px;
+  max-height: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   flex-shrink: 0;
+}
+
+.dl-queue.is-multi {
+  border-color: rgba(59, 130, 246, 0.4);
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.12);
 }
 
 .dl-queue.hidden {
@@ -1995,7 +2004,7 @@ body.ultra-ui .pl-hint {
 .dl-queue-header {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .dl-queue-title-row {
@@ -2052,6 +2061,35 @@ body.ultra-ui .pl-hint {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+  line-height: 1.35;
+}
+
+.dl-queue-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-left: 2px;
+}
+
+.dl-queue-filters.hidden {
+  display: none !important;
+}
+
+.dl-qf {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.dl-qf.active {
+  background: rgba(37, 99, 235, 0.25);
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #93c5fd;
 }
 
 .dl-queue-list {
@@ -2059,8 +2097,19 @@ body.ultra-ui .pl-hint {
   flex-direction: column;
   gap: 6px;
   overflow-y: auto;
-  max-height: 160px;
+  max-height: 220px;
   padding-right: 2px;
+}
+
+.dl-queue.is-multi .dl-queue-list {
+  max-height: 300px;
+}
+
+.dl-queue-empty {
+  font-size: 11px;
+  color: var(--muted);
+  padding: 10px 6px;
+  text-align: center;
 }
 
 .dl-job {
@@ -2106,8 +2155,22 @@ body.ultra-ui .pl-hint {
 .dl-job-top {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 7px;
   margin-bottom: 6px;
+}
+
+.dl-job-num {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 800;
+  color: var(--muted);
+  min-width: 18px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.dl-job.is-running .dl-job-num {
+  color: #93c5fd;
 }
 
 .dl-job-status {
@@ -2124,7 +2187,7 @@ body.ultra-ui .pl-hint {
 .dl-job-status.running {
   background: rgba(37, 99, 235, 0.25);
   color: #93c5fd;
-  animation: dl-pulse 1.2s ease-in-out infinite;
+  /* no pulse — caused constant “blink” distraction */
 }
 
 .dl-job-status.done {
@@ -2191,6 +2254,28 @@ body.ultra-ui .pl-hint {
   color: var(--muted);
 }
 
+.dl-job-meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-top: 3px;
+}
+
+.dl-job-chip {
+  font-size: 8px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.dl-job.is-running .dl-job-chip {
+  border-color: rgba(59, 130, 246, 0.3);
+  color: #93c5fd;
+}
+
 .dl-job-msg {
   font-size: 10px;
   color: var(--muted);
@@ -2200,14 +2285,34 @@ body.ultra-ui .pl-hint {
   margin-top: 2px;
 }
 
+.dl-job-right {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 40px;
+}
+
 .dl-job-pct {
   flex-shrink: 0;
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 13px;
+  font-weight: 800;
   font-variant-numeric: tabular-nums;
   color: #93c5fd;
-  min-width: 34px;
   text-align: right;
+  line-height: 1.1;
+}
+
+.dl-job-pct.is-live {
+  color: #60a5fa;
+}
+
+.dl-job-phase {
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .dl-job.is-done .dl-job-pct {
@@ -2219,7 +2324,7 @@ body.ultra-ui .pl-hint {
 }
 
 .dl-job-bar {
-  height: 4px;
+  height: 5px;
   background: var(--bg);
   border-radius: 99px;
   overflow: hidden;
@@ -2233,6 +2338,7 @@ body.ultra-ui .pl-hint {
   transition: width 0.25s ease;
 }
 
+/* Progress fill: solid color only — animated gradients caused flicker */
 .dl-job.is-done .dl-job-fill {
   background: linear-gradient(90deg, #059669, #10b981);
 }
@@ -2240,6 +2346,13 @@ body.ultra-ui .pl-hint {
 .dl-job.is-error .dl-job-fill {
   background: linear-gradient(90deg, #be123c, #e11d48);
   width: 100% !important;
+}
+
+.dl-job.is-sticky {
+  /* Keep failed rows easy to click — no motion */
+  position: relative;
+  z-index: 1;
+  box-shadow: 0 0 0 1px rgba(225, 29, 72, 0.25);
 }
 
 .list {

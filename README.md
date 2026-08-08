@@ -1,133 +1,168 @@
 # Universal Video Downloader
 
-Chrome(Chromium) 확장 프로그램 — 페이지 미디어 감지 + HLS 병합 + **YouTube / TikTok** (로컬 yt-dlp 도우미).
+Chrome(Chromium) 확장 프로그램 — 페이지 미디어 감지, HLS 병합, **YouTube / TikTok / 일반 영상 사이트**, 로컬 **yt-dlp 도우미**, 시리즈·나중 받기·로컬 서재.
 
-**v1.9.0** — YouTube·TikTok 페이지 다운로드, 도우미 상태 표시
+**v1.23.1** — 다중 다운로드 큐 안정화, 파일명/저장 오류 보강, 시리즈 검증·나중받기 묶음
 
-## 기능
+---
+
+## 주요 기능
 
 | 기능 | 설명 |
 |------|------|
-| 페이지 스캔 | `<video>` / `<audio>`, `og:video`, data 속성 |
-| 네트워크 캡처 | mp4, webm, m3u8, mpd, ts 등 |
-| 플레이어 훅 | fetch / XHR / media `src` 후킹 |
-| **HLS 병합** | m3u8 세그먼트 fetch → AES-128 복호화 → .ts/.mp4 병합 저장 |
-| **화질 필터** | 4K / 1080p / 720p / 480p / 360p + 병합 시 선호 품질 |
-| **우클릭 메뉴** | 미디어·링크·페이지 최고 화질 다운로드 |
-| Blob 캡처 | `blob:` 소스 읽기 시도 |
-| 배지 | 탭별 감지 개수 |
+| 페이지 스캔 | `<video>` / `og:video`, 네트워크 캡처, 플레이어 훅 |
+| **HLS 병합** | m3u8 세그먼트 수집 → AES-128 복호화 → 파일 저장 |
+| **화질 선택** | 최고 / 4K / 1080p / 720p … (사이트·스트림에 따라 다름) |
+| **로컬 yt-dlp 도우미** | YouTube 등 복잡 사이트 URL 한 번으로 저장 |
+| **다중 다운로드 큐** | 동시 받기, 파일별 진행률, 일시정지/취소, 실패 시 다시 받기 |
+| **시리즈 완주** | YouTube 재생목록 / 품번(예: SSIS-001) 다음 편 제안 |
+| **품번 존재 검증** | 추정만 하지 않고 페이지를 확인해 **있는 편만** 목록에 표시 |
+| **나중 받기** | 워치리스트, 시리즈 묶음 받기/삭제, 예약 |
+| **로컬 서재** | 완료·실패 기록, 시리즈 이어받기(서재 최대 번호 이후) |
+| 우클릭 메뉴 | 미디어·링크·페이지 다운로드 |
+| 단축키 | `Alt+Shift+D` 현재 탭 · `Alt+Shift+A` 오디오 · `Alt+Shift+B` 최고 화질 |
+
+---
 
 ## 설치 (개발자 모드)
 
-1. Chrome에서 `chrome://extensions` 열기
-2. **개발자 모드** ON
-3. **압축해제된 확장 프로그램을 로드합니다**
-4. 폴더 선택: `video-downloader-extension`
-5. 업데이트 후 **새로고침** 버튼으로 확장 재로드
+1. Chrome에서 `chrome://extensions` 열기  
+2. **개발자 모드** ON  
+3. **압축해제된 확장 프로그램을 로드합니다**  
+4. 이 폴더(`video-downloader-extension`) 선택  
+5. 코드 수정 후 확장 **새로고침**
 
-## yt-dlp 헬퍼 (추천 — 지원 사이트 대폭 증가)
+---
 
-브라우저 확장만으로는 DRM·복잡 플레이어 한계가 있습니다.  
-로컬에서 **yt-dlp** 를 켜 두면 YouTube 등 수천 사이트를 페이지 URL만으로 받을 수 있습니다.
+## yt-dlp 헬퍼 (강력 추천)
+
+브라우저만으로는 DRM·복잡 플레이어에 한계가 있습니다.  
+로컬 헬퍼를 켜 두면 YouTube·소셜·다수 사이트 다운로드가 안정적입니다.
 
 ### 1) yt-dlp 설치
 
 ```bash
 # macOS
 brew install yt-dlp
-
 # 또는
 pip3 install -U yt-dlp
 ```
 
-### 2) 헬퍼 실행 (다운로드할 동안 켜 두기)
+### 2) 헬퍼 실행
 
 ```bash
-# 터미널
 cd video-downloader-extension
 python3 helper/yt_dlp_server.py
 
-# 또는 macOS에서 start.command 더블클릭
+# 또는 macOS
 chmod +x helper/start.command
 open helper/start.command
 ```
 
-- 주소: `http://127.0.0.1:8787`
-- 저장 위치: `~/Downloads/VideoDownloader/`
+- 주소: `http://127.0.0.1:8787`  
+- 기본 저장: `~/Downloads/VideoDownloader/`  
+- 백그라운드/로그인 시 자동 실행: `helper/install_autostart.command`
 
 ### 3) 확장에서 확인
 
-팝업 상단이 **yt-dlp 연결됨** (초록 점) 이면 준비 완료.
+팝업 상단 **도우미 연결됨**(초록)이면 준비 완료.
 
-| 버튼 | 동작 |
+| 동작 | 설명 |
 |------|------|
-| **이 페이지 받기** | 현재 탭 URL을 yt-dlp에 넘겨 저장 (가장 강력) |
-| 목록 **다운로드** | yt-dlp 우선 → 실패 시 기존 브라우저 방식 |
+| **이 페이지 받기** | 현재 탭 URL을 yt-dlp로 저장 |
+| 카드 **다운로드** | yt-dlp 우선 → 실패 시 브라우저/HLS 방식 |
 
-헬퍼를 끄면 예전처럼 확장 단독 모드로 동작합니다.
+---
 
 ## 사용법
 
-### 팝업
-1. 영상 페이지에서 **재생** 한 번
-2. 확장 아이콘 클릭
-3. 유형/화질 필터로 목록 좁히기
-4. **HLS 병합 저장** 또는 **다운로드**
-5. `m3u8` 버튼 → 플레이리스트만 저장 (병합 없이)
+### 기본
+
+1. 영상 페이지에서 **재생** 한 번 (HLS/캡처 사이트)  
+2. 확장 아이콘 클릭  
+3. 화질 선택 후 **다운로드** / **이 페이지 받기**  
+4. 여러 개면 상단 **받는 중** 큐에서 파일별 진행률 확인  
+
+### 시리즈
+
+- **YouTube 재생목록**: 나머지 항목 미리보기 → 체크 → 바로 받기  
+- **품번 시리즈**(123av 등): 다음 번호를 **페이지에서 확인**한 뒤 목록 표시  
+  - 없는 번호는 제외, 진행 UI에 확인 중 표시  
+  - 서재에 이미 받은 최대 번호가 있으면 **그 다음부터** 이어받기  
+- **나중 받기** 탭: 시리즈 묶음 받기 / 묶음 삭제  
 
 ### 우클릭
-- 영상/오디오 위: **이 미디어 다운로드**
-- 링크 위: **링크를 미디어로 다운로드**
-- 페이지: **페이지에서 최고 화질 다운로드** / **이 페이지 미디어 스캔**
 
-### HLS 병합
-- 마스터 플레이리스트면 **병합 품질**(최고/4K/1080p…)에 맞는 변형 선택
-- 세그먼트를 병렬(4)로 받아 하나로 합침
-- MPEG-TS → `.ts` / fMP4(`EXT-X-MAP`) → `.mp4`
-- 진행률 바가 팝업에 표시됩니다
-- VLC, IINA, 퀵타임 등에서 `.ts` 재생 가능. mp4가 필요하면:
+- 미디어 / 링크 / 페이지 최고 화질 다운로드  
 
-```bash
-ffmpeg -i input.ts -c copy output.mp4
-```
+---
 
-## 한계
+## 지원·한계
 
 | 상황 | 결과 |
 |------|------|
-| 일반 mp4/webm | 직접 다운로드 |
-| HLS (비암호화 / AES-128) | 확장 안에서 병합 |
+| 일반 mp4/webm | 직접 또는 도우미로 저장 |
+| HLS (AES-128 포함) | 확장 병합 저장 |
+| YouTube / TikTok 등 | **도우미 권장** |
+| 123av·missav 계열 | 페이지 재생 후 캡처 + 품번 시리즈 검증 |
 | SAMPLE-AES / Widevine DRM | **불가** |
 | DASH (mpd) | URL 수집만 (병합 미지원) |
-| 매우 긴 라이브 슬라이딩 윈도우 | 세그먼트 상한(5000) |
+| 품번 시리즈 | 사이트 구조·Cloudflare에 따라 확인 실패 가능 — **추정만으로 목록에 넣지 않음** |
 | `chrome://`, 웹스토어 | 스크립트 제한 |
 
-## 저작권
+### 저작권
 
 본인이 권리를 가진 콘텐츠·약관이 허용하는 경우에만 사용하세요.
+
+---
 
 ## 구조
 
 ```
 video-downloader-extension/
 ├── manifest.json
-├── icons/
 ├── README.md
+├── QA.md                 # 수동 스모크 체크리스트
+├── icons/
+├── helper/
+│   ├── yt_dlp_server.py  # 로컬 도우미 :8787
+│   ├── start.command
+│   └── install_autostart.command
 └── src/
-    ├── background.js       # 캡처, 메뉴, 다운로드 조율
-    ├── hls-downloader.js   # m3u8 파서 + 병합
-    ├── content.js          # DOM 스캔
-    ├── injected.js         # 페이지 훅
-    └── popup.*             # UI
+    ├── background.js     # 큐, 다운로드, 메시지
+    ├── popup.*           # UI
+    ├── content.js        # 페이지 스캔, 시리즈 메타 probe
+    ├── hls-downloader.js
+    ├── naming.js
+    ├── uvd-common.js
+    └── ytdlp.js
 ```
+
+---
 
 ## 권한
 
 - `downloads` — 파일 저장  
-- `webRequest` — 미디어 요청 감지  
-- `contextMenus` — 우클릭 메뉴  
-- `scripting` / `tabs` / `storage` / `alarms`  
+- `webRequest` / `declarativeNetRequest` — 미디어·Referer  
+- `contextMenus` — 우클릭  
+- `scripting` / `tabs` / `storage` / `alarms` / `cookies` / `notifications`  
 - `<all_urls>` — 범용 감지  
+
+---
+
+## 문제 해결
+
+| 증상 | 조치 |
+|------|------|
+| 도우미 끊김 | `helper/start.command` 실행, 팝업에서 재확인 |
+| 403 / 조각 실패 | 페이지에서 **재생 직후** 다시 받기 |
+| 파일 저장 실패 | 확장 **새로고침** 후 재시도 |
+| 시리즈 목록 비어 있음 | 해당 사이트 탭을 연 채 시도, Cloudflare/로그인 확인 |
+| 큐 깜빡임 | v1.23.1+ 에서 개선 (확장 새로고침) |
+
+자세한 수동 확인 항목은 **[QA.md](./QA.md)** 참고.
+
+---
 
 ## 라이선스
 

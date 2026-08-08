@@ -559,6 +559,8 @@ def run_download(job_id: str, payload: dict) -> None:
     # output template — clean human names (no "(2) " notification prefix, no "_best")
     def clean_name(raw: str) -> str:
         s = (raw or "").strip()
+        # drop any directory parts (defense in depth)
+        s = s.replace("\\", "/").split("/")[-1]
         # strip extension
         for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a", ".mp3"):
             if s.lower().endswith(ext):
@@ -570,8 +572,11 @@ def run_download(job_id: str, payload: dict) -> None:
         s = re.sub(r"[_\s-]*(best|all|unknown)$", "", s, flags=re.I)
         s = re.sub(r"[_\s-]*(best|all)[_\s-]*", " ", s, flags=re.I)
         s = "".join(c if c not in '<>:"/\\|?*' else " " for c in s)
-        s = " ".join(s.split()).strip(" ._-" )[:80]
-        return s or "video"
+        s = " ".join(s.split()).strip(" ._-")[:80]
+        # bare / empty names break yt-dlp -o templates and OS save
+        if not s or len(s) < 2 or s in {".", ".."}:
+            return "video"
+        return s
 
     if title_hint:
         safe = clean_name(title_hint)

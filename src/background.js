@@ -925,7 +925,8 @@ function createDownloadJob({
         ...(Array.isArray(tags) ? tags : []),
         seriesId || "",
         seriesKey || "",
-        "series"
+        // Only mark as series when we actually have a series id
+        seriesId ? "series" : ""
       ].filter(Boolean)
     )
   ];
@@ -1391,28 +1392,48 @@ function emitDownloadProgress(tabId, percent, message, phase = "download", jobId
 }
 
 function safeDownloadName(filename, mime = "") {
-  let name = String(filename || `영상_${Date.now()}`);
+  const defaultExt = mime.includes("audio") ? ".mp3" : ".mp4";
+  let name = String(filename || "");
+  // Never keep directory components here — relDownloadPath adds subfolder
+  name = name.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
   name = name
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
     .replace(/[\u{2600}-\u{27BF}]/gu, "")
-    .replace(/[♥❤💕💗💖💘⭐✨]/g, "")
+    .replace(/[♥❤💕💗💖💘⭐✨…·•]/g, "")
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
     .replace(/\s+/g, " ")
     .replace(/\.ts$/i, ".mp4")
     .replace(/\.m3u8$/i, ".mp4")
+    .replace(/^\.+/, "")
     .trim();
-  if (!name || name.length < 2) name = `영상_${Date.now()}`;
-  if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
-    name += mime.includes("audio") ? ".mp3" : ".mp4";
-  } else if (/\.ts$/i.test(name)) {
-    name = name.replace(/\.ts$/i, ".mp4");
+
+  let ext = defaultExt;
+  const m = name.match(/(\.[a-z0-9]{2,5})$/i);
+  if (m) {
+    ext = m[1].toLowerCase() === ".ts" ? ".mp4" : m[1];
+    name = name.slice(0, -m[1].length).trim();
   }
-  if (name.length > 100) {
-    const m = name.match(/(\.[a-z0-9]{2,5})$/i);
-    const ext = m ? m[1] : ".mp4";
-    name = name.slice(0, 100 - ext.length).trim() + ext;
+  // Basename must be real text — bare ".mp4" / "_" / quality-only names fail Chrome
+  name = name.replace(/^[.\s_-]+|[.\s_-]+$/g, "").trim();
+  if (
+    !name ||
+    name.length < 2 ||
+    /^(best|all|unknown|video|media|download|file|영상|동영상|mp4|webm|mkv|mp3|m4a)$/i.test(
+      name
+    )
+  ) {
+    name = `영상_${Date.now()}`;
   }
-  return name;
+  let full = `${name}${ext.startsWith(".") ? ext : `.${ext}`}`;
+  if (full.length > 100) {
+    const e = ext.startsWith(".") ? ext : `.${ext}`;
+    full = name.slice(0, Math.max(8, 100 - e.length)).trim() + e;
+  }
+  // Final guard: Chrome rejects empty base and path-like names
+  if (!/^[^\s/\\].+\.[a-z0-9]{2,5}$/i.test(full) || full.startsWith(".")) {
+    full = `영상_${Date.now()}${defaultExt}`;
+  }
+  return full;
 }
 
 function filenameFromUrl(url) {
@@ -3305,16 +3326,62 @@ async function runTrackedDownloadAsync(meta, asyncFn) {
 
 function startChromeDownload(url, filename) {
   return new Promise((resolve, reject) => {
+    // Chrome requires a relative path (optional subfolder) with a valid basename
+    let fname = String(filename || "").trim();
+    if (!fname || fname.startsWith("/") || fname.includes("..")) {
+      fname = safeDownloadName(`영상_${Date.now()}.mp4`);
+    }
+    // If path has folders, sanitize only the leaf
+    if (fname.includes("/") || fname.includes("\\")) {
+      const parts = fname.replace(/\\/g, "/").split("/").filter(Boolean);
+      const leaf = safeDownloadName(parts.pop() || `영상_${Date.now()}.mp4`);
+      const dirs = parts
+        .map((p) =>
+          String(p)
+            .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+            .trim()
+        )
+        .filter((p) => p && p !== "." && p !== "..");
+      fname = [...dirs, leaf].join("/");
+    } else {
+      fname = safeDownloadName(fname);
+    }
     chrome.downloads.download(
       {
         url,
-        filename,
+        filename: fname,
         saveAs: false,
         conflictAction: "uniquify"
       },
       (id) => {
         if (chrome.runtime.lastError || id == null) {
-          reject(new Error(chrome.runtime.lastError?.message || "다운로드 시작 실패"));
+          const err = chrome.runtime.lastError?.message || "다운로드 시작 실패";
+          // Retry once with a plain safe name (invalid path / restricted chars)
+          if (/invalid|filename|path|name/i.test(err) && fname.includes("/")) {
+            chrome.downloads.download(
+              {
+                url,
+                filename: safeDownloadName(fname.split("/").pop()),
+                saveAs: false,
+                conflictAction: "uniquify"
+              },
+              (id2) => {
+                if (chrome.runtime.lastError || id2 == null) {
+                  reject(
+                    new Error(
+                      chrome.runtime.lastError?.message ||
+                        err ||
+                        "다운로드 시작 실패"
+                    )
+                  );
+                } else {
+                  resolve(id2);
+                }
+              }
+            );
+            return;
+          }
+          reject(new Error(err));
         } else {
           resolve(id);
         }
@@ -5870,4 +5937,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-console.log("[VideoDownloader] ready v1.21.0");
+console.log("[VideoDownloader] ready v1.23.1");

@@ -72,6 +72,8 @@ const dlQueueList = $("#dlQueueList");
 const dlQueueTitle = $("#dlQueueTitle");
 const dlQueueSub = $("#dlQueueSub");
 const dlQueueBadge = $("#dlQueueBadge");
+/** Queue list filter: all | running | done | error */
+let dlQueueFilter = "all";
 
 function isYoutubeUrl(url) {
   if (!url || typeof url !== "string") return false;
@@ -1021,23 +1023,71 @@ function shortJobTitle(job) {
   return title;
 }
 
+/** Rough ETA from startedAt + percent (best-effort). */
+function jobEtaLabel(job) {
+  if (!job || job.status !== "running") return "";
+  const pct = Number(job.percent) || 0;
+  const started = Number(job.startedAt) || 0;
+  if (pct < 3 || !started) return "";
+  const elapsed = Date.now() - started;
+  if (elapsed < 4000) return "";
+  const totalEst = elapsed / (pct / 100);
+  const remain = Math.max(0, totalEst - elapsed);
+  if (!Number.isFinite(remain) || remain > 6 * 60 * 60 * 1000) return "";
+  const sec = Math.round(remain / 1000);
+  if (sec < 60) return `약 ${sec}초`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `약 ${min}분`;
+  const hr = Math.floor(min / 60);
+  const m = min % 60;
+  return `약 ${hr}시간${m ? ` ${m}분` : ""}`;
+}
+
+function jobPhaseLabel(job) {
+  const st = job?.status || "running";
+  if (st === "done") return "완료";
+  if (st === "error") return "실패";
+  if (st === "cancelled") return "취소";
+  if (st === "paused") return "일시정지";
+  const phase = String(job?.phase || "");
+  const msg = String(job?.message || "");
+  if (phase === "merge" || /만들|합치|Merg/i.test(msg)) return "합치는 중";
+  if (phase === "save" || /^저장/i.test(msg)) return "저장 중";
+  if (/시작|준비|해석|목록/i.test(msg)) return "준비 중";
+  return "받는 중";
+}
+
 function cleanJobMessage(msg, phase) {
+  // Always collapse noisy progress into a few stable Korean phrases
+  // so the queue text does not thrash every poll tick.
   let text = String(msg || "").trim();
-  if (!text || /\d+\s*\/\s*\d+/.test(text) || /조각|세그먼트|\[download\]/i.test(text)) {
-    if (phase === "merge") return "파일 만드는 중…";
-    if (phase === "save") return "저장 중…";
+  if (phase === "error" || /ERROR|실패|error/i.test(text)) {
+    const clean = text.replace(/^Error:\s*/i, "").trim();
+    return clean.length > 56 ? clean.slice(0, 54) + "…" : clean || "실패";
+  }
+  if (phase === "merge" || /만들|합치|Merg|ffmpeg/i.test(text)) {
+    return "파일 만드는 중…";
+  }
+  if (phase === "save" || /^저장|Destination|Merging into/i.test(text)) {
+    const dest = text.match(
+      /(?:Destination|Merging into|to:\s*)(.+\.(?:mp4|mkv|webm|mp3))/i
+    );
+    if (dest) {
+      const name = dest[1].split(/[/\\]/).pop();
+      return `저장 중 · ${name.length > 28 ? name.slice(0, 26) + "…" : name}`;
+    }
+    return "저장 중…";
+  }
+  if (
+    !text ||
+    /\d+\s*\/\s*\d+/.test(text) ||
+    /조각|세그먼트|\[download\]|ETA|at\s+\d|% of|MiB|KiB/i.test(text) ||
+    /받는 중|다운로드/i.test(text)
+  ) {
     return "받는 중…";
   }
-  if (/ERROR/i.test(text)) return text.slice(0, 48);
-  if (phase === "merge" || /만들|합치|Merg/i.test(text)) return "파일 만드는 중…";
-  if (phase === "save" || /^저장/i.test(text)) return "저장 중…";
-  // Keep Destination / file path snippets as "저장 중 · name"
-  const dest = text.match(/(?:Destination|Merging into|to:\s*)(.+\.(?:mp4|mkv|webm|mp3))/i);
-  if (dest) {
-    const name = dest[1].split(/[/\\]/).pop();
-    return `저장 중 · ${name.length > 28 ? name.slice(0, 26) + "…" : name}`;
-  }
-  if (text.length > 48) text = text.slice(0, 46) + "…";
+  if (/시작|준비|해석|목록|쿠키|연결/i.test(text)) return "준비 중…";
+  if (text.length > 40) return "받는 중…";
   return text;
 }
 
@@ -1057,54 +1107,85 @@ function ensureQueuePoll() {
   }, 900);
 }
 
+/** Monotonic order so rows never jump when status changes */
+let queueOrderSeq = 0;
+
 async function refreshJobsFromBackground() {
   try {
     const res = await chrome.runtime.sendMessage({ type: "GET_ACTIVE_DOWNLOADS" });
     const jobs = res?.jobs || [];
-    let changed = false;
+    let structureChanged = false;
+    let progressOnly = false;
     for (const j of jobs) {
       if (!j?.id) continue;
       trackedJobIds.add(j.id);
       const prev = uiJobs.get(j.id);
-      if (
-        !prev ||
-        prev.status !== j.status ||
-        prev.percent !== j.percent ||
-        prev.message !== j.message
-      ) {
-        upsertUiJob(j, { toast: false });
-        changed = true;
+      const prevPct = Math.round(prev?.percent || 0);
+      const nextPct = Math.round(
+        typeof j.percent === "number" ? j.percent : prevPct
+      );
+      const statusChanged = !prev || prev.status !== j.status;
+      const progressChanged =
+        prev &&
+        (prevPct !== nextPct ||
+          (prev.message || "") !== (j.message || "") ||
+          (prev.phase || "") !== (j.phase || ""));
+      if (statusChanged || !prev) {
+        upsertUiJob(j, { toast: false, forceStructure: true });
+        structureChanged = true;
+      } else if (progressChanged) {
+        upsertUiJob(j, { toast: false, progressOnly: true });
+        progressOnly = true;
       } else {
-        uiJobs.set(j.id, { ...prev, ...j });
+        // Merge quietly without re-render
+        uiJobs.set(j.id, {
+          ...prev,
+          ...j,
+          percent: Math.max(prevPct, nextPct),
+          queueOrder: prev.queueOrder
+        });
       }
     }
-    // Drop very old finished jobs not in SW anymore (keep 45s for UX)
+    // Drop very old *done* jobs not in SW — never auto-drop errors (user needs buttons)
     const now = Date.now();
     for (const [id, j] of uiJobs) {
-      if (j.status === "running") continue;
-      if (!jobs.some((x) => x.id === id) && now - (j.updatedAt || 0) > 45_000) {
+      if (j.status === "running" || j.status === "paused") continue;
+      if (j.status === "error" || j.status === "cancelled") continue;
+      if (j.pinned) continue;
+      if (!jobs.some((x) => x.id === id) && now - (j.updatedAt || 0) > 60_000) {
         uiJobs.delete(id);
-        changed = true;
+        structureChanged = true;
       }
     }
-    if (changed || jobs.length) renderDownloadQueue();
+    if (structureChanged) renderDownloadQueue(true);
+    else if (progressOnly) patchQueueProgress();
   } catch {
     /* ignore */
   }
 }
 
-/** Throttle full queue re-renders while many jobs tick */
-let queueRenderTimer = null;
-let queueDirty = false;
-function scheduleQueueRender() {
-  queueDirty = true;
-  if (queueRenderTimer) return;
-  queueRenderTimer = setTimeout(() => {
-    queueRenderTimer = null;
-    if (!queueDirty) return;
-    queueDirty = false;
-    renderDownloadQueue();
-  }, 180);
+/** Throttle progress-only patches (never rebuild whole list) */
+let queuePatchTimer = null;
+let queuePatchDirty = false;
+function scheduleQueuePatch() {
+  queuePatchDirty = true;
+  if (queuePatchTimer) return;
+  queuePatchTimer = setTimeout(() => {
+    queuePatchTimer = null;
+    if (!queuePatchDirty) return;
+    queuePatchDirty = false;
+    patchQueueProgress();
+  }, 350);
+}
+
+/** Full rebuild only when jobs added/removed/status/actions change */
+let queueFullTimer = null;
+function scheduleQueueFullRender() {
+  if (queueFullTimer) return;
+  queueFullTimer = setTimeout(() => {
+    queueFullTimer = null;
+    renderDownloadQueue(true);
+  }, 80);
 }
 
 function upsertUiJob(job, opts = {}) {
@@ -1136,6 +1217,16 @@ function upsertUiJob(job, opts = {}) {
   if (status === "done") percent = 100;
   percent = Math.max(0, Math.min(100, percent));
 
+  // Stabilize noisy progress messages → phase buckets only
+  const rawMsg = job.message || prev.message || "";
+  const phase = job.phase || prev.phase || "";
+  const stableMsg =
+    status === "running" || status === "paused"
+      ? cleanJobMessage(rawMsg, phase)
+      : status === "error" || status === "cancelled"
+        ? cleanJobMessage(job.error || rawMsg || "실패", "error")
+        : rawMsg;
+
   // Prefer richer title/filename from new event, keep previous if empty/generic
   const pickTitle = (...cands) => {
     for (const c of cands) {
@@ -1151,13 +1242,16 @@ function upsertUiJob(job, opts = {}) {
     job.result?.filename ||
     (job.result?.path ? String(job.result.path).split(/[/\\]/).pop() : "") ||
     "";
+  const queueOrder =
+    prev.queueOrder != null ? prev.queueOrder : ++queueOrderSeq;
   const next = {
     ...prev,
     ...job,
     id,
     status,
     percent,
-    message: job.message || prev.message || "",
+    message: stableMsg,
+    phase,
     title: pickTitle(job.title, prev.title, job.filename, prev.filename, resultName),
     filename:
       job.filename ||
@@ -1174,7 +1268,10 @@ function upsertUiJob(job, opts = {}) {
     error: job.error || (status === "error" ? job.message : prev.error) || null,
     result: job.result || prev.result || null,
     updatedAt: job.updatedAt || Date.now(),
-    startedAt: job.startedAt || prev.startedAt || Date.now()
+    startedAt: job.startedAt || prev.startedAt || Date.now(),
+    queueOrder,
+    // Errors stay until user dismisses
+    pinned: status === "error" || status === "cancelled" ? true : !!prev.pinned
   };
   if (next.speedBps && !next.speedLabel) {
     next.speedLabel = UVD.formatSpeed(next.speedBps);
@@ -1191,15 +1288,24 @@ function upsertUiJob(job, opts = {}) {
     }
   }
 
-  // Skip no-op updates (same % rounded + same message) to reduce flicker
+  const prevPctR = Math.round(prev.percent || 0);
+  const nextPctR = Math.round(next.percent || 0);
+  const statusChanged = prev.status !== next.status;
+  const structureNeeded =
+    opts.forceStructure ||
+    statusChanged ||
+    !prev.id ||
+    prev.title !== next.title ||
+    prev.filename !== next.filename;
+
+  // Skip no-op progress updates
   if (
+    !structureNeeded &&
     prev.status === next.status &&
-    Math.round(prev.percent || 0) === Math.round(next.percent || 0) &&
+    prevPctR === nextPctR &&
     prev.message === next.message &&
-    prev.title === next.title &&
-    prev.filename === next.filename &&
-    status === "running" &&
-    opts.toast === false
+    (prev.phase || "") === (next.phase || "") &&
+    status === "running"
   ) {
     uiJobs.set(id, next);
     return;
@@ -1208,10 +1314,13 @@ function upsertUiJob(job, opts = {}) {
   uiJobs.set(id, next);
   trackedJobIds.add(id);
   syncDownloadingFlag();
-  if (status === "done" || status === "error") {
-    renderDownloadQueue();
+
+  if (structureNeeded) {
+    scheduleQueueFullRender();
+  } else if (opts.progressOnly || status === "running" || status === "paused") {
+    scheduleQueuePatch();
   } else {
-    scheduleQueueRender();
+    scheduleQueueFullRender();
   }
 
   if (opts.toast !== false) {
@@ -1233,84 +1342,103 @@ function upsertUiJob(job, opts = {}) {
   }
 
   if (status === "running") ensureQueuePoll();
-  // Auto-remove finished rows after a while
-  if (status === "done" || status === "error") {
+  // Auto-remove *done* only — errors stay until dismiss (so buttons stay clickable)
+  if (status === "done" && !next.pinned) {
+    const keepMs = uiJobs.size >= 2 ? 50_000 : 25_000;
     setTimeout(() => {
       const cur = uiJobs.get(id);
-      if (cur && cur.status !== "running") {
+      if (cur && cur.status === "done" && !cur.pinned) {
         uiJobs.delete(id);
-        renderDownloadQueue();
+        renderDownloadQueue(true);
       }
-    }, 20_000);
+    }, keepMs);
   }
 }
 
-function renderDownloadQueue() {
-  if (!dlQueueEl || !dlQueueList) return;
-  const jobs = [...uiJobs.values()].sort(
-    (a, b) => (b.startedAt || 0) - (a.startedAt || 0)
-  );
+/** Stable list order — never re-sort by status (prevents error rows jumping). */
+function sortedUiJobs() {
+  return [...uiJobs.values()].sort((a, b) => {
+    const oa = a.queueOrder ?? a.startedAt ?? 0;
+    const ob = b.queueOrder ?? b.startedAt ?? 0;
+    return oa - ob;
+  });
+}
+
+function updateQueueHeader(jobs) {
   const running = jobs.filter((j) => j.status === "running");
   const paused = jobs.filter((j) => j.status === "paused");
   const done = jobs.filter((j) => j.status === "done");
-  const errored = jobs.filter((j) => j.status === "error" || j.status === "cancelled");
-
-  if (!jobs.length) {
-    dlQueueEl.classList.add("hidden");
-    // hide legacy single bar too
-    if (progressEl) progressEl.classList.add("hidden");
-    syncDownloadingFlag();
-    return;
-  }
-
-  dlQueueEl.classList.remove("hidden");
-  // Prefer multi queue over single bar
-  if (progressEl) progressEl.classList.add("hidden");
+  const errored = jobs.filter(
+    (j) => j.status === "error" || j.status === "cancelled"
+  );
 
   if (dlQueueTitle) {
     if (running.length) {
-      dlQueueTitle.textContent = `받는 중 ${running.length}개`;
+      dlQueueTitle.textContent =
+        jobs.length > 1
+          ? `받는 중 ${running.length}/${jobs.length}`
+          : `받는 중 ${running.length}개`;
     } else if (paused.length) {
       dlQueueTitle.textContent = `일시정지 ${paused.length}개`;
+    } else if (errored.length && !running.length) {
+      dlQueueTitle.textContent = `실패 ${errored.length}개 · 조치 필요`;
     } else if (done.length && !errored.length) {
       dlQueueTitle.textContent = `완료 ${done.length}개`;
-    } else if (errored.length) {
-      dlQueueTitle.textContent = `실패·취소 ${errored.length}개`;
     } else {
       dlQueueTitle.textContent = `다운로드 ${jobs.length}개`;
     }
   }
 
   if (dlQueueBadge) {
-    const n = running.length || done.length || errored.length;
+    const n = running.length || errored.length || done.length;
     dlQueueBadge.textContent = String(n);
     dlQueueBadge.classList.remove("hidden", "done", "error");
-    if (!running.length && done.length) dlQueueBadge.classList.add("done");
-    if (!running.length && errored.length && !done.length) {
+    if (!running.length && done.length && !errored.length) {
+      dlQueueBadge.classList.add("done");
+    }
+    if (!running.length && errored.length) {
       dlQueueBadge.classList.add("error");
     }
   }
 
+  const filtEl = $("#dlQueueFilters");
+  if (filtEl) {
+    if (jobs.length >= 2) {
+      filtEl.classList.remove("hidden");
+      filtEl.querySelectorAll(".dl-qf").forEach((btn) => {
+        const f = btn.getAttribute("data-qf") || "all";
+        btn.classList.toggle("active", f === dlQueueFilter);
+        let n = jobs.length;
+        if (f === "running") n = running.length + paused.length;
+        else if (f === "done") n = done.length;
+        else if (f === "error") n = errored.length;
+        const base =
+          f === "all"
+            ? "전체"
+            : f === "running"
+              ? "받는 중"
+              : f === "done"
+                ? "완료"
+                : "실패";
+        btn.textContent = n ? `${base} ${n}` : base;
+      });
+    } else {
+      filtEl.classList.add("hidden");
+    }
+  }
+
   if (dlQueueSub) {
-    if (running.length > 1) {
-      const names = running
-        .slice(0, 2)
-        .map((j) => shortJobTitle(j))
-        .join(" · ");
-      dlQueueSub.textContent = `${running.length}개 동시 · ${names}${
-        running.length > 2 ? " …" : ""
-      }`;
+    // Header stays light — per-file % lives on each row only
+    if (errored.length && !running.length) {
+      dlQueueSub.textContent = `실패 ${errored.length}개 · 아래에서 다시 받기 / 닫기`;
+      dlQueueSub.title = errored.map((j) => shortJobTitle(j)).join("\n");
+    } else if (running.length > 1) {
+      dlQueueSub.textContent = `${running.length}개 동시 받는 중 · 각 파일 진행률은 아래 참고`;
       dlQueueSub.title = running.map((j) => shortJobTitle(j)).join("\n");
     } else if (running.length === 1) {
       const info = jobDisplayInfo(running[0]);
-      dlQueueSub.textContent = `받는 중 · ${info.title}`;
-      dlQueueSub.title = [
-        info.title,
-        info.fileLabel ? `파일: ${info.fileLabel}` : "",
-        info.quality ? `화질: ${info.quality}` : ""
-      ]
-        .filter(Boolean)
-        .join("\n");
+      dlQueueSub.textContent = info.title;
+      dlQueueSub.title = info.fileLabel || info.title;
     } else if (done.length) {
       dlQueueSub.textContent = "저장 위치: 다운로드/VideoDownloader";
       dlQueueSub.title = "";
@@ -1319,43 +1447,158 @@ function renderDownloadQueue() {
       dlQueueSub.title = "";
     }
   }
+}
 
-  dlQueueList.innerHTML = jobs
-    .map((j) => {
-      const st = j.status || "running";
-      const pct = Math.min(100, Math.max(0, Math.round(j.percent || 0)));
-      const icon =
-        st === "done"
-          ? "✓"
-          : st === "error" || st === "cancelled"
-            ? "!"
-            : st === "paused"
-              ? "❚❚"
-              : "↓";
-      const pctLabel =
-        st === "done"
-          ? "완료"
-          : st === "error"
-            ? "실패"
-            : st === "cancelled"
-              ? "취소"
-              : st === "paused"
-                ? "정지"
-                : `${pct}%`;
+/**
+ * Update % / bar / phase text without replacing DOM (no flicker, buttons stay).
+ */
+function patchQueueProgress() {
+  if (!dlQueueEl || !dlQueueList) return;
+  const jobs = sortedUiJobs();
+  if (!jobs.length) {
+    renderDownloadQueue(true);
+    return;
+  }
+  updateQueueHeader(jobs);
+
+  for (const j of jobs) {
+    const safeId = String(j.id).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    const row = dlQueueList.querySelector(`.dl-job[data-job-id="${safeId}"]`);
+    if (!row) continue;
+    const st = j.status || "running";
+    // Structure-level status change → full rebuild needed
+    if (
+      (st === "running" && !row.classList.contains("is-running")) ||
+      (st === "paused" && !row.classList.contains("is-paused")) ||
+      (st === "done" && !row.classList.contains("is-done")) ||
+      ((st === "error" || st === "cancelled") && !row.classList.contains("is-error"))
+    ) {
+      renderDownloadQueue(true);
+      return;
+    }
+    if (st !== "running" && st !== "paused") continue;
+
+    const pct = Math.min(100, Math.max(0, Math.round(j.percent || 0)));
+    const phase = jobPhaseLabel(j);
+    const msg = cleanJobMessage(j.message, j.phase);
+    const eta = jobEtaLabel(j);
+    const speed =
+      st === "running" && (j.speedLabel || j.speedBps)
+        ? j.speedLabel || UVD.formatSpeed(j.speedBps)
+        : "";
+
+    const pctEl = row.querySelector(".dl-job-pct");
+    if (pctEl && st === "running") pctEl.textContent = `${pct}%`;
+    if (pctEl && st === "paused") pctEl.textContent = "정지";
+
+    const phaseEl = row.querySelector(".dl-job-phase");
+    if (phaseEl) phaseEl.textContent = phase;
+
+    const msgEl = row.querySelector(".dl-job-msg");
+    if (msgEl && msgEl.textContent !== msg) msgEl.textContent = msg;
+
+    const fill = row.querySelector(".dl-job-fill");
+    if (fill) fill.style.width = `${pct}%`;
+
+    const metaLine = row.querySelector(".dl-job-meta-line");
+    if (metaLine) {
       const info = jobDisplayInfo(j);
-      const msg =
-        st === "error" || st === "cancelled"
-          ? cleanJobMessage(j.error || j.message || "실패", "error")
-          : st === "paused"
-            ? j.message || "일시정지됨"
-            : cleanJobMessage(j.message, j.phase);
-      const errMeta =
-        st === "error"
-          ? UVD.classifyError(j.error || j.message || "")
-          : null;
-      let actionsHtml = "";
-      if (st === "running") {
-        actionsHtml = `<div class="dl-job-actions">
+      const bits = [info.site, info.quality, phase, speed, eta].filter(Boolean);
+      // Only rewrite chips if content set changed
+      const key = bits.join("|");
+      if (metaLine.dataset.bits !== key) {
+        metaLine.dataset.bits = key;
+        metaLine.innerHTML = bits
+          .map((t) => `<span class="dl-job-chip">${escapeHtml(t)}</span>`)
+          .join("");
+      }
+    }
+  }
+  syncDownloadingFlag();
+  if (playlistDl.jobIds.size) updatePlaylistProgressUi();
+}
+
+function renderDownloadQueue(_force = false) {
+  if (!dlQueueEl || !dlQueueList) return;
+  // Stable order by queueOrder (first-seen) — rows never reshuffle
+  const jobs = sortedUiJobs();
+  const running = jobs.filter((j) => j.status === "running");
+  const paused = jobs.filter((j) => j.status === "paused");
+  const done = jobs.filter((j) => j.status === "done");
+  const errored = jobs.filter(
+    (j) => j.status === "error" || j.status === "cancelled"
+  );
+
+  if (!jobs.length) {
+    dlQueueEl.classList.add("hidden");
+    if (progressEl) progressEl.classList.add("hidden");
+    syncDownloadingFlag();
+    return;
+  }
+
+  dlQueueEl.classList.remove("hidden");
+  dlQueueEl.classList.toggle("is-multi", jobs.length >= 2);
+  if (progressEl) progressEl.classList.add("hidden");
+
+  updateQueueHeader(jobs);
+
+  let visible = jobs;
+  if (dlQueueFilter === "running") {
+    visible = jobs.filter(
+      (j) => j.status === "running" || j.status === "paused"
+    );
+  } else if (dlQueueFilter === "done") {
+    visible = jobs.filter((j) => j.status === "done");
+  } else if (dlQueueFilter === "error") {
+    visible = jobs.filter(
+      (j) => j.status === "error" || j.status === "cancelled"
+    );
+  }
+
+  const indexOf = new Map(jobs.map((j, i) => [j.id, i + 1]));
+
+  // Preserve scroll position across rebuild
+  const prevScroll = dlQueueList.scrollTop;
+
+  dlQueueList.innerHTML = visible.length
+    ? visible
+        .map((j) => {
+          const st = j.status || "running";
+          const pct = Math.min(100, Math.max(0, Math.round(j.percent || 0)));
+          const num = indexOf.get(j.id) || 1;
+          const icon =
+            st === "done"
+              ? "✓"
+              : st === "error" || st === "cancelled"
+                ? "!"
+                : st === "paused"
+                  ? "❚❚"
+                  : "↓";
+          const phase = jobPhaseLabel(j);
+          const pctLabel =
+            st === "done"
+              ? "완료"
+              : st === "error"
+                ? "실패"
+                : st === "cancelled"
+                  ? "취소"
+                  : st === "paused"
+                    ? "정지"
+                    : `${pct}%`;
+          const info = jobDisplayInfo(j);
+          const msg =
+            st === "error" || st === "cancelled"
+              ? cleanJobMessage(j.error || j.message || "실패", "error")
+              : st === "paused"
+                ? "일시정지됨"
+                : cleanJobMessage(j.message, j.phase);
+          const errMeta =
+            st === "error"
+              ? UVD.classifyError(j.error || j.message || "")
+              : null;
+          let actionsHtml = "";
+          if (st === "running") {
+            actionsHtml = `<div class="dl-job-actions">
           <button type="button" class="btn" data-act="pause" data-job="${escapeAttr(
             j.id
           )}">일시정지</button>
@@ -1363,8 +1606,8 @@ function renderDownloadQueue() {
             j.id
           )}">취소</button>
         </div>`;
-      } else if (st === "paused") {
-        actionsHtml = `<div class="dl-job-actions">
+          } else if (st === "paused") {
+            actionsHtml = `<div class="dl-job-actions">
           <button type="button" class="btn" data-act="resume" data-job="${escapeAttr(
             j.id
           )}">다시 시작</button>
@@ -1372,61 +1615,98 @@ function renderDownloadQueue() {
             j.id
           )}">취소</button>
         </div>`;
-      } else if (st === "error") {
-        actionsHtml = recoveryActionsHtml(errMeta, j.pageUrl, j);
-      } else if (st === "done") {
-        actionsHtml = `<div class="dl-job-actions">
+          } else if (st === "error") {
+            actionsHtml =
+              recoveryActionsHtml(errMeta, j.pageUrl, j) +
+              `<div class="dl-job-actions">
+                <button type="button" class="btn ghost" data-act="dismiss" data-job="${escapeAttr(
+                  j.id
+                )}">닫기</button>
+              </div>`;
+          } else if (st === "cancelled") {
+            actionsHtml = `<div class="dl-job-actions">
+                <button type="button" class="btn ghost" data-act="dismiss" data-job="${escapeAttr(
+                  j.id
+                )}">닫기</button>
+              </div>`;
+          } else if (st === "done") {
+            actionsHtml = `<div class="dl-job-actions">
                 <button type="button" class="btn" data-act="show" data-path="${escapeAttr(
                   j.result?.path || ""
                 )}" data-did="${escapeAttr(
                   j.result?.downloadId ?? ""
                 )}">폴더</button>
+                <button type="button" class="btn ghost" data-act="dismiss" data-job="${escapeAttr(
+                  j.id
+                )}">닫기</button>
               </div>`;
-      }
-      const errLine =
-        st === "error" && errMeta
-          ? `<div class="dl-job-err-box"><div class="dl-job-err"><strong>${escapeHtml(
-              errMeta.label
-            )}</strong> — ${escapeHtml(errMeta.hint)}</div></div>`
-          : "";
-      const tags = [info.site, info.quality].filter(Boolean);
-      const tagsHtml = tags.length
-        ? `<div class="dl-job-tags">${tags
-            .map((t) => `<span class="dl-job-tag">${escapeHtml(t)}</span>`)
-            .join("")}</div>`
-        : "";
-      const fileHtml = info.fileLabel
-        ? `<div class="dl-job-file" title="${escapeAttr(info.fileLabel)}">📄 ${escapeHtml(
-            info.fileLabel
-          )}</div>`
-        : "";
-      const speed =
-        st === "running" && (j.speedLabel || j.speedBps)
-          ? j.speedLabel || UVD.formatSpeed(j.speedBps)
-          : "";
-      const speedHtml = speed
-        ? `<div class="dl-job-speed">${escapeHtml(speed)}</div>`
-        : "";
-      const tip = [info.title, info.fileLabel, j.pageUrl].filter(Boolean).join("\n");
-      return `
+          }
+          const errLine =
+            st === "error" && errMeta
+              ? `<div class="dl-job-err-box"><div class="dl-job-err"><strong>${escapeHtml(
+                  errMeta.label
+                )}</strong> — ${escapeHtml(errMeta.hint)}</div></div>`
+              : "";
+          const eta = jobEtaLabel(j);
+          const speed =
+            st === "running" && (j.speedLabel || j.speedBps)
+              ? j.speedLabel || UVD.formatSpeed(j.speedBps)
+              : "";
+          const metaBits = [
+            info.site,
+            info.quality,
+            phase,
+            speed,
+            eta
+          ].filter(Boolean);
+          const metaLine = metaBits.length
+            ? `<div class="dl-job-meta-line" data-bits="${escapeAttr(
+                metaBits.join("|")
+              )}">${metaBits
+                .map(
+                  (t) =>
+                    `<span class="dl-job-chip">${escapeHtml(t)}</span>`
+                )
+                .join("")}</div>`
+            : "";
+          const fileHtml = info.fileLabel
+            ? `<div class="dl-job-file" title="${escapeAttr(
+                info.fileLabel
+              )}">📄 ${escapeHtml(info.fileLabel)}</div>`
+            : "";
+          const tip = [info.title, info.fileLabel, j.pageUrl]
+            .filter(Boolean)
+            .join("\n");
+          const titleShort =
+            info.title.length > 52
+              ? info.title.slice(0, 50) + "…"
+              : info.title;
+          return `
         <div class="dl-job ${st === "done" ? "is-done" : ""} ${
-          st === "error" || st === "cancelled" ? "is-error" : ""
+          st === "error" || st === "cancelled" ? "is-error is-sticky" : ""
         } ${st === "running" ? "is-running" : ""} ${
           st === "paused" ? "is-paused" : ""
-        }" data-job-id="${escapeAttr(j.id)}">
+        }" data-job-id="${escapeAttr(j.id)}" data-status="${escapeAttr(st)}">
           <div class="dl-job-top">
+            <span class="dl-job-num" title="큐 순서">#${num}</span>
             <span class="dl-job-status ${escapeAttr(st)}" aria-hidden="true">${icon}</span>
             <div class="dl-job-meta">
               <div class="dl-job-title" title="${escapeAttr(tip)}">${escapeHtml(
-                info.title.length > 60 ? info.title.slice(0, 58) + "…" : info.title
+                titleShort
               )}</div>
               ${fileHtml}
-              ${tagsHtml}
+              ${metaLine}
               <div class="dl-job-msg">${escapeHtml(msg)}</div>
-              ${speedHtml}
               ${errLine}
             </div>
-            <span class="dl-job-pct">${escapeHtml(pctLabel)}</span>
+            <div class="dl-job-right">
+              <span class="dl-job-pct">${escapeHtml(pctLabel)}</span>
+              ${
+                st === "running"
+                  ? `<span class="dl-job-phase">${escapeHtml(phase)}</span>`
+                  : ""
+              }
+            </div>
           </div>
           <div class="dl-job-bar">
             <div class="dl-job-fill" style="width:${
@@ -1435,12 +1715,34 @@ function renderDownloadQueue() {
           </div>
           ${actionsHtml}
         </div>`;
-    })
-    .join("");
+        })
+        .join("")
+    : `<div class="dl-queue-empty">이 필터에 항목이 없습니다</div>`;
+
+  dlQueueList.scrollTop = prevScroll;
+
+  // Filter clicks — bind once via delegation if needed
+  $("#dlQueueFilters")
+    ?.querySelectorAll(".dl-qf")
+    .forEach((btn) => {
+      btn.onclick = () => {
+        dlQueueFilter = btn.getAttribute("data-qf") || "all";
+        renderDownloadQueue(true);
+      };
+    });
 
   bindRecoveryButtons(dlQueueList);
+  // Dismiss finished/error rows without fighting auto-refresh
+  dlQueueList.querySelectorAll('[data-act="dismiss"]').forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = btn.getAttribute("data-job") || "";
+      if (!id) return;
+      uiJobs.delete(id);
+      renderDownloadQueue(true);
+    });
+  });
   syncDownloadingFlag();
-  // Keep playlist progress in sync with queue
   if (playlistDl.jobIds.size) updatePlaylistProgressUi();
 }
 
@@ -4970,6 +5272,22 @@ function escapeAttr(s) {
 function userError(err) {
   if (!err) return null;
   const s = String(err);
+
+  if (/파일 저장 실패|다운로드 시작 실패|Invalid filename|invalid filename|filename/i.test(s)) {
+    return "파일 저장에 실패했습니다. 확장 프로그램을 새로고침한 뒤 다시 받아 주세요 (파일명·권한 문제일 수 있음)";
+  }
+  if (/다운로드가 완료되지 않았습니다|chrome:\/\/downloads/i.test(s)) {
+    return "다운로드가 중간에 끊겼습니다. chrome://downloads 에서 확인하거나 다시 받아 주세요";
+  }
+  if (/파일이 너무 작|세그먼트 부족|병합 결과/i.test(s)) {
+    return "영상 데이터가 불완전합니다. 페이지에서 재생을 누른 뒤 다시 받아 주세요";
+  }
+  if (/403|접근 거부|Segment HTTP/i.test(s)) {
+    return "접근이 거부되었습니다 (403). 페이지를 열어 재생한 직후 다시 시도하세요";
+  }
+  if (/도우미|8787|yt-dlp not|연결할 수 없/i.test(s)) {
+    return "로컬 도우미가 필요합니다. helper/start.command 를 실행한 뒤 다시 시도하세요";
+  }
 
   // Hide all technical URL / English API noise
   if (
