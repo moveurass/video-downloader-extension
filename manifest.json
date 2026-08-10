@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.23.1",
-  "description": "다중 큐 안정화 · 파일 저장 보강 · 시리즈 검증",
+  "version": "1.23.2",
+  "description": "읽기 쉬운 파일명 · 정직한 진행률 · 다운로드 속도 개선",
   "permissions": [
     "downloads",
     "storage",

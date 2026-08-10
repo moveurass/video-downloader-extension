@@ -51,7 +51,12 @@ const UVD = (() => {
     /** Auto-suggest series complete after a download */
     seriesComplete: true,
     /** Max next episodes to queue in series complete mode */
-    seriesCompleteCount: 5
+    seriesCompleteCount: 5,
+    /**
+     * Download speed profile (does not change quality):
+     * fast | normal | safe
+     */
+    downloadSpeed: "fast"
   };
 
   const HISTORY_KEY = "uvdHistory";
@@ -223,6 +228,9 @@ const UVD = (() => {
     next.compactUi = next.uiDensity !== "full";
     if (!["best", "h264", "compat"].includes(String(next.codecPref || ""))) {
       next.codecPref = "best";
+    }
+    if (!["fast", "normal", "safe"].includes(String(next.downloadSpeed || ""))) {
+      next.downloadSpeed = "fast";
     }
     const qbs = next.qualityBySite && typeof next.qualityBySite === "object"
       ? next.qualityBySite
@@ -752,12 +760,19 @@ const UVD = (() => {
         ? String(ctx.quality)
         : "";
     let title = String(ctx.title || "").trim();
+    // Strip common leak/site noise before templating (defense in depth)
+    title = title
+      .replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ")
+      .replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ")
+      .replace(/[\u2010-\u2015\u2212|·•]+/g, " ")
+      .replace(/\s+-\s+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
     if (isGenericSaveName(title)) title = "";
 
     const tpl = (template || "legacy").trim();
-    // Old readable style (preferred default)
+    // Readable style: "품번 제목_1080p" (spaces kept)
     if (!tpl || /^legacy$/i.test(tpl) || tpl === "{title}_{quality}") {
-      // Keep spaces in title for readability (old behavior)
       let base = title
         .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
         .replace(/\s+/g, " ")

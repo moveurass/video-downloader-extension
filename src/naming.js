@@ -14,33 +14,95 @@ const Naming = (() => {
       .slice(0, max);
   }
 
-  /** Strip common site suffixes from document titles */
+  /** Pull JAV-style product code if present */
+  function extractProductCode(text) {
+    const m = String(text || "").match(/\b([A-Za-z]{2,12})[-_ ]?(\d{2,5})\b/);
+    if (!m) return "";
+    if (/^(http|https|www|mp4|HD|FHD|4K|AVC|HEVC)$/i.test(m[1])) return "";
+    return `${m[1].toUpperCase()}-${m[2]}`;
+  }
+
+  /**
+   * Strip common site suffixes / leak tags so names stay scannable.
+   * Input often looks like:
+   *   "SNOS-309 -Uncensored-Leaked — 대규모 정전이 일어난 밤..."
+   * Output goal:
+   *   "SNOS-309 대규모 정전이 일어난 밤"
+   */
   function cleanPageTitle(title) {
     if (!title) return "";
     let t = String(title).trim();
-    // HTML entities
-    t = t.replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-    // Browser / site notification counts: "(2) Video title", "(12) Inbox"
+    // HTML entities / fullwidth spaces
+    t = t
+      .replace(/&amp;/g, "&")
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/\u3000/g, " ");
+
+    // Broken Chrome uniquify / double-ext: "a.mp4 (1).mp4", "a.mp4.mp4"
+    t = t.replace(
+      /\.(mp4|webm|mkv|mp3|m4a)\s*\(\d{1,3}\)\s*\.(mp4|webm|mkv|mp3|m4a)$/i,
+      ""
+    );
+    t = t.replace(/\.(mp4|webm|mkv|mp3|m4a)\s*\(\d{1,3}\)\s*$/i, "");
+    t = t.replace(/\s*\(\d{1,3}\)\s*(?=\.[a-z0-9]{2,5}$)/i, "");
+    t = t.replace(/\.(mp4|webm|mkv|mp3|m4a|ts|m3u8)+$/i, "");
+    t = t.replace(/\s*\(\d{1,3}\)\s*$/g, "");
+
+    // Browser / site notification counts: "(2) Video title"
     t = t.replace(/^\(\d{1,4}\)\s*/, "");
-    // Leading episode-style junk only when alone: "2. " at start of very short prefixes
     t = t.replace(/^[\(\[]?\d{1,3}[\)\]]\s+/, "");
+
+    // Normalize product code at start: [ssis-001] / ssis_001 / SSIS 001
+    t = t.replace(
+      /^\[?\s*([A-Za-z]{2,12})[-_ ]?(\d{2,5})\s*\]?\s*/i,
+      (_, p, n) => `${p.toUpperCase()}-${n} `
+    );
+
+    // Remove English leak / marketing tags (anywhere, common on 123av titles)
+    // Note: no \b after Leaked — titles often continue as Leaked_720p
+    t = t.replace(
+      /[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi,
+      " "
+    );
+    t = t.replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ");
+    t = t.replace(
+      /[-–—|·•:_\s]*(No\s*Mosaic|Demosaic|Uncut|Raw)(?=[_\s\-–—.]|$)/gi,
+      " "
+    );
+    t = t.replace(/[-–—|·•:_\s]*Chinese\s*Subtitles?/gi, " ");
+
     // Remove site brand suffixes (adult tubes included)
     t = t.replace(
-      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|nico(?:nico)?|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|JavLibrary|JavDB|MissAV|Jable|Avgle|ThisAV|Netflav|Supjav|Reels).*$/i,
+      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|nico(?:nico)?|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|JavLibrary|JavDB|MissAV|Jable|Avgle|ThisAV|Netflav|Supjav|Reels|njav|javdb).*$/i,
       ""
     );
     t = t.replace(/\s*[\-|–—|·•]\s*Watch\s*(Free|Online|Full).*$/i, "");
     t = t.replace(/\s*[\-|–—|·•]\s*Free\s*Porn.*$/i, "");
-    // Generic trailing site brand
-    t = t.replace(/\s*[\-|–—|·•]\s*[^|\-–—·•]{1,40}$/u, (m, _o, s) => {
-      if (s.length > 22 && m.length < 32) return "";
-      return m;
-    });
-    // Normalize product code spacing: "ssis-001title" → keep as-is if already fine
-    t = t.replace(/^\[?([A-Za-z]{2,12}-\d{2,5})\]?\s*/i, (_, code) => code.toUpperCase() + " ");
-    // Again after brand strip (e.g. "(2) Title - YouTube")
-    t = t.replace(/^\(\d{1,4}\)\s*/, "");
-    return sanitize(t, 80);
+
+    // Collapse fancy dashes to space so "CODE — title" → "CODE title"
+    t = t.replace(/[\u2010-\u2015\u2212|·•]+/g, " ");
+    t = t.replace(/\s*[-]{2,}\s*/g, " ");
+    // Single hyphen used as separator between code and English junk already stripped
+    t = t.replace(/\s+-\s+/g, " ");
+
+    // Drop leftover leading/trailing punctuation / quality glued with underscore only
+    t = t.replace(/^[\s\-–—|:·•._]+|[\s\-–—|:·•._]+$/g, "");
+    t = t.replace(/\s+/g, " ").trim();
+    // "CODE _720p" / "CODE_" leftovers after tag strip
+    t = t.replace(/\s+_\s*/g, " ").replace(/_+$/g, "").trim();
+
+    // Ensure product code is uppercase at front if present mid-string only once
+    const code = extractProductCode(t);
+    if (code) {
+      const rest = t
+        .replace(new RegExp(code.replace("-", "[-_ ]?"), "i"), " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      t = rest ? `${code} ${rest}` : code;
+    }
+
+    return sanitize(t, 72);
   }
 
   function isUglyBase(base) {
@@ -135,6 +197,7 @@ const Naming = (() => {
   /**
    * Easy filename people can recognize:
    * "SSIS-001 이복여동생 이야기_720p.mp4"
+   * (no Uncensored-Leaked / em-dash noise)
    */
   function buildFilename(opts = {}) {
     const {
@@ -150,24 +213,59 @@ const Naming = (() => {
     const isAudio = type === "audio";
     const ext = isAudio ? "mp3" : "mp4";
 
-    let base = pickBestTitle(title, pageTitle, existing?.replace(/\.[a-z0-9]{2,5}$/i, ""));
+    let base = pickBestTitle(
+      title,
+      pageTitle,
+      existing?.replace(/\.[a-z0-9]{2,5}$/i, "")
+    );
 
     if (!base) {
       base = isAudio ? "오디오" : "영상";
     }
 
-    // Keep enough of the title to know what it is (not tiny)
-    if (base.length > 55) {
-      base = base.slice(0, 53).replace(/\s+\S*$/, "") || base.slice(0, 53);
+    // One more cleanup pass (existing may still carry leak tags)
+    base = cleanPageTitle(base) || base;
+
+    // Drop bare "영상"/"video" if we still have a better existing candidate
+    if (/^(영상|동영상|video|media)$/i.test(base)) {
+      const fromExisting = cleanPageTitle(
+        String(existing || "").replace(/\.[a-z0-9]{2,5}$/i, "")
+      );
+      if (fromExisting && !/^(영상|동영상|video|media)$/i.test(fromExisting)) {
+        base = fromExisting;
+      }
+    }
+
+    // Prefer short readable body; keep product code + meaning
+    // Aim: "SNOS-309 대규모 정전이 일어난 밤" (~40 chars body after code)
+    if (base.length > 52) {
+      const code = extractProductCode(base);
+      if (code && base.toUpperCase().startsWith(code)) {
+        const rest = base.slice(code.length).trim();
+        const shortRest =
+          rest.length > 36
+            ? rest.slice(0, 34).replace(/\s+\S*$/, "") || rest.slice(0, 34)
+            : rest;
+        base = shortRest ? `${code} ${shortRest}` : code;
+      } else {
+        base = base.slice(0, 50).replace(/\s+\S*$/, "") || base.slice(0, 50);
+      }
     }
 
     // Only keep real resolution labels — not "best" / "all"
-    let q = quality && quality !== "unknown" ? String(quality).replace(/[()]/g, "").trim() : "";
+    let q =
+      quality && quality !== "unknown"
+        ? String(quality).replace(/[()]/g, "").trim()
+        : "";
     if (/^(best|all|unknown|highest|default)$/i.test(q)) q = "";
-    if (q && base.includes(q)) q = "";
+    // Strip quality if already in title
+    if (q) {
+      base = base.replace(new RegExp(`[_\\s-]*${q}\\b`, "i"), "").trim();
+    }
 
-    // Strip leftover notification prefixes from base
     base = base.replace(/^\(\d{1,4}\)\s*/, "").trim() || base;
+    // Remove accidental double extensions from prior names
+    base = base.replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "").trim();
 
     let body = q ? `${base}_${q}` : base;
     if (index > 0) body = `${body}_${index + 1}`;
@@ -179,7 +277,8 @@ const Naming = (() => {
       .trim();
 
     if (full.length > 100) {
-      full = `${body.slice(0, 90).trim()}.${ext}`;
+      const e = `.${ext}`;
+      full = `${body.slice(0, 100 - e.length).trim()}${e}`;
     }
     return full;
   }
@@ -203,11 +302,13 @@ const Naming = (() => {
     const isAudio = type === "audio";
     const ext = isAudio ? "mp3" : "mp4";
 
-    let base = pickBestTitle(title, pageTitle) || (isAudio ? "오디오" : "영상");
+    let base =
+      pickBestTitle(title, pageTitle) || (isAudio ? "오디오" : "영상");
+    base = cleanPageTitle(base) || base;
     base = base.replace(/^\(\d{1,4}\)\s*/, "").trim() || base;
 
-    const key = String(seriesKey || "").trim();
-    const pl = sanitize(playlistTitle || "", 40);
+    const key = String(seriesKey || extractProductCode(base) || "").trim();
+    const pl = sanitize(cleanPageTitle(playlistTitle || "") || playlistTitle || "", 36);
     const idx = Number(index) > 0 ? Number(index) : 0;
     const pad = total >= 100 ? 3 : 2;
 
@@ -359,6 +460,7 @@ const Naming = (() => {
   return {
     sanitize,
     cleanPageTitle,
+    extractProductCode,
     isUglyBase,
     extFromUrl,
     buildFilename,

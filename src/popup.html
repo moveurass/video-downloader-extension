@@ -389,6 +389,15 @@
         </select>
         <span class="field-hint">재생 안 되면 호환 모드를 쓰세요 · 최고는 용량·품질 우선</span>
       </label>
+      <label class="field">
+        <span class="field-label">다운로드 속도</span>
+        <select id="setDownloadSpeed" class="field-input">
+          <option value="fast" selected>빠름 (동시 조각↑ · 화질 동일)</option>
+          <option value="normal">보통</option>
+          <option value="safe">안정 (403 많은 사이트용)</option>
+        </select>
+        <span class="field-hint">화질은 그대로 · 막히면 「안정」으로 · aria2c 있으면 헬퍼가 자동 활용</span>
+      </label>
       <div class="field">
         <span class="field-label">단축키 (chrome://extensions/shortcuts)</span>
         <ul class="shortcut-list">
@@ -479,10 +488,11 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.22.0</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.23.2</p>
   </footer>
 
   <script src="uvd-common.js"></script>
+  <script src="naming.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

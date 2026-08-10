@@ -6,9 +6,12 @@
 
 const HLS = (() => {
   const MAX_SEGMENTS = 8000;
-  const CONCURRENCY = 6;
-  /** When CDN returns 403, slow down to look less like a hotlink scraper */
-  const CONCURRENCY_SOFT = 3;
+  /** Default parallel segment fetches — higher for speed (was 6) */
+  const CONCURRENCY = 12;
+  /** After repeated 403s, drop to this (was 3) */
+  const CONCURRENCY_SOFT = 4;
+  /** Very large playlists: start a bit lower to avoid opening storms */
+  const CONCURRENCY_LARGE = 8;
 
   function resolveUrl(base, ref) {
     try {
@@ -467,20 +470,60 @@ const HLS = (() => {
     return new Uint8Array(plain);
   }
 
-  async function mapPool(items, limit, worker, onProgress) {
+  /**
+   * Parallel pool with mutable concurrency (for 403 backoff mid-download).
+   * @param {object} [ctl] optional { getLimit: () => number }
+   */
+  async function mapPool(items, limit, worker, onProgress, ctl = null) {
     const results = new Array(items.length);
-    let idx = 0;
-    let done = 0;
-    async function run() {
-      while (idx < items.length) {
-        const i = idx++;
-        results[i] = await worker(items[i], i);
-        done++;
-        if (onProgress) onProgress(done, items.length);
+    let next = 0;
+    let completed = 0;
+    let active = 0;
+    /** @type {Array<() => void>} */
+    const waiters = [];
+
+    const getLimit = () => {
+      const n = ctl?.getLimit ? ctl.getLimit() : limit;
+      return Math.max(1, Math.min(items.length, n | 0));
+    };
+
+    const notify = () => {
+      while (waiters.length && active < getLimit()) {
+        const w = waiters.shift();
+        if (w) w();
+      }
+    };
+
+    async function acquire() {
+      while (active >= getLimit()) {
+        await new Promise((r) => waiters.push(r));
+      }
+      active += 1;
+    }
+
+    function release() {
+      active -= 1;
+      notify();
+    }
+
+    async function runWorker() {
+      for (;;) {
+        const i = next++;
+        if (i >= items.length) return;
+        await acquire();
+        try {
+          results[i] = await worker(items[i], i);
+        } finally {
+          release();
+          completed += 1;
+          if (onProgress) onProgress(completed, items.length);
+        }
       }
     }
-    const runners = Array.from({ length: Math.min(limit, items.length) }, () => run());
-    await Promise.all(runners);
+
+    // Launch workers up to initial limit; each loop pulls next index
+    const starters = Math.min(Math.max(getLimit(), 1), items.length);
+    await Promise.all(Array.from({ length: starters }, () => runWorker()));
     return results;
   }
 
@@ -583,10 +626,20 @@ const HLS = (() => {
       message: `세그먼트 0/${segments.length}`
     });
 
-    // Adaptive concurrency: start soft if many segments (hotlink CDNs)
-    let concurrency = segments.length > 200 ? CONCURRENCY_SOFT : CONCURRENCY;
+    // Adaptive concurrency: start fast, drop when CDN 403s pile up
+    const wantFast = options.speedProfile !== "safe" && options.speedProfile !== "slow";
+    let concurrency = !wantFast
+      ? CONCURRENCY_SOFT
+      : segments.length > 400
+        ? CONCURRENCY_LARGE
+        : segments.length > 200
+          ? Math.max(CONCURRENCY_LARGE, 10)
+          : CONCURRENCY;
     let hard403 = 0;
     const softFail = options.allowPartial !== false;
+    const poolCtl = {
+      getLimit: () => concurrency
+    };
 
     const buffers = await mapPool(
       segments,
@@ -598,7 +651,7 @@ const HLS = (() => {
           try {
             if (hard403 > 3 && attempt === 0) {
               // Space out after many 403s
-              await new Promise((r) => setTimeout(r, 80 + (index % 5) * 40));
+              await new Promise((r) => setTimeout(r, 60 + (index % 5) * 30));
             }
             let data = await fetchBuffer(seg.url, requestInit);
             if (!data || data.byteLength < 32) {
@@ -615,10 +668,17 @@ const HLS = (() => {
             const msg = String(e?.message || e);
             if (/403|401|접근 거부/i.test(msg)) {
               hard403 += 1;
-              // Slow down global concurrency by spacing retries
-              await new Promise((r) => setTimeout(r, 500 * (attempt + 1) + Math.random() * 300));
+              // Dynamically reduce parallel fetches when CDN pushes back
+              if (hard403 >= 2 && concurrency > CONCURRENCY_SOFT) {
+                concurrency = CONCURRENCY_SOFT;
+              } else if (hard403 >= 8 && concurrency > 2) {
+                concurrency = 2;
+              }
+              await new Promise((r) =>
+                setTimeout(r, 400 * (attempt + 1) + Math.random() * 250)
+              );
             } else {
-              await new Promise((r) => setTimeout(r, 350 * (attempt + 1)));
+              await new Promise((r) => setTimeout(r, 280 * (attempt + 1)));
             }
           }
         }
@@ -630,16 +690,20 @@ const HLS = (() => {
         throw lastErr || new Error("세그먼트 실패: " + (seg.url || "").slice(0, 60));
       },
       (current, total) => {
+        // Report raw counts only — UI maps to honest % (no fake acceleration)
+        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
         onProgress({
           phase: "segments",
           current,
           total,
+          percent: pct, // 0–100 of segments only; outer maps into 6–90 band
           message:
             hard403 > 5
-              ? `받는 중… ${current}/${total} (접근 제한 우회 중)`
-              : `세그먼트 ${current}/${total}`
+              ? `받는 중… ${current}/${total} 조각 · 제한 대응(동시 ${concurrency})`
+              : `받는 중… ${current}/${total} 조각`
         });
-      }
+      },
+      poolCtl
     );
 
     // Drop empty / failed

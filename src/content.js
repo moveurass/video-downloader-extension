@@ -37,7 +37,8 @@
       .replace(/&amp;/g, "&")
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, " ");
+      .replace(/&nbsp;/g, " ")
+      .replace(/\u3000/g, " ");
     // Drop player/CDN host titles (useless as names)
     if (/^(javplayer|surrit|cloudflare|cdn|player)(\.|$)/i.test(t.replace(/^www\./, ""))) {
       return "";
@@ -45,22 +46,35 @@
     if (/\.(com|cc|net|tv|io|me|app|xyz)(\s|$)/i.test(t) && t.length < 28) {
       return "";
     }
+    // Tab counters
+    t = t.replace(/^\(\d{1,4}\)\s*/, "").replace(/^\[\d{1,4}\]\s*/, "");
+    // Product code at start → uppercase
     t = t.replace(
-      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|MissAV|Jable|Avgle|JavLibrary|JavDB|ThisAV|Netflav|javplayer|Shorts).*$/i,
+      /^\[?\s*([A-Za-z]{2,12})[-_ ]?(\d{2,5})\s*\]?\s*/i,
+      (_, p, n) => `${p.toUpperCase()}-${n} `
+    );
+    // Strip leak / marketing tags (123av etc.; may be glued as Leaked_720p)
+    t = t.replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ");
+    t = t.replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ");
+    t = t.replace(
+      /[-–—|·•:_\s]*(No\s*Mosaic|Demosaic|Uncut|Raw)(?=[_\s\-–—.]|$)/gi,
+      " "
+    );
+    t = t.replace(/[-–—|·•:_\s]*Chinese\s*Subtitles?/gi, " ");
+    t = t.replace(
+      /\s*[\-|–—|·•:]\s*(YouTube|Vimeo|Twitter|X|Instagram|Facebook|TikTok|Naver|다음|카카오|Twitch|Netflix|Watcha|TVING|웨이브|Disney\+|Prime Video|Bilibili|SOOP|Chzzk|아프리카TV|123AV|123av\.com|123av|MissAV|Jable|Avgle|JavLibrary|JavDB|ThisAV|Netflav|javplayer|Shorts|njav|javdb).*$/i,
       ""
     );
     t = t.replace(/\s*[\-|–—|·•]\s*Watch\s*(Free|Online|Full).*$/i, "");
-    t = t.replace(/\s*[\-|–—|·•]\s*[^|\-–—·•]{1,36}$/u, (m, _o, s) =>
-      s.length > 20 && m.length < 30 ? "" : m
-    );
-    // SSIS-001 / ABC-123 at start → uppercase code + space
-    t = t.replace(/^\[?([A-Za-z]{2,12}-\d{2,5})\]?\s*/i, (_, code) => code.toUpperCase() + " ");
+    // Fancy dashes → space so "CODE — title" stays scannable
+    t = t.replace(/[\u2010-\u2015\u2212|·•]+/g, " ");
+    t = t.replace(/\s+-\s+/g, " ");
     return t
       .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 100);
+      .slice(0, 80);
   }
 
   function titleFromLocation() {
@@ -230,12 +244,18 @@
 
   function buildFilename(title, quality, ext) {
     let base = cleanPageTitle(title) || "동영상";
-    const q = quality && !base.includes(quality) ? ` (${quality})` : "";
-    return `${base}${q}.${ext || "mp4"}`
+    // Match extension Naming style: CODE 제목_720p.mp4
+    let q =
+      quality && !/^(best|all|unknown|highest|default)$/i.test(String(quality))
+        ? String(quality).replace(/[()]/g, "").trim()
+        : "";
+    if (q && base.includes(q)) q = "";
+    const body = q ? `${base}_${q}` : base;
+    return `${body}.${ext || "mp4"}`
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 120);
+      .slice(0, 100);
   }
 
   function sendItems(items) {

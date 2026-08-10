@@ -226,21 +226,22 @@
         },
         allowPartial: true,
         onProgress: (p) => {
-          let percent = 5;
-          if (p.phase === "segments" && p.total) {
-            percent = Math.round((p.current / p.total) * 88) + 5;
-          } else if (p.phase === "merge") percent = 93;
-          else if (p.phase === "done") percent = 94;
-          else if (p.phase === "playlist") percent = 8;
+          // Honest bands (same as background): segments 6–90, merge 92, save later
+          let percent = 4;
+          if (p.phase === "segments" && p.total > 0) {
+            percent = Math.round(6 + (p.current / p.total) * 84);
+          } else if (p.phase === "merge") percent = 92;
+          else if (p.phase === "done") percent = 93;
+          else if (p.phase === "playlist" || p.phase === "init") percent = 4;
           onProgress?.({
             ...p,
             percent,
             message:
               p.phase === "merge"
                 ? "파일 만드는 중…"
-                : percent < 100
-                  ? `받는 중… ${Math.round(percent)}%`
-                  : "저장 중…"
+                : p.phase === "segments" && p.total
+                  ? `받는 중… ${p.current}/${p.total} 조각 (${percent}%)`
+                  : p.message || `준비 중… ${percent}%`
           });
         }
       }),

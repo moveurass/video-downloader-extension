@@ -561,18 +561,47 @@ def run_download(job_id: str, payload: dict) -> None:
         s = (raw or "").strip()
         # drop any directory parts (defense in depth)
         s = s.replace("\\", "/").split("/")[-1]
-        # strip extension
-        for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a", ".mp3"):
-            if s.lower().endswith(ext):
-                s = s[: -len(ext)]
+        # strip extension(s)
+        for _ in range(3):
+            stripped = False
+            for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a", ".mp3"):
+                if s.lower().endswith(ext):
+                    s = s[: -len(ext)]
+                    stripped = True
+                    break
+            if not stripped:
+                break
+        # Chrome uniquify: "name (1)"
+        s = re.sub(r"\s*\(\d{1,3}\)\s*$", "", s)
         # notification / tab counters: "(2) title"
         s = re.sub(r"^\(\d{1,4}\)\s*", "", s)
         s = re.sub(r"^\[\d{1,4}\]\s*", "", s)
+        # 123av-style junk in titles (may be glued: Uncensored-Leaked_720p)
+        s = re.sub(
+            r"[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?",
+            " ",
+            s,
+            flags=re.I,
+        )
+        s = re.sub(r"[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)", " ", s, flags=re.I)
+        s = re.sub(
+            r"[-–—|·•:_\s]*(No\s*Mosaic|Demosaic|Uncut|Raw)(?=[_\s\-–—.]|$)",
+            " ",
+            s,
+            flags=re.I,
+        )
+        # product code uppercase at front
+        m = re.match(r"^\[?\s*([A-Za-z]{2,12})[-_ ]?(\d{2,5})\s*\]?\s*(.*)$", s)
+        if m:
+            s = f"{m.group(1).upper()}-{m.group(2)} {m.group(3)}".strip()
+        # fancy dashes → space
+        s = re.sub(r"[\u2010-\u2015\u2212|·•]+", " ", s)
+        s = re.sub(r"\s+-\s+", " ", s)
         # useless quality tags we sometimes pass from the extension
         s = re.sub(r"[_\s-]*(best|all|unknown)$", "", s, flags=re.I)
         s = re.sub(r"[_\s-]*(best|all)[_\s-]*", " ", s, flags=re.I)
         s = "".join(c if c not in '<>:"/\\|?*' else " " for c in s)
-        s = " ".join(s.split()).strip(" ._-")[:80]
+        s = " ".join(s.split()).strip(" ._-")[:72]
         # bare / empty names break yt-dlp -o templates and OS save
         if not s or len(s) < 2 or s in {".", ".."}:
             return "video"
@@ -760,8 +789,23 @@ def run_download(job_id: str, payload: dict) -> None:
         else:
             merge_fmt = "mp4"
 
-    # Concurrent DASH/HLS fragments (4K has many fragments — parallel is essential)
-    concurrent = "16" if is_youtube else "4"
+    # Concurrent DASH/HLS fragments — higher = faster when CDN allows.
+    # YouTube handles high parallelism well; other CDNs get a solid middle ground.
+    # (Was 16 / 4 — raised for throughput without dropping quality.)
+    if is_youtube:
+        concurrent = "24"
+    elif is_tiktok or is_bilibili:
+        concurrent = "16"
+    else:
+        concurrent = "12"
+    # Optional override from extension: speedProfile fast|normal|safe
+    speed_profile = (payload.get("speedProfile") or payload.get("speed") or "fast").strip().lower()
+    if speed_profile in ("safe", "slow"):
+        concurrent = "8" if is_youtube else "4"
+    elif speed_profile in ("normal", "medium"):
+        concurrent = "16" if is_youtube else "8"
+    # else "fast" / default → values above
+
     referer = page_url or payload.get("referer") or ""
 
     audio_only = bool(payload.get("audioOnly") or payload.get("mediaMode") == "audio")
@@ -771,6 +815,9 @@ def run_download(job_id: str, payload: dict) -> None:
     )
     write_thumbnail = bool(payload.get("writeThumbnail")) and not audio_only
     yes_playlist = bool(payload.get("yesPlaylist") or payload.get("playlist"))
+
+    # aria2c multi-connection when installed (big win on progressive/large files)
+    aria2 = shutil.which("aria2c")
 
     def build_cmd(format_str: str, merge: str, extra: list[str] | None = None) -> list[str]:
         c = [
@@ -782,16 +829,27 @@ def run_download(job_id: str, payload: dict) -> None:
             "--ignore-config",
             "--no-mtime",
             "--retries",
-            "5",
+            "8",
             "--fragment-retries",
-            "5",
+            "10",
             "-N",
             concurrent,
             "--http-chunk-size",
             "10M",
             "--socket-timeout",
-            "20",
+            "30",
         ]
+        # External multi-connection downloader when installed (optional speed boost)
+        if aria2 and speed_profile not in ("safe", "slow"):
+            # -x connections/server, -s splits, -j parallel jobs
+            c.extend(
+                [
+                    "--downloader",
+                    "aria2c",
+                    "--downloader-args",
+                    "aria2c:-x 16 -s 16 -k 1M -j 16 --file-allocation=none --min-split-size=1M",
+                ]
+            )
         # Playlist: only when explicitly requested (batch paste of playlist URLs)
         if yes_playlist:
             c.append("--yes-playlist")

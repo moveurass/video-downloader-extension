@@ -576,32 +576,38 @@ function isUglyName(name) {
   return false;
 }
 
-/** Clean page title → readable Korean/Japanese name */
+/**
+ * Clean page title → scannable name
+ * Prefer Naming (strips Uncensored-Leaked, site brands, puts CODE first)
+ * e.g. "SNOS-309 -Uncensored-Leaked — 제목 - 123AV" → "SNOS-309 제목"
+ */
 function cleanTitleText(raw) {
   if (!raw) return "";
+  if (typeof Naming !== "undefined" && Naming.cleanPageTitle) {
+    return Naming.cleanPageTitle(raw) || "";
+  }
   let t = String(raw);
-  // HTML entities
   t = t
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
-  // Tab/notification counters: "(2) Video title"
   t = t.replace(/^\(\d{1,4}\)\s*/, "").replace(/^\[\d{1,4}\]\s*/, "");
-  // emoji / symbols
   t = t
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
     .replace(/[\u{2600}-\u{27BF}]/gu, "")
     .replace(/[♥❤💕💗💖💘⭐✨♡]/g, "");
-  // site suffixes
+  // leak / marketing tags (may be glued: Uncensored-Leaked_720p)
+  t = t.replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ");
+  t = t.replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ");
   t = t.replace(
     /\s*[\-|–—|·•:]\s*(YouTube|123AV|123av|MissAV|Jable|Netflix|Twitch|Bilibili).*$/i,
     ""
   );
-  t = t.replace(/^\(\d{1,4}\)\s*/, "");
-  // strip extension / junk
   t = t
+    .replace(/[\u2010-\u2015\u2212|·•]+/g, " ")
+    .replace(/\s+-\s+/g, " ")
     .replace(/\.(m3u8|mp4|webm|ts|mp3|mkv)$/i, "")
     .replace(/다운로드\s*가능/g, "")
     .replace(/\s*[\(\[]\s*\d{3,4}\s*p\s*[\)\]]/gi, "")
@@ -646,13 +652,13 @@ function displayName(item) {
 }
 
 /**
- * 저장 파일명 — 예전 방식: 읽기 쉬운 제목 + (선택) 화질
+ * 저장 파일명 — 품번 + 짧은 제목 + 화질 (잡태그 제거)
  * 예: "SSIS-001 이복 여동생 이야기_720p.mp4"
  * 제목을 모를 때는 빈 문자열 → yt-dlp가 실제 제목(유니코드·공백 유지) 사용
  */
 function downloadFilename(item) {
   let title = "";
-  for (const c of [item.title, item.pageTitle, item.displayName]) {
+  for (const c of [item.title, item.pageTitle, item.displayName, item.filename]) {
     const cleaned = cleanTitleText(c);
     if (
       cleaned &&
@@ -676,26 +682,39 @@ function downloadFilename(item) {
   }
 
   const mediaMode = uvdSettings.mediaMode || "video";
-  const pageUrl = item.pageUrl || item.url || currentTabUrl || "";
-  // Always legacy-style readable names (ignore custom templates that strip meaning)
+  const isAudio = mediaMode === "audio" || item.type === "audio";
+
+  // Prefer shared Naming builder (CODE first, strip leak tags)
+  if (typeof Naming !== "undefined" && Naming.buildFilename) {
+    if (!title || UVD.isGenericSaveName(title)) return "";
+    return Naming.buildFilename({
+      title,
+      pageTitle: title,
+      quality,
+      type: isAudio ? "audio" : "video",
+      existing: item.filename || ""
+    });
+  }
+
+  // Fallback if Naming not loaded
   let base = UVD.applyFilenameTemplate("legacy", {
     title,
     quality,
-    site: UVD.siteFromUrl(pageUrl),
+    site: UVD.siteFromUrl(item.pageUrl || item.url || currentTabUrl || ""),
     mediaMode
   });
-
-  // Fallback only for non-helper direct saves — still avoid YouTube_id junk
   if (!base) {
     if (title && !UVD.isGenericSaveName(title)) {
-      base = title.replace(/[<>:"/\\|?*]/g, " ").replace(/\s+/g, " ").trim().slice(0, 70);
+      base = title
+        .replace(/[<>:"/\\|?*]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 70);
       if (quality && !base.includes(quality)) base += `_${quality}`;
     }
   }
-
-  const ext =
-    mediaMode === "audio" || item.type === "audio" ? ".mp3" : ".mp4";
-  if (!base) return ""; // let helper/extractor choose real title
+  const ext = isAudio ? ".mp3" : ".mp4";
+  if (!base) return "";
   return base.endsWith(ext) ? base : `${base}${ext}`;
 }
 
@@ -2052,6 +2071,11 @@ function fillSettingsForm() {
     const cp = uvdSettings.codecPref || "best";
     codec.value = ["best", "h264", "compat"].includes(cp) ? cp : "best";
   }
+  const speed = $("#setDownloadSpeed");
+  if (speed) {
+    const sp = uvdSettings.downloadSpeed || "fast";
+    speed.value = ["fast", "normal", "safe"].includes(sp) ? sp : "fast";
+  }
   updateSettingsPreview();
 }
 
@@ -2096,6 +2120,7 @@ async function saveSettingsFromForm() {
     seriesComplete: $("#setSeriesComplete")?.checked !== false,
     seriesCompleteCount: parseInt($("#setSeriesCount")?.value || "5", 10) || 5,
     codecPref: $("#setCodecPref")?.value || "best",
+    downloadSpeed: $("#setDownloadSpeed")?.value || "fast",
     qualityBySite: {
       default: $("#setQDefault")?.value || "best",
       youtube: $("#setQYoutube")?.value || "best",

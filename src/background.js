@@ -697,32 +697,40 @@ async function buildSaveFilename({
 } = {}) {
   const s = await UVD.getSettings();
   const mode = mediaMode || s.mediaMode || "video";
-  const cleanTitle = UVD.isGenericSaveName(title) ? "" : title || "";
-  const ext =
-    mode === "audio" || mediaType === "audio" ? ".mp3" : ".mp4";
-  // Series / playlist → structured names (Playlist - 03. Title / SSIS-003 …)
-  if (
-    (playlistTitle || seriesKey || seriesIndex > 0) &&
-    typeof Naming !== "undefined" &&
-    Naming.buildSeriesFilename
-  ) {
-    const full = Naming.buildSeriesFilename({
-      title: cleanTitle || title || "",
+  const mime = mode === "audio" || mediaType === "audio" ? "audio/mp3" : "video/mp4";
+  // Prefer Naming helpers — strip Uncensored-Leaked noise, put CODE first
+  if (typeof Naming !== "undefined" && Naming.buildFilename) {
+    // Series / playlist structured names when applicable
+    if (
+      (playlistTitle || seriesKey || seriesIndex > 0) &&
+      Naming.buildSeriesFilename
+    ) {
+      const full = Naming.buildSeriesFilename({
+        title: title || "",
+        pageTitle: title || "",
+        quality: quality || "",
+        type: mode === "audio" ? "audio" : "video",
+        seriesKey: seriesKey || Naming.extractProductCode?.(title) || "",
+        playlistTitle: playlistTitle || "",
+        index: seriesIndex || 0,
+        total: seriesTotal || 0
+      });
+      if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
+        return safeDownloadName(full, mime);
+      }
+    }
+    const full = Naming.buildFilename({
+      title: title || "",
+      pageTitle: title || "",
       quality: quality || "",
-      type: mode === "audio" ? "audio" : "video",
-      seriesKey: seriesKey || "",
-      playlistTitle: playlistTitle || "",
-      index: seriesIndex || 0,
-      total: seriesTotal || 0
+      type: mode === "audio" ? "audio" : "video"
     });
     if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
-      return safeDownloadName(
-        full,
-        mode === "audio" ? "audio/mp3" : "video/mp4"
-      );
+      return safeDownloadName(full, mime);
     }
   }
-  // Always legacy readable names (title + optional _quality)
+  // Fallback legacy template
+  const cleanTitle = UVD.isGenericSaveName(title) ? "" : title || "";
   const base = UVD.applyFilenameTemplate("legacy", {
     title: cleanTitle,
     quality: quality || "",
@@ -730,10 +738,139 @@ async function buildSaveFilename({
     mediaMode: mode
   });
   if (!base || UVD.isGenericSaveName(base)) return "";
-  return safeDownloadName(
-    base.endsWith(ext) ? base : base + ext,
-    mode === "audio" ? "audio/mp3" : "video/mp4"
-  );
+  const ext = mode === "audio" || mediaType === "audio" ? ".mp3" : ".mp4";
+  return safeDownloadName(base.endsWith(ext) ? base : base + ext, mime);
+}
+
+/**
+ * Normalize any client-provided filename through Naming
+ * so Uncensored-Leaked / site brands never reach disk or yt-dlp.
+ */
+function normalizeIncomingFilename(filename, quality = "", mediaMode = "video") {
+  if (!filename) return "";
+  const mime =
+    mediaMode === "audio" || /\.mp3$/i.test(filename)
+      ? "audio/mp3"
+      : "video/mp4";
+  if (typeof Naming !== "undefined" && Naming.buildFilename) {
+    const full = Naming.buildFilename({
+      title: String(filename),
+      pageTitle: String(filename),
+      quality: quality || "",
+      type: mediaMode === "audio" ? "audio" : "video",
+      existing: String(filename)
+    });
+    if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
+      return safeDownloadName(full, mime);
+    }
+  }
+  return safeDownloadName(filename, mime);
+}
+
+/** True when two titles refer to the same product / video identity */
+function titlesMatchVideo(a, b) {
+  const sa = String(a || "").trim();
+  const sb = String(b || "").trim();
+  if (!sa || !sb) return false;
+  const ca = Naming.extractProductCode?.(sa) || "";
+  const cb = Naming.extractProductCode?.(sb) || "";
+  if (ca && cb) return ca.toUpperCase() === cb.toUpperCase();
+  // If only one has a product code, they are different videos
+  if (ca || cb) return false;
+  const na = Naming.cleanPageTitle?.(sa) || sa;
+  const nb = Naming.cleanPageTitle?.(sb) || sb;
+  if (na === nb) return true;
+  // Same stem ignoring quality suffix
+  const stripQ = (s) => s.replace(/[_\s-]*\d{3,4}p\b/gi, "").trim().toLowerCase();
+  return stripQ(na) === stripQ(nb) && stripQ(na).length >= 4;
+}
+
+/**
+ * Lock the save filename at download START.
+ * Must not be recomputed from the live tab later — user may navigate away
+ * or start another video while HLS/yt-dlp is still running.
+ */
+function lockSaveName({
+  filenameHint = "",
+  title = "",
+  pageTitle = "",
+  quality = "",
+  mediaMode = "video",
+  pageUrl = "",
+  seriesKey = "",
+  playlistTitle = "",
+  seriesIndex = 0,
+  seriesTotal = 0
+} = {}) {
+  const mime = mediaMode === "audio" ? "audio/mp3" : "video/mp4";
+  // 1) Explicit filename from popup/job wins (already bound to this media)
+  if (filenameHint && !UVD.isGenericSaveName(filenameHint)) {
+    return normalizeIncomingFilename(filenameHint, quality, mediaMode);
+  }
+  // 2) Build from the title that belongs to THIS job only
+  const lockedTitle =
+    Naming.cleanPageTitle?.(title || pageTitle || "") || title || pageTitle || "";
+  if (lockedTitle && !UVD.isGenericSaveName(lockedTitle)) {
+    if (
+      (playlistTitle || seriesKey || seriesIndex > 0) &&
+      Naming.buildSeriesFilename
+    ) {
+      const full = Naming.buildSeriesFilename({
+        title: lockedTitle,
+        pageTitle: lockedTitle,
+        quality,
+        type: mediaMode === "audio" ? "audio" : "video",
+        seriesKey: seriesKey || Naming.extractProductCode?.(lockedTitle) || "",
+        playlistTitle: playlistTitle || "",
+        index: seriesIndex || 0,
+        total: seriesTotal || 0
+      });
+      if (full) return safeDownloadName(full, mime);
+    }
+    const full = Naming.buildFilename({
+      title: lockedTitle,
+      pageTitle: lockedTitle,
+      quality,
+      type: mediaMode === "audio" ? "audio" : "video"
+    });
+    if (full) return safeDownloadName(full, mime);
+  }
+  // 3) Product code from the page URL of THIS job (not current tab)
+  const code =
+    Naming.extractProductCode?.(pageUrl || "") ||
+    Naming.extractProductCode?.(seriesKey || "") ||
+    "";
+  if (code) {
+    return safeDownloadName(
+      Naming.buildFilename({
+        title: code,
+        quality,
+        type: mediaMode === "audio" ? "audio" : "video"
+      }),
+      mime
+    );
+  }
+  return "";
+}
+
+/**
+ * Apply real quality after download without changing the video identity in the name.
+ */
+function applyQualityToLockedName(lockedName, quality, mediaMode = "video") {
+  if (!lockedName) return lockedName;
+  const mime = mediaMode === "audio" ? "audio/mp3" : "video/mp4";
+  let q =
+    quality && !/^(best|all|unknown|highest|default)$/i.test(String(quality))
+      ? String(quality).replace(/[()]/g, "").trim()
+      : "";
+  if (!q) return safeDownloadName(lockedName, mime);
+  const base = String(lockedName).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
+  if (new RegExp(`[_\\s-]${q}\\b`, "i").test(base) || base.endsWith(q)) {
+    return safeDownloadName(lockedName, mime);
+  }
+  // Replace trailing quality if present, else append
+  const stripped = base.replace(/[_\s-]*\d{3,4}p\b/i, "").trim() || base;
+  return safeDownloadName(`${stripped}_${q}.mp4`, mime);
 }
 
 /** Only pass a forced name to yt-dlp when it's a real human title */
@@ -742,9 +879,11 @@ function ytdlpFilenameHint(filename, title) {
   for (const c of candidates) {
     const base = String(c).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
     if (base && !UVD.isGenericSaveName(base) && base.length >= 2) {
-      return safeDownloadName(
+      // Always re-clean (popup may still send dirty names)
+      return normalizeIncomingFilename(
         /\.[a-z0-9]{2,5}$/i.test(c) ? c : `${base}.mp4`,
-        "video/mp4"
+        "",
+        "video"
       );
     }
   }
@@ -768,6 +907,8 @@ async function ytdlpExtraFromSettings(pageUrl, force = {}) {
     writeThumbnail: saveThumb && mediaMode !== "audio",
     mediaMode,
     codecPref: s.codecPref || "best",
+    // Parallel fragments / optional aria2 — quality unchanged
+    speedProfile: s.downloadSpeed || force.speedProfile || "fast",
     // Only pure playlist URLs auto-expand; single watch+list stays one video
     yesPlaylist: UVD.isPlaylistOnlyUrl
       ? UVD.isPlaylistOnlyUrl(pageUrl)
@@ -1040,12 +1181,16 @@ function updateDownloadJob(jobId, patch) {
     return job;
   }
   const next = { ...patch };
-  // Strict monotonic percent while running.
-  // Method retries (page HLS → SW HLS), playlist re-parse, and content-script
-  // progress without floors used to make the bar jump up/down.
+  // Progress: allow intentional reset on method retry (page HLS → SW HLS).
+  // Otherwise keep monotonic so the bar doesn't jitter from noisy updates.
   if (job.status === "running" && typeof next.percent === "number") {
     const prevP = typeof job.percent === "number" ? job.percent : 0;
-    next.percent = Math.max(prevP, Math.min(100, next.percent));
+    if (next.progressReset) {
+      next.percent = Math.max(0, Math.min(100, next.percent));
+      delete next.progressReset;
+    } else {
+      next.percent = Math.max(prevP, Math.min(100, next.percent));
+    }
   }
 
   // Speed: parse from message, or estimate from % · estimatedSize
@@ -1335,7 +1480,42 @@ function detachJobsFromTab(tabId) {
  * @param {string} [phase]
  * @param {string|null} [jobId] — required when multiple downloads run
  */
-function emitDownloadProgress(tabId, percent, message, phase = "download", jobId = null) {
+/**
+ * Map HLS phases to honest percent bands (no "speed up the bar" remapping):
+ *   playlist/init  2–6%
+ *   segments       6–90%  proportional to completed/total segments
+ *   merge          91–93%
+ *   save           94–99%  (Chrome writing the file)
+ *   done           100%
+ */
+function hlsPhasePercent(p = {}) {
+  if (p.phase === "save") {
+    if (typeof p.percent === "number" && p.percent >= 0) {
+      return Math.max(94, Math.min(99, p.percent));
+    }
+    return 95;
+  }
+  // Segments: ONLY completed/total — never use a "floor remap" that races to 99%
+  if (p.phase === "segments") {
+    if (p.total > 0) {
+      const ratio = Math.max(0, Math.min(1, Number(p.current) / Number(p.total)));
+      return Math.round(6 + ratio * 84); // 6 .. 90
+    }
+    return 6;
+  }
+  if (p.phase === "merge") return 92;
+  if (p.phase === "done") return 100;
+  if (p.phase === "playlist" || p.phase === "init" || p.phase === "start") {
+    return 4;
+  }
+  // Non-HLS (yt-dlp etc.): trust reported percent, cap below 100 until done
+  if (typeof p.percent === "number" && p.percent >= 0) {
+    return Math.max(0, Math.min(99, p.percent));
+  }
+  return 3;
+}
+
+function emitDownloadProgress(tabId, percent, message, phase = "download", jobId = null, extra = {}) {
   try {
     throwIfJobStopped(jobId);
   } catch (e) {
@@ -1364,15 +1544,28 @@ function emitDownloadProgress(tabId, percent, message, phase = "download", jobId
     phase === "done" ? "done" : phase === "error" ? "error" : "running";
   // Don't mark done/error here — finishDownloadJob owns terminal states
   if (status === "running") {
-    // Floor against current job % so retries never publish a lower value
+    const reset = !!extra.progressReset;
     const floor = typeof job.percent === "number" ? job.percent : 0;
-    const pct =
-      typeof percent === "number" ? Math.max(floor, Math.min(100, percent)) : floor;
+    let pct =
+      typeof percent === "number" ? Math.min(100, Math.max(0, percent)) : floor;
+    // Default: never go backwards (jitter). Method switch may reset.
+    if (!reset) pct = Math.max(floor, pct);
     updateDownloadJob(job.id, {
       percent: pct,
       message,
       phase,
-      status: "running"
+      status: "running",
+      ...(reset ? { progressReset: true } : {}),
+      ...(extra.bytesReceived != null
+        ? { bytesReceived: extra.bytesReceived }
+        : {}),
+      ...(extra.totalBytes != null ? { totalBytes: extra.totalBytes } : {}),
+      ...(extra.segmentCurrent != null
+        ? { segmentCurrent: extra.segmentCurrent }
+        : {}),
+      ...(extra.segmentTotal != null
+        ? { segmentTotal: extra.segmentTotal }
+        : {})
     });
   } else {
     const progress = {
@@ -1396,11 +1589,29 @@ function safeDownloadName(filename, mime = "") {
   let name = String(filename || "");
   // Never keep directory components here — relDownloadPath adds subfolder
   name = name.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+  // Broken uniquify forms: "title.mp4 (1).mp4" / "title.mp4 (1)" / "title (2)"
+  name = name.replace(
+    /\.(mp4|webm|mkv|mp3|m4a)\s*\(\d{1,3}\)\s*\.(mp4|webm|mkv|mp3|m4a)$/i,
+    ".$1"
+  );
+  name = name.replace(/\.(mp4|webm|mkv|mp3|m4a)\s*\(\d{1,3}\)\s*$/i, ".$1");
+  name = name.replace(/\s*\(\d{1,3}\)\s*(?=\.[a-z0-9]{2,5}$)/i, "");
+  name = name.replace(/\s*\(\d{1,3}\)\s*$/g, "");
+  // Strip leak tags again (safety net if Naming not used)
+  name = name
+    .replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ")
+    .replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ")
+    .replace(
+      /[-–—|·•:_\s]*(No\s*Mosaic|Demosaic|Uncut|Raw)(?=[_\s\-–—.]|$)/gi,
+      " "
+    );
   name = name
     .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
     .replace(/[\u{2600}-\u{27BF}]/gu, "")
     .replace(/[♥❤💕💗💖💘⭐✨…·•]/g, "")
     .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+    .replace(/[\u2010-\u2015\u2212]+/g, " ")
+    .replace(/\s+-\s+/g, " ")
     .replace(/\s+/g, " ")
     .replace(/\.ts$/i, ".mp4")
     .replace(/\.m3u8$/i, ".mp4")
@@ -1408,13 +1619,33 @@ function safeDownloadName(filename, mime = "") {
     .trim();
 
   let ext = defaultExt;
-  const m = name.match(/(\.[a-z0-9]{2,5})$/i);
-  if (m) {
-    ext = m[1].toLowerCase() === ".ts" ? ".mp4" : m[1];
+  // Peel ALL trailing extensions so "a.mp4.mp4" → base a, ext .mp4
+  let peelGuard = 0;
+  while (peelGuard++ < 6 && /\.[a-z0-9]{2,5}$/i.test(name)) {
+    const m = name.match(/(\.[a-z0-9]{2,5})$/i);
+    if (!m) break;
+    const e = m[1].toLowerCase();
+    if (e === ".ts" || e === ".m3u8") {
+      ext = ".mp4";
+    } else if (
+      [".mp4", ".webm", ".mkv", ".mov", ".m4v", ".mp3", ".m4a", ".aac"].includes(e)
+    ) {
+      ext = e;
+    } else {
+      // quality-like or unknown — stop peeling
+      break;
+    }
     name = name.slice(0, -m[1].length).trim();
+    // Stop if we hit a quality tag mistaken as base
+    if (/^\d{3,4}p$/i.test(name)) break;
   }
-  // Basename must be real text — bare ".mp4" / "_" / quality-only names fail Chrome
+  // Basename must be real text
   name = name.replace(/^[.\s_-]+|[.\s_-]+$/g, "").trim();
+  // Prefer Naming cleaner when available (before generic check)
+  if (typeof Naming !== "undefined" && Naming.cleanPageTitle) {
+    const cleaned = Naming.cleanPageTitle(name);
+    if (cleaned && cleaned.length >= 2) name = cleaned;
+  }
   if (
     !name ||
     name.length < 2 ||
@@ -1425,11 +1656,15 @@ function safeDownloadName(filename, mime = "") {
     name = `영상_${Date.now()}`;
   }
   let full = `${name}${ext.startsWith(".") ? ext : `.${ext}`}`;
+  // Never leave double video extensions
+  full = full.replace(
+    /\.(mp4|webm|mkv|mp3|m4a)\.(mp4|webm|mkv|mp3|m4a)$/i,
+    ".$2"
+  );
   if (full.length > 100) {
     const e = ext.startsWith(".") ? ext : `.${ext}`;
     full = name.slice(0, Math.max(8, 100 - e.length)).trim() + e;
   }
-  // Final guard: Chrome rejects empty base and path-like names
   if (!/^[^\s/\\].+\.[a-z0-9]{2,5}$/i.test(full) || full.startsWith(".")) {
     full = `영상_${Date.now()}${defaultExt}`;
   }
@@ -1499,14 +1734,30 @@ function pageIdentityKey(url) {
       return `ig:${path.replace(/\/+$/, "") || "/"}`;
     }
 
+    // Adult tubes: product code in path is the true identity
+    // e.g. /dm14/v/snos-309 → snos-309
+    const codeInPath = path.match(
+      /(?:^|\/)([a-z]{2,12})-?(\d{2,5})(?:\/|$|\.)/i
+    );
+    if (
+      codeInPath &&
+      /123av|missav|jable|avgle|netflav|supjav|njav|javdb|thisav|hanime/i.test(
+        host
+      )
+    ) {
+      return `${host}:code:${codeInPath[1].toUpperCase()}-${codeInPath[2]}`;
+    }
+
     // Generic: origin + path + significant query keys
     const keep = [];
-    for (const k of ["v", "id", "video_id", "vid", "clip", "watch"]) {
+    for (const k of ["v", "id", "video_id", "vid", "clip", "watch", "code"]) {
       const val = u.searchParams.get(k);
       if (val) keep.push(`${k}=${val}`);
     }
     keep.sort();
-    return `${host}${path}${keep.length ? "?" + keep.join("&") : ""}`;
+    return `${host}${path.replace(/\/+$/, "") || "/"}${
+      keep.length ? "?" + keep.join("&") : ""
+    }`;
   } catch {
     return String(url).slice(0, 200);
   }
@@ -1545,29 +1796,44 @@ function enrichItem(tabId, item) {
     (item.url && /\.m3u8(\?|$|#)/i.test(item.url))
   );
 
-  const tabTitle = meta?.title || "";
-  let title = "";
-  for (const c of [item.title, item.pageTitle, tabTitle]) {
-    if (!c) continue;
-    const cleaned = Naming.cleanPageTitle(c) || c;
-    if (cleaned && !Naming.isUglyBase(cleaned)) {
-      title = cleaned;
-      const tt = Naming.cleanPageTitle(tabTitle);
-      if (tt && !Naming.isUglyBase(tt) && tt.length > title.length + 5) title = tt;
-      break;
-    }
-  }
-  if (!title && tabTitle) title = Naming.cleanPageTitle(tabTitle) || tabTitle;
-  if (title && Naming.isUglyBase(title)) title = Naming.cleanPageTitle(tabTitle) || "";
-
-  const host = meta?.host || item.host || "";
-  // Only inherit tab thumbnail if it belongs to the same page identity
+  // Only inherit tab title/thumb when this media is from the same page
   const itemPage = item.pageUrl || item.url || meta?.lastUrl || "";
   const samePage =
     !meta?.pageKey ||
     !itemPage ||
     pageIdentityKey(itemPage) === meta.pageKey ||
     pageIdentityKey(meta.lastUrl || "") === meta.pageKey;
+
+  const tabTitle = samePage ? meta?.title || "" : "";
+  // Prefer the item's own title — never overwrite with a longer unrelated tab title
+  // (that was the main "filename ≠ video" bug when tab navigated or title updated).
+  let title = "";
+  for (const c of [item.title, item.pageTitle]) {
+    if (!c) continue;
+    const cleaned = Naming.cleanPageTitle(c) || c;
+    if (cleaned && !Naming.isUglyBase(cleaned)) {
+      title = cleaned;
+      break;
+    }
+  }
+  if ((!title || Naming.isUglyBase(title)) && tabTitle) {
+    const tt = Naming.cleanPageTitle(tabTitle) || tabTitle;
+    if (tt && !Naming.isUglyBase(tt)) title = tt;
+  } else if (title && tabTitle) {
+    // Same page: allow tab title only if it describes the SAME video (product code match)
+    // and is more descriptive.
+    const tt = Naming.cleanPageTitle(tabTitle) || tabTitle;
+    if (
+      tt &&
+      !Naming.isUglyBase(tt) &&
+      titlesMatchVideo(title, tt) &&
+      tt.length > title.length + 5
+    ) {
+      title = tt;
+    }
+  }
+
+  const host = meta?.host || item.host || "";
   const thumbnail =
     item.thumbnail ||
     (samePage && meta?.thumbnail ? meta.thumbnail : undefined) ||
@@ -1576,9 +1842,10 @@ function enrichItem(tabId, item) {
   const existingOk =
     existingRaw && !Naming.isUglyBase(existingRaw) ? item.filename : "";
 
+  // Filename must stay bound to this item's title, not a foreign tab title
   const filename = Naming.buildFilename({
     title,
-    pageTitle: meta?.title || item.pageTitle || "",
+    pageTitle: item.pageTitle || (samePage ? meta?.title : "") || "",
     quality,
     type: item.type || "video",
     isHls,
@@ -1588,7 +1855,7 @@ function enrichItem(tabId, item) {
   });
   const displayName = Naming.displayTitle({
     title,
-    pageTitle: meta?.title || item.pageTitle || "",
+    pageTitle: item.pageTitle || (samePage ? meta?.title : "") || "",
     type: item.type || "video"
   });
 
@@ -1608,7 +1875,7 @@ function enrichItem(tabId, item) {
     format: "MP4",
     estimatedSize: estimatedSize || undefined,
     title: title || undefined,
-    pageTitle: item.pageTitle || meta?.title || undefined,
+    pageTitle: item.pageTitle || (samePage ? meta?.title : undefined) || undefined,
     host: host || undefined,
     thumbnail,
     filename,
@@ -1626,7 +1893,10 @@ function mergePrefer(existing, incoming) {
       if (!out[k] || Naming.isUglyBase(prevBase)) {
         if (!Naming.isUglyBase(nextBase)) out[k] = v;
       } else if (!Naming.isUglyBase(nextBase) && nextBase.length > prevBase.length) {
-        out[k] = v;
+        // Never replace with a longer title for a *different* product code
+        if (titlesMatchVideo(prevBase, nextBase) || !Naming.extractProductCode?.(prevBase)) {
+          out[k] = v;
+        }
       }
       continue;
     }
@@ -2871,27 +3141,51 @@ async function downloadPageFromUi(
   const mediaMode = forceOpts.mediaMode || settings.mediaMode || "video";
   const quality = forceOpts.preferQuality || preferQuality || "best";
 
-  // Prefer tab title / meta (readable). Never force YouTube_id style names.
+  // Job may already have a locked name from SERIES / popup — always prefer it.
+  // Do NOT use the currently focused tab's title when forceOpts.title / job
+  // already identify a different video (series / watchlist / multi-queue).
+  const jobSnap = jid ? activeDownloads.get(jid) : null;
   let fname = "";
   try {
-    const meta = tabId != null ? tabMeta.get(tabId) : null;
-    let tabTitle = meta?.title || forceOpts.title || "";
-    if (!tabTitle && tabId != null) {
+    fname = lockSaveName({
+      filenameHint: jobSnap?.filename || forceOpts.filename || "",
+      title:
+        forceOpts.title ||
+        jobSnap?.title ||
+        "",
+      pageTitle: forceOpts.title || jobSnap?.title || "",
+      quality,
+      mediaMode,
+      pageUrl,
+      seriesKey: jobSnap?.seriesKey || "",
+      playlistTitle: jobSnap?.seriesTitle || "",
+      seriesIndex: jobSnap?.seriesIndex || 0
+    });
+    // Only if still empty: use tab title when it matches THIS pageUrl
+    if (!fname && tabId != null && tabId >= 0) {
       try {
         const tab = await chrome.tabs.get(tabId);
-        tabTitle = Naming.cleanPageTitle(tab?.title || "") || "";
+        if (tab?.url && sameVideoPage(tab.url, pageUrl)) {
+          const tabTitle = Naming.cleanPageTitle(tab.title || "") || "";
+          fname = lockSaveName({
+            title: tabTitle,
+            quality,
+            mediaMode,
+            pageUrl
+          });
+        }
       } catch {
         /* ignore */
       }
     }
-    fname = await buildSaveFilename({
-      title: tabTitle || forceOpts.title || "",
-      quality,
-      pageUrl,
-      mediaMode
-    });
   } catch {
     fname = "";
+  }
+  if (jid && fname) {
+    const job = activeDownloads.get(jid);
+    if (job && (!job.filename || UVD.isGenericSaveName(job.filename))) {
+      job.filename = fname;
+    }
   }
 
   // Social sites → dedicated yt-dlp path
@@ -2983,32 +3277,62 @@ async function downloadPageFromUi(
     );
   }
 
-  if ((!fname || UVD.isGenericSaveName(fname)) && workTabId != null) {
-    try {
-      const t = await chrome.tabs.get(workTabId);
-      const tt = Naming.cleanPageTitle(t?.title || "");
-      if (tt) {
-        fname =
-          (await buildSaveFilename({
-            title: tt,
-            quality,
-            pageUrl,
-            mediaMode
-          })) || fname;
+  // Fill name only from THIS page's scan/title — never from a different focused tab
+  if (!fname || UVD.isGenericSaveName(String(fname).replace(/\.[a-z0-9]+$/i, ""))) {
+    let pageTitle = best?.title || best?.pageTitle || forceOpts.title || "";
+    if ((!pageTitle || Naming.isUglyBase?.(pageTitle)) && workTabId != null) {
+      try {
+        const t = await chrome.tabs.get(workTabId);
+        if (t?.url && sameVideoPage(t.url, pageUrl)) {
+          pageTitle = Naming.cleanPageTitle(t.title || "") || pageTitle;
+        }
+      } catch {
+        /* ignore */
       }
-    } catch {
-      /* ignore */
+    }
+    fname =
+      lockSaveName({
+        filenameHint: best?.filename || "",
+        title: pageTitle,
+        pageTitle,
+        quality,
+        mediaMode,
+        pageUrl
+      }) || fname;
+  }
+  if (jid && fname) {
+    const job = activeDownloads.get(jid);
+    if (job) {
+      job.filename = fname;
+      if (
+        !job.title ||
+        job.title === "영상" ||
+        UVD.isGenericSaveName(job.title)
+      ) {
+        job.title = String(fname).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
+      }
+      job.updatedAt = Date.now();
+      broadcastJob(job);
     }
   }
+
+  // Bind item meta to locked name so HLS save won't re-title from another page
+  const boundBest = {
+    ...best,
+    pageUrl,
+    title: forceOpts.title || best.title || jobSnap?.title || "",
+    pageTitle: forceOpts.title || best.pageTitle || best.title || "",
+    filename: fname || best.filename
+  };
 
   try {
     return await downloadSmart(
       workTabId,
       best.url,
-      best.filename || fname,
+      fname || best.filename,
       quality,
       mediaMode === "audio" ? "audio" : best.type || "video",
-      best,
+      boundBest,
       { pageUrl, jobId: jid, forceMediaMode: mediaMode }
     );
   } finally {
@@ -3394,8 +3718,12 @@ function startChromeDownload(url, filename) {
  * Wait until Chrome reports complete.
  * CRITICAL: never treat "in_progress" as success for blob/data URLs —
  * if we stop keepAlive early, SW dies and the download is interrupted.
+ * @param {number} downloadId
+ * @param {number} [timeoutMs]
+ * @param {{ onProgress?: (p:{bytesReceived:number,totalBytes:number})=>void }} [opts]
  */
-function waitDownloadComplete(downloadId, timeoutMs = 180000) {
+function waitDownloadComplete(downloadId, timeoutMs = 180000, opts = {}) {
+  const onProgress = opts.onProgress || null;
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (fn, v) => {
@@ -3409,6 +3737,18 @@ function waitDownloadComplete(downloadId, timeoutMs = 180000) {
         /* ignore */
       }
       fn(v);
+    };
+
+    const reportWrite = (item) => {
+      if (!onProgress || !item) return;
+      try {
+        onProgress({
+          bytesReceived: item.bytesReceived || 0,
+          totalBytes: item.totalBytes > 0 ? item.totalBytes : item.fileSize || 0
+        });
+      } catch {
+        /* ignore */
+      }
     };
 
     const onChanged = (delta) => {
@@ -3427,6 +3767,16 @@ function waitDownloadComplete(downloadId, timeoutMs = 180000) {
                 : "다운로드가 중단되었습니다"
           )
         );
+      } else if (
+        delta.bytesReceived ||
+        delta.totalBytes ||
+        delta.fileSize
+      ) {
+        // Live write progress while Chrome flushes the blob
+        chrome.downloads
+          .search({ id: downloadId })
+          .then(([item]) => reportWrite(item))
+          .catch(() => {});
       }
     };
     chrome.downloads.onChanged.addListener(onChanged);
@@ -3435,6 +3785,9 @@ function waitDownloadComplete(downloadId, timeoutMs = 180000) {
       try {
         const [item] = await chrome.downloads.search({ id: downloadId });
         if (!item) return;
+        if (item.state === "in_progress") {
+          reportWrite(item);
+        }
         if (item.state === "complete") {
           finish(resolve, {
             state: "complete",
@@ -3503,8 +3856,11 @@ function blobToDataUrl(blob) {
 /**
  * Save via service worker blob URL.
  * Keep SW alive and do not revoke until chrome.downloads reports complete.
+ * @param {Blob} blob
+ * @param {string} name
+ * @param {{ onProgress?: Function }} [opts]
  */
-async function downloadBlobViaServiceWorker(blob, name) {
+async function downloadBlobViaServiceWorker(blob, name, opts = {}) {
   if (typeof URL === "undefined" || typeof URL.createObjectURL !== "function") {
     throw new Error("이 Chrome 버전에서는 blob 저장을 지원하지 않습니다");
   }
@@ -3523,7 +3879,15 @@ async function downloadBlobViaServiceWorker(blob, name) {
         throw new Error(e2?.message || e1?.message || "다운로드 시작 실패");
       }
     }
-    const done = await waitDownloadComplete(id, timeoutMs);
+    const done = await waitDownloadComplete(id, timeoutMs, {
+      onProgress: (p) => {
+        // Blob URL → disk: total is the blob size when Chrome doesn't report it
+        opts.onProgress?.({
+          bytesReceived: p.bytesReceived || 0,
+          totalBytes: p.totalBytes > 0 ? p.totalBytes : blob.size
+        });
+      }
+    });
 
     // Resolve path from downloads API
     let path = done.path || "";
@@ -3718,8 +4082,11 @@ async function downloadBlobViaTab(blob, name) {
 /**
  * Save blob to Downloads/VideoDownloader/.
  * Prefer SW path (no offscreen). Keep SW alive until Chrome finishes.
+ * @param {Blob} blob
+ * @param {string} filename
+ * @param {{ onProgress?: Function }} [opts]
  */
-async function downloadBlob(blob, filename) {
+async function downloadBlob(blob, filename, opts = {}) {
   if (!blob?.size) throw new Error("빈 파일은 저장할 수 없습니다");
   if (blob.size < 100_000) {
     throw new Error(`파일이 너무 작습니다 (${Math.round(blob.size / 1024)}KB)`);
@@ -3732,7 +4099,7 @@ async function downloadBlob(blob, filename) {
   try {
     // 1) Service worker blob URL (main path — no offscreen)
     try {
-      const saved = await downloadBlobViaServiceWorker(blob, name);
+      const saved = await downloadBlobViaServiceWorker(blob, name, opts);
       if (saved.downloadId != null) return saved;
       errors.push("다운로드 ID 없음");
     } catch (e) {
@@ -3895,36 +4262,95 @@ async function runHlsDownload(
     (await resolvePageUrl(tabId, "")) ||
     "";
 
-  // Floor so a second HLS attempt (after page-HLS fail) doesn't drop the bar
-  const jobFloor = () => {
-    if (!jid) return 0;
-    const j = activeDownloads.get(jid);
-    return typeof j?.percent === "number" ? j.percent : 0;
-  };
+  // ── Lock save name NOW (before long download). ──
+  // Tab title / media map may change if the user navigates or starts another video.
+  const jobSnap = jid ? activeDownloads.get(jid) : null;
+  const lockedName = lockSaveName({
+    filenameHint:
+      filenameHint ||
+      jobSnap?.filename ||
+      itemHint?.filename ||
+      "",
+    title:
+      itemHint?.title ||
+      jobSnap?.title ||
+      itemHint?.pageTitle ||
+      "",
+    pageTitle: itemHint?.pageTitle || itemHint?.title || jobSnap?.title || "",
+    quality: preferQuality || itemHint?.quality || jobSnap?.quality || "",
+    mediaMode: "video",
+    pageUrl: pageUrl || itemHint?.pageUrl || jobSnap?.pageUrl || "",
+    seriesKey: jobSnap?.seriesKey || itemHint?.seriesKey || "",
+    playlistTitle: jobSnap?.seriesTitle || itemHint?.playlistTitle || "",
+    seriesIndex: jobSnap?.seriesIndex || itemHint?.seriesIndex || 0
+  });
+  if (jid && lockedName) {
+    const job = activeDownloads.get(jid);
+    if (job) {
+      job.filename = lockedName;
+      if (!job.title || job.title === "영상" || UVD.isGenericSaveName(job.title)) {
+        job.title = lockedName.replace(/\.(mp4|webm|mkv)$/i, "");
+      }
+      job.updatedAt = Date.now();
+      broadcastJob(job);
+    }
+  }
 
-  const setProg = (p) => {
-    const floor = jobFloor();
-    const raw =
-      typeof p.percent === "number" && p.percent > 0 ? p.percent : 10;
-    const percent = Math.max(floor, Math.min(99, raw));
-    const progress = { ...p, percent, jobId: jid || undefined, global: true };
+  // Honest progress only — never remap "remaining span" onto a rising floor
+  // (that made the bar race to 99% while segments were still downloading).
+  const setProg = (p, opts = {}) => {
+    const percent =
+      typeof p.percent === "number" && p.phase === "save"
+        ? Math.max(94, Math.min(99, p.percent))
+        : hlsPhasePercent(p);
+    let message = p.message || "받는 중…";
+    if (p.phase === "segments" && p.total > 0) {
+      message =
+        p.message ||
+        `받는 중… ${p.current}/${p.total} 조각 (${percent}%)`;
+    } else if (p.phase === "merge") {
+      message = "파일 만드는 중…";
+    } else if (p.phase === "save") {
+      message = p.message || "디스크에 저장 중…";
+    }
+    const progress = {
+      ...p,
+      percent,
+      message,
+      jobId: jid || undefined,
+      global: true
+    };
     hlsProgress.set(key, progress);
     if (jid) hlsProgress.set(jid, progress);
     emitDownloadProgress(
       tabId,
       percent,
-      p.message || "받는 중…",
+      message,
       p.phase || "download",
-      jid
+      jid,
+      {
+        progressReset: !!opts.progressReset,
+        segmentCurrent: p.current,
+        segmentTotal: p.total
+      }
     );
   };
 
-  setProg({
-    phase: "start",
-    message: "준비 중…",
-    percent: Math.max(2, jobFloor())
-  });
+  setProg(
+    {
+      phase: "start",
+      message: lockedName
+        ? `준비 중… · ${String(lockedName)
+            .replace(/\.[a-z0-9]+$/i, "")
+            .slice(0, 36)}`
+        : "준비 중…",
+      current: 0,
+      total: 1
+    },
+    { progressReset: false }
+  );
 
+  const settingsForSpeed = await UVD.getSettings().catch(() => ({}));
   const result = await HLS.downloadAndMerge(url, {
     preferQuality: preferQuality || "best",
     pageUrl,
@@ -3935,23 +4361,10 @@ async function runHlsDownload(
       headers: pageUrl ? { Referer: pageUrl } : {}
     },
     allowPartial: true,
+    speedProfile: settingsForSpeed?.downloadSpeed || "fast",
     onProgress: (p) => {
-      const floor = jobFloor();
-      // Map segment progress into [floor .. 93] so retries continue upward
-      const span = Math.max(10, 93 - floor);
-      let percent = Math.max(floor, 3);
-      let message = "준비 중…";
-      if (p.phase === "segments" && p.total) {
-        percent = Math.round(floor + (p.current / p.total) * span);
-        message = p.message || `받는 중… ${percent}%`;
-      } else if (p.phase === "merge") {
-        percent = Math.max(floor, 94);
-        message = "파일 만드는 중…";
-      } else if (p.phase === "playlist" || p.phase === "init") {
-        percent = Math.max(floor, Math.min(floor + 2, 8));
-        message = p.message || "준비 중…";
-      }
-      setProg({ ...p, percent, message });
+      // Absolute percent from phase + segment ratio (honest)
+      setProg(p);
     }
   });
 
@@ -3959,21 +4372,64 @@ async function runHlsDownload(
     throw new Error(`파일이 너무 작습니다 (${Math.round((result.size || 0) / 1024)}KB)`);
   }
 
-  const baseItem = itemHint || (tabId != null ? getTabMap(tabId).get(url) : null) || {};
-  let name = Naming.buildFilename({
-    title: baseItem.title || baseItem.pageTitle || filenameHint,
-    pageTitle: baseItem.pageTitle,
-    quality: result.quality || baseItem.quality || preferQuality,
-    type: "video",
-    isHls: true,
-    isFmp4: true,
-    host: baseItem.host,
-    existing: filenameHint || baseItem.filename
-  });
-  name = safeDownloadName(name, "video/mp4");
+  // Keep the name locked at start — only stamp real quality from the merge result.
+  // Do NOT re-read tab title / media map (user may have navigated to another video).
+  let name = lockedName;
+  if (!name || UVD.isGenericSaveName(name.replace(/\.[a-z0-9]+$/i, ""))) {
+    // Rare: no hint at start — rebuild only from itemHint / pageUrl of THIS job
+    name = lockSaveName({
+      filenameHint: filenameHint || itemHint?.filename || "",
+      title: itemHint?.title || itemHint?.pageTitle || "",
+      pageTitle: itemHint?.pageTitle || "",
+      quality: result.quality || preferQuality || "",
+      pageUrl: pageUrl || itemHint?.pageUrl || ""
+    });
+  } else {
+    name = applyQualityToLockedName(
+      name,
+      result.quality || preferQuality || "",
+      "video"
+    );
+  }
+  if (!name) {
+    name = safeDownloadName(
+      Naming.buildFilename({
+        title: "영상",
+        quality: result.quality || preferQuality || "",
+        type: "video"
+      }),
+      "video/mp4"
+    );
+  }
 
-  setProg({ phase: "save", message: "저장 중…", percent: 96 });
-  const saved = await downloadBlob(result.blob, name);
+  setProg({
+    phase: "save",
+    message: `디스크에 쓰는 중… · ${String(name)
+      .replace(/\.[a-z0-9]+$/i, "")
+      .slice(0, 36)}`,
+    percent: 95
+  });
+  const saved = await downloadBlob(result.blob, name, {
+    onProgress: (wp) => {
+      // Chrome is still writing a large blob — keep bar honest in 95–99
+      if (wp?.totalBytes > 0 && wp.bytesReceived >= 0) {
+        const ratio = Math.min(1, wp.bytesReceived / wp.totalBytes);
+        setProg({
+          phase: "save",
+          percent: Math.round(95 + ratio * 4),
+          message: `디스크에 쓰는 중… ${Math.round(ratio * 100)}%`,
+          current: wp.bytesReceived,
+          total: wp.totalBytes
+        });
+      } else {
+        setProg({
+          phase: "save",
+          percent: 97,
+          message: "디스크에 쓰는 중…"
+        });
+      }
+    }
+  });
   setProg({ phase: "done", percent: 100, message: "저장 완료" });
   setTimeout(() => hlsProgress.delete(key), 3000);
 
@@ -4074,14 +4530,30 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
   let workItem = itemHint;
 
   // Upgrade blob / weak URL to best HLS on tab
+  // Keep the original filename/title — alt media must not rename to another video.
   if (url.startsWith("blob:") || (!isRealHls(url, mediaType) && tabId != null)) {
     const alt = bestNonBlobAlternative(tabId, url);
     if (alt?.url && (alt.isHls || isRealHls(alt.url, alt.type))) {
       workUrl = alt.url;
       workType = "stream";
-      workItem = alt;
-      filename = filename || alt.filename || filename;
+      workItem = {
+        ...alt,
+        title: workItem?.title || alt.title,
+        pageTitle: workItem?.pageTitle || alt.pageTitle,
+        pageUrl: workItem?.pageUrl || alt.pageUrl || pageUrl,
+        filename: filename || workItem?.filename || alt.filename
+      };
+      // only fill empty filename from alt if still empty
+      if (!filename) filename = alt.filename || filename;
       emitDownloadProgress(tabId, 5, "스트림으로 전환…", "download", jid);
+    }
+  }
+
+  // Prefer job-locked filename over anything re-derived mid-download
+  if (jid) {
+    const jobF = activeDownloads.get(jid)?.filename;
+    if (jobF && !UVD.isGenericSaveName(jobF)) {
+      filename = jobF;
     }
   }
 
@@ -4129,7 +4601,18 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
         workUrl + (pageUrl || "")
       );
 
-    const runSwHls = async () => {
+    const runSwHls = async (isRetry = false) => {
+      // After page-HLS fails mid-way, reset bar so we don't sit at a fake 90%+
+      if (isRetry && jid) {
+        emitDownloadProgress(
+          tabId,
+          4,
+          "다시 받는 중… (확장 경로)",
+          "playlist",
+          jid,
+          { progressReset: true }
+        );
+      }
       const result = await withTimeout(
         withTabReferer(
           tabId,
@@ -4156,12 +4639,11 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
     };
 
     const runPageHls = async () => {
-      const keep = jid ? activeDownloads.get(jid)?.percent || 8 : 8;
       emitDownloadProgress(
         tabId,
-        Math.max(8, keep),
+        4,
         "페이지에서 조각 받는 중…",
-        "download",
+        "playlist",
         jid
       );
       const pageResult = await pageDownloadAllFrames(tabId, {
@@ -4183,39 +4665,35 @@ async function downloadSmart(tabId, url, filename, preferQuality, mediaType, ite
       throw new Error(pageResult?.error || "페이지 병합 실패");
     };
 
-    const order = tryPageFirst
-      ? [runPageHls, runSwHls]
-      : [runSwHls, runPageHls];
+    // Each attempt reports its own honest segment progress (with reset on retry)
+    const attempts = tryPageFirst
+      ? [
+          { name: "page", run: () => runPageHls() },
+          { name: "sw", run: () => runSwHls(true) }
+        ]
+      : [
+          { name: "sw", run: () => runSwHls(false) },
+          { name: "page", run: () => runPageHls() }
+        ];
 
-    for (let i = 0; i < order.length; i++) {
+    for (let i = 0; i < attempts.length; i++) {
       try {
-        const result = await order[i]();
+        const result = await attempts[i].run();
         emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
         return result;
       } catch (e) {
         const msg = friendlyFetchError(e);
         errors.push(msg);
-        // Keep current % (do not drop to 10) when switching methods
-        const keepPct = jid
-          ? activeDownloads.get(jid)?.percent || 10
-          : 10;
-        if (i + 1 < order.length && /403|401|접근 거부|Segment HTTP/i.test(msg)) {
+        if (i + 1 < attempts.length) {
           emitDownloadProgress(
             tabId,
-            keepPct,
-            "접근 제한 — 다른 방법으로 재시도…",
-            "download",
-            jid
-          );
-          continue;
-        }
-        if (i + 1 < order.length) {
-          emitDownloadProgress(
-            tabId,
-            keepPct,
-            "다른 방법으로 시도…",
-            "download",
-            jid
+            4,
+            /403|401|접근 거부|Segment HTTP/i.test(msg)
+              ? "접근 제한 — 다른 방법으로 다시 받는 중…"
+              : "다른 방법으로 다시 받는 중…",
+            "playlist",
+            jid,
+            { progressReset: true }
           );
           continue;
         }
@@ -4981,27 +5459,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
       (async () => {
         const settings = await UVD.getSettings();
-        let fname = msg.filename || "";
-        if (UVD.isGenericSaveName(fname)) fname = "";
-        if (!fname) {
-          fname =
-            (await buildSaveFilename({
-              title: msg.title || "",
-              quality: msg.preferQuality,
-              pageUrl,
-              mediaMode: settings.mediaMode
-            })) || "";
-        }
         const displayTitle =
-          (msg.title && !UVD.isGenericSaveName(msg.title) && msg.title) ||
-          fname ||
+          (msg.title &&
+            !UVD.isGenericSaveName(msg.title) &&
+            (Naming.cleanPageTitle?.(msg.title) || msg.title)) ||
+          "";
+        const fname = lockSaveName({
+          filenameHint: msg.filename || "",
+          title: displayTitle || msg.title || "",
+          pageTitle: displayTitle || msg.title || "",
+          quality: msg.preferQuality,
+          mediaMode: settings.mediaMode,
+          pageUrl
+        });
+        const jobTitle =
+          displayTitle ||
+          (fname ? String(fname).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "") : "") ||
           "영상";
         runTrackedDownload(
           {
             tabId: tid,
-            title: displayTitle,
+            title: jobTitle,
             pageUrl,
-            filename: fname || displayTitle,
+            filename: fname || "",
             mediaMode: settings.mediaMode,
             quality: msg.preferQuality || "best"
           },
@@ -5014,7 +5494,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
               {
                 mediaMode: settings.mediaMode,
                 mediaUrl: msg.mediaUrl || "",
-                title: msg.title || displayTitle
+                title: msg.title || jobTitle,
+                filename: fname || ""
               }
             );
             if (r?.ok === false) {
@@ -5657,37 +6138,44 @@ exit 1
       const pageUrl = msg.pageUrl || msg.url;
       (async () => {
         const settings = await UVD.getSettings();
-        let fname = msg.filename || "";
-        if (UVD.isGenericSaveName(fname)) fname = "";
-        if (!fname) {
-          fname =
-            (await buildSaveFilename({
-              title: msg.title || "",
-              quality: msg.preferQuality,
-              pageUrl,
-              mediaMode: settings.mediaMode
-            })) || "";
-        }
         const displayTitle =
-          (msg.title && !UVD.isGenericSaveName(msg.title) && msg.title) ||
-          fname ||
+          (msg.title &&
+            !UVD.isGenericSaveName(msg.title) &&
+            (Naming.cleanPageTitle?.(msg.title) || msg.title)) ||
+          "";
+        const fname = lockSaveName({
+          filenameHint: msg.filename || "",
+          title: displayTitle || msg.title || "",
+          pageTitle: displayTitle || msg.title || "",
+          quality: msg.preferQuality,
+          mediaMode: settings.mediaMode,
+          pageUrl
+        });
+        const jobTitle =
+          displayTitle ||
+          (fname ? String(fname).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "") : "") ||
           "영상";
         runTrackedDownload(
           {
             tabId: tid,
-            title: displayTitle,
+            title: jobTitle,
             pageUrl,
-            filename: fname || displayTitle,
+            filename: fname || "",
             mediaMode: settings.mediaMode,
             quality: msg.preferQuality || "best"
           },
           async (jobId) => {
-            // Resolves human title from tab / yt-dlp (not YouTube_id)
+            // Uses job-locked title/filename — not whatever tab is focused later
             const r = await downloadPageFromUi(
               tid,
               pageUrl,
               msg.preferQuality || "best",
-              jobId
+              jobId,
+              {
+                mediaMode: settings.mediaMode,
+                title: msg.title || jobTitle,
+                filename: fname || ""
+              }
             );
             return { ...r, filename: r?.filename || fname };
           },
@@ -5715,15 +6203,21 @@ exit 1
       let tid = msg.tabId ?? tabId;
       const pageUrl = msg.pageUrl || url;
       const item = tid != null ? getTabMap(tid).get(url) : null;
-      const fname = safeDownloadName(
-        msg.filename ||
-          resolveFilename(
-            tid,
-            { ...item, ...msg, url, isHls: msg.type === "DOWNLOAD_HLS" || isHlsUrl(url) },
-            url
-          ),
-        "video/mp4"
-      );
+      // Bind title/filename to THIS request only — ignore later tab navigation
+      const boundTitle =
+        Naming.cleanPageTitle?.(msg.title || item?.title || item?.pageTitle || "") ||
+        msg.title ||
+        item?.title ||
+        item?.pageTitle ||
+        "";
+      const fname = lockSaveName({
+        filenameHint: msg.filename || item?.filename || "",
+        title: boundTitle,
+        pageTitle: boundTitle,
+        quality: msg.preferQuality || item?.quality || "",
+        mediaMode: "video",
+        pageUrl: pageUrl || item?.pageUrl || url
+      });
       const mediaType =
         msg.mediaType ||
         item?.type ||
@@ -5734,10 +6228,28 @@ exit 1
         item?.isSiteDownload ||
         needsYtDlpHelper(url, pageUrl || item?.pageUrl);
 
+      const niceTitle =
+        boundTitle ||
+        (fname ? String(fname).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "") : "") ||
+        "영상";
+
+      // Snapshot item fields so long downloads don't pick up another video's meta
+      const boundItem = {
+        ...(item || {}),
+        url,
+        type: mediaType,
+        isHls: isHlsUrl(url) || mediaType === "stream",
+        pageUrl: pageUrl || item?.pageUrl || url,
+        title: boundTitle || item?.title,
+        pageTitle: boundTitle || item?.pageTitle,
+        filename: fname || item?.filename,
+        quality: msg.preferQuality || item?.quality
+      };
+
       return runTrackedDownload(
         {
           tabId: tid,
-          title: msg.title || item?.title || fname,
+          title: niceTitle,
           pageUrl: pageUrl || item?.pageUrl || url,
           filename: fname,
           quality: msg.preferQuality || "best"
@@ -5767,13 +6279,7 @@ exit 1
               fname,
               msg.preferQuality || "best",
               mediaType,
-              item || {
-                url,
-                type: mediaType,
-                isHls: isHlsUrl(url),
-                pageUrl,
-                title: msg.title
-              },
+              boundItem,
               {
                 pageUrl,
                 preferYtDlp,
@@ -5937,4 +6443,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-console.log("[VideoDownloader] ready v1.23.1");
+console.log("[VideoDownloader] ready v1.23.2");
