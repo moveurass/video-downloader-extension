@@ -997,9 +997,16 @@ def run_download(job_id: str, payload: dict) -> None:
             cmd = build_cmd(fmt_try, merge_try, extra)
             with jobs_lock:
                 jobs[job_id]["cmd"] = " ".join(cmd[:8]) + " …"
+                # Fresh multi-stage progress per attempt (video / audio / merge)
+                jobs[job_id]["_dl_stage"] = 0
+                jobs[job_id]["_dest_count"] = 0
+                jobs[job_id]["_raw_dl_pct"] = None
                 if attempt_i:
                     jobs[job_id]["message"] = f"다른 화질로 재시도 ({attempt_i + 1}/{len(attempts)})…"
-                    jobs[job_id]["percent"] = max(2, jobs[job_id].get("percent", 2))
+                    # Soft reset so bar can move again honestly
+                    jobs[job_id]["percent"] = min(
+                        30, max(2, float(jobs[job_id].get("percent") or 2))
+                    )
 
             proc = subprocess.Popen(
                 cmd,
@@ -1041,18 +1048,65 @@ def run_download(job_id: str, payload: dict) -> None:
                         jobs[job_id]["message"] = line[-200:]
                     elif "[download]" in line or "Merging" in line or "Destination" in line:
                         jobs[job_id]["message"] = line[-200:]
+
+                    # New output file = next stream (video then audio). Without this,
+                    # monotonic % sticks at 99 while the second track still downloads.
+                    if "[download]" in line and "Destination" in line:
+                        dest_n = int(jobs[job_id].get("_dest_count", 0) or 0) + 1
+                        jobs[job_id]["_dest_count"] = dest_n
+                        if dest_n > 1:
+                            jobs[job_id]["_dl_stage"] = dest_n - 1
+                            jobs[job_id]["_raw_dl_pct"] = 0
+                            jobs[job_id]["message"] = f"추가 트랙 받는 중… ({dest_n}번째)"
+
                     if percent is not None:
-                        # Monotonic within a single yt-dlp attempt so UI doesn't bounce
-                        prev_p = float(jobs[job_id].get("percent") or 0)
-                        p = max(2, min(99, percent))
-                        # Allow small resets only at the very start of a new fragment chain
-                        if p + 15 < prev_p and p < 8:
-                            jobs[job_id]["percent"] = p
+                        prev_raw = jobs[job_id].get("_raw_dl_pct")
+                        stage = int(jobs[job_id].get("_dl_stage", 0) or 0)
+                        # Fallback stage detect: big drop after high % (new format)
+                        if (
+                            prev_raw is not None
+                            and float(prev_raw) >= 40
+                            and percent + 25 < float(prev_raw)
+                        ):
+                            stage = stage + 1
+                            jobs[job_id]["_dl_stage"] = stage
+                            jobs[job_id]["message"] = f"추가 트랙 받는 중… ({stage + 1}단계)"
+                        jobs[job_id]["_raw_dl_pct"] = percent
+
+                        # Map into UI bands — leave headroom so we never sit at 99 early:
+                        #   stage 0 (main/video or single file): 3–85%
+                        #   stage 1+ (audio / extra):            85–92%
+                        #   merge/post:                          92–97%
+                        #   done:                                100%
+                        if stage <= 0:
+                            mapped = 3.0 + (percent / 100.0) * 82.0  # 3..85
                         else:
-                            jobs[job_id]["percent"] = max(prev_p, p)
-                    elif "Destination" in line or "Merging" in line or "Merger" in line:
-                        jobs[job_id]["percent"] = max(jobs[job_id].get("percent", 50), 90)
-                        jobs[job_id]["message"] = "파일 합치는 중…"
+                            mapped = 85.0 + (percent / 100.0) * 7.0  # 85..92
+                        mapped = max(2.0, min(92.0, mapped))
+                        prev_p = float(jobs[job_id].get("percent") or 0)
+                        # Monotonic within band; stage bumps start at ≥ previous
+                        jobs[job_id]["percent"] = max(prev_p, mapped) if stage == 0 else max(
+                            max(prev_p, 85.0), mapped
+                        )
+                        # Friendly message with real stream %
+                        if stage <= 0:
+                            jobs[job_id]["message"] = f"받는 중… {percent:.0f}%"
+                        else:
+                            jobs[job_id]["message"] = (
+                                f"추가 트랙 받는 중… {percent:.0f}% "
+                                f"(전체 {jobs[job_id]['percent']:.0f}%)"
+                            )
+                    elif "Merging" in line or "Merger" in line or "Post-process" in line:
+                        # Merge/remux can take long on large files — hold mid-90s, not 99
+                        prev_p = float(jobs[job_id].get("percent") or 50)
+                        jobs[job_id]["percent"] = max(prev_p, 93.0)
+                        jobs[job_id]["percent"] = min(97.0, jobs[job_id]["percent"])
+                        jobs[job_id]["message"] = "파일 합치는 중… (시간이 걸릴 수 있어요)"
+                    elif "Deleting original" in line or "Fixup" in line:
+                        jobs[job_id]["percent"] = max(
+                            float(jobs[job_id].get("percent") or 90), 96.0
+                        )
+                        jobs[job_id]["message"] = "마무리 중…"
 
             code = proc.wait(timeout=3600)
             process_map.pop(job_id, None)

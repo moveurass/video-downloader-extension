@@ -66,6 +66,29 @@ const HLS = (() => {
     return `${h}p`;
   }
 
+  /**
+   * Guess pixel height from URL / NAME / path tokens.
+   * e.g. …/720p/…, …_1080.m3u8, NAME="720", ?quality=720
+   */
+  function heightFromString(s) {
+    const str = String(s || "");
+    if (!str) return 0;
+    let m = str.match(/(?:^|[^\dA-Za-z])(2160|1440|1080|720|480|360|240)\s*[pP](?:[^\d]|$)/);
+    if (m) return parseInt(m[1], 10);
+    m = str.match(/(?:^|[^\dA-Za-z])4\s*[kK](?:[^\dA-Za-z]|$)/);
+    if (m) return 2160;
+    m = str.match(/[/_-](2160|1440|1080|720|480|360|240)(?:[/_.\-?]|\.m3u8|$)/i);
+    if (m) return parseInt(m[1], 10);
+    m = str.match(
+      /[?&](?:quality|res|resolution|h|height|r)=?(2160|1440|1080|720|480|360|240)\b/i
+    );
+    if (m) return parseInt(m[1], 10);
+    // Bare NAME like "720" / "1080"
+    m = str.match(/^(2160|1440|1080|720|480|360|240)$/);
+    if (m) return parseInt(m[1], 10);
+    return 0;
+  }
+
   function parsePlaylist(text, baseUrl) {
     const lines = text.split(/\r?\n/).map((l) => l.trim());
     const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
@@ -91,6 +114,16 @@ const HLS = (() => {
           width = w || 0;
           height = h || 0;
         }
+        const name = attrs.NAME || attrs.AUDIO || undefined;
+        const resolved = resolveUrl(baseUrl, uri);
+        // Many CDNs omit RESOLUTION — recover from NAME or path (/720p/, /1080/)
+        if (!height) {
+          height =
+            heightFromString(name) ||
+            heightFromString(uri) ||
+            heightFromString(resolved) ||
+            0;
+        }
         // BANDWIDTH = peak (often ~1.5–2× real). AVERAGE-BANDWIDTH ≈ real bitrate.
         const peakBw = parseInt(attrs.BANDWIDTH || "0", 10) || 0;
         const avgBw = parseInt(attrs["AVERAGE-BANDWIDTH"] || "0", 10) || 0;
@@ -98,13 +131,13 @@ const HLS = (() => {
         // Prefer average for size estimates; fall back to ~55% of peak if only peak exists
         const estimateBandwidth = avgBw || (peakBw ? Math.round(peakBw * 0.55) : 0);
         variants.push({
-          url: resolveUrl(baseUrl, uri),
+          url: resolved,
           bandwidth,
           estimateBandwidth,
           width,
           height,
           codecs: attrs.CODECS,
-          name: attrs.NAME || attrs.AUDIO || undefined,
+          name,
           quality: qualityFromHeight(height)
         });
       }
@@ -187,14 +220,41 @@ const HLS = (() => {
   async function fetchOnce(url, init = {}, timeoutMs = 25000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // Merge caller AbortSignal (pause/cancel) with per-request timeout
+    const outer = init.signal;
+    const onOuterAbort = () => {
+      try {
+        ctrl.abort();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (outer) {
+      if (outer.aborted) {
+        clearTimeout(timer);
+        throw new Error("CANCELLED");
+      }
+      outer.addEventListener("abort", onOuterAbort, { once: true });
+    }
     try {
-      const res = await fetch(url, { ...init, signal: ctrl.signal });
+      const { signal: _ignore, ...rest } = init;
+      const res = await fetch(url, { ...rest, signal: ctrl.signal });
       return res;
     } catch (e) {
-      if (e?.name === "AbortError") throw new Error("요청 시간 초과");
+      if (e?.name === "AbortError" || /abort/i.test(String(e?.message || ""))) {
+        if (outer?.aborted) throw new Error("CANCELLED");
+        throw new Error("요청 시간 초과");
+      }
       throw e;
     } finally {
       clearTimeout(timer);
+      if (outer) {
+        try {
+          outer.removeEventListener("abort", onOuterAbort);
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -386,6 +446,20 @@ const HLS = (() => {
         url: finalUrl
       };
     }
+    // Infer height from playlist URL + first few segment paths (…/720/seg.ts)
+    const sampleUrls = (parsed.segments || [])
+      .slice(0, 8)
+      .map((s) => s.url)
+      .filter(Boolean);
+    if (parsed.mapUri) sampleUrls.unshift(parsed.mapUri);
+    let inferredHeight =
+      heightFromString(finalUrl) || heightFromString(url) || 0;
+    if (!inferredHeight) {
+      for (const u of sampleUrls) {
+        inferredHeight = heightFromString(u);
+        if (inferredHeight) break;
+      }
+    }
     return {
       kind: "media",
       segmentCount: parsed.segmentCount,
@@ -393,7 +467,9 @@ const HLS = (() => {
       encrypted: parsed.encrypted,
       encryptionMethod: parsed.encryptionMethod,
       isFmp4: parsed.isFmp4,
-      url: finalUrl
+      url: finalUrl,
+      sampleUrls,
+      inferredHeight: inferredHeight || 0
     };
   }
 
@@ -474,13 +550,36 @@ const HLS = (() => {
    * Parallel pool with mutable concurrency (for 403 backoff mid-download).
    * @param {object} [ctl] optional { getLimit: () => number }
    */
+  function formatBytes(n) {
+    const b = Number(n) || 0;
+    if (b < 1024) return `${Math.max(0, Math.round(b))}B`;
+    if (b < 1024 * 1024) return `${Math.round(b / 1024)}KB`;
+    if (b < 1024 * 1024 * 1024) {
+      const mb = b / (1024 * 1024);
+      return mb < 10 ? `${mb.toFixed(1)}MB` : `${Math.round(mb)}MB`;
+    }
+    return `${(b / (1024 * 1024 * 1024)).toFixed(2)}GB`;
+  }
+
+  /** Human size progress: "125MB / 약 800MB" */
+  function formatSizeProgress(received, total) {
+    const r = Math.max(0, Number(received) || 0);
+    const t = Math.max(0, Number(total) || 0);
+    if (r <= 0 && t <= 0) return "받는 중…";
+    if (t > 0 && t >= r) return `받는 중… ${formatBytes(r)} / 약 ${formatBytes(t)}`;
+    if (r > 0) return `받는 중… ${formatBytes(r)}`;
+    return `받는 중… 약 ${formatBytes(t)}`;
+  }
+
   async function mapPool(items, limit, worker, onProgress, ctl = null) {
     const results = new Array(items.length);
     let next = 0;
     let completed = 0;
     let active = 0;
+    let stopped = false;
     /** @type {Array<() => void>} */
     const waiters = [];
+    const shouldStop = ctl?.shouldStop || null;
 
     const getLimit = () => {
       const n = ctl?.getLimit ? ctl.getLimit() : limit;
@@ -506,24 +605,61 @@ const HLS = (() => {
       notify();
     }
 
+    function checkStop() {
+      if (stopped) {
+        const e = new Error("CANCELLED");
+        e.code = "CANCELLED";
+        throw e;
+      }
+      if (shouldStop) {
+        try {
+          shouldStop();
+        } catch (e) {
+          stopped = true;
+          // Wake waiters so workers can exit
+          while (waiters.length) {
+            const w = waiters.shift();
+            if (w) w();
+          }
+          throw e;
+        }
+      }
+    }
+
     async function runWorker() {
       for (;;) {
+        checkStop();
         const i = next++;
         if (i >= items.length) return;
         await acquire();
         try {
+          checkStop();
           results[i] = await worker(items[i], i);
         } finally {
           release();
           completed += 1;
-          if (onProgress) onProgress(completed, items.length);
+          // Pass last result so callers can accumulate bytes
+          if (onProgress && !stopped) {
+            try {
+              onProgress(completed, items.length, results[i]);
+            } catch (e) {
+              // Progress callback may throw PAUSED/CANCELLED
+              stopped = true;
+              throw e;
+            }
+          }
         }
       }
     }
 
     // Launch workers up to initial limit; each loop pulls next index
     const starters = Math.min(Math.max(getLimit(), 1), items.length);
-    await Promise.all(Array.from({ length: starters }, () => runWorker()));
+    try {
+      await Promise.all(Array.from({ length: starters }, () => runWorker()));
+    } catch (e) {
+      stopped = true;
+      throw e;
+    }
     return results;
   }
 
@@ -538,15 +674,28 @@ const HLS = (() => {
   async function downloadAndMerge(url, options = {}) {
     const onProgress = options.onProgress || (() => {});
     const pageUrl = options.pageUrl || options.referer || "";
+    const signal = options.signal || null;
+    const shouldStop =
+      options.shouldStop ||
+      (() => {
+        if (signal?.aborted) {
+          const e = new Error("CANCELLED");
+          e.code = "CANCELLED";
+          throw e;
+        }
+      });
     // Always attach Referer so segment CDNs accept hotlink-protected streams
     const requestInit = {
       ...(options.requestInit || {}),
       pageUrl,
+      signal: signal || options.requestInit?.signal,
       headers: {
         ...headerBag(options.requestInit?.headers),
         ...(pageUrl ? { Referer: pageUrl } : {})
       }
     };
+    // Fail fast if already cancelled
+    shouldStop();
     onProgress({ phase: "playlist", current: 0, total: 1, message: "플레이리스트 분석 중…" });
 
     let { text, finalUrl } = await fetchText(url, {}, requestInit);
@@ -554,10 +703,14 @@ const HLS = (() => {
     let quality = "unknown";
     let mediaUrl = finalUrl;
 
+    /** Bandwidth of selected variant — used to estimate total size */
+    let variantBandwidth = 0;
     if (parsed.kind === "master") {
       const variant = pickVariant(parsed.variants, options.preferQuality);
       if (!variant) throw new Error("마스터 플레이리스트에 변형이 없습니다");
       quality = variant.quality || qualityFromHeight(variant.height);
+      variantBandwidth =
+        Number(variant.estimateBandwidth || variant.bandwidth || 0) || 0;
       onProgress({
         phase: "playlist",
         current: 0,
@@ -606,10 +759,26 @@ const HLS = (() => {
     }
 
     const parts = [];
+    let bytesReceived = 0;
+    // Meta estimate: bandwidth(bits/s) * duration → bytes
+    const metaEst =
+      parsed.duration > 0 && variantBandwidth > 0
+        ? Math.round((variantBandwidth / 8) * parsed.duration)
+        : 0;
+    // Sample-based estimate refined as segments arrive
+    let sampleBytes = 0;
+    let sampleCount = 0;
+
     if (parsed.mapUri) {
-      onProgress({ phase: "init", current: 0, total: 1, message: "초기화 세그먼트…" });
+      onProgress({ phase: "init", current: 0, total: 1, message: "초기화 중…" });
       try {
-        parts.push(await fetchBuffer(parsed.mapUri, requestInit));
+        const initBuf = await fetchBuffer(parsed.mapUri, requestInit);
+        parts.push(initBuf);
+        if (initBuf?.byteLength) {
+          bytesReceived += initBuf.byteLength;
+          sampleBytes += initBuf.byteLength;
+          sampleCount += 1;
+        }
       } catch (e) {
         throw new Error(
           /403|401|접근 거부/i.test(String(e?.message || e))
@@ -619,11 +788,29 @@ const HLS = (() => {
       }
     }
 
+    const estTotal = () => {
+      const fromSample =
+        sampleCount > 0
+          ? Math.round((sampleBytes / sampleCount) * segments.length)
+          : 0;
+      // Prefer the larger of meta vs sample once we have a few samples
+      if (sampleCount >= 3 && fromSample > 0) {
+        if (metaEst > 0) {
+          // Blend: sample is more accurate mid-download
+          return Math.round(fromSample * 0.7 + metaEst * 0.3);
+        }
+        return fromSample;
+      }
+      return metaEst || fromSample || 0;
+    };
+
     onProgress({
       phase: "segments",
       current: 0,
       total: segments.length,
-      message: `세그먼트 0/${segments.length}`
+      bytesReceived,
+      bytesTotal: estTotal(),
+      message: formatSizeProgress(bytesReceived, estTotal())
     });
 
     // Adaptive concurrency: start fast, drop when CDN 403s pile up
@@ -638,16 +825,19 @@ const HLS = (() => {
     let hard403 = 0;
     const softFail = options.allowPartial !== false;
     const poolCtl = {
-      getLimit: () => concurrency
+      getLimit: () => concurrency,
+      shouldStop
     };
 
     const buffers = await mapPool(
       segments,
       concurrency,
       async (seg, index) => {
+        shouldStop();
         let lastErr;
         // Up to 4 attempts with backoff; first 403s trigger slower mode
         for (let attempt = 0; attempt < 4; attempt++) {
+          shouldStop();
           try {
             if (hard403 > 3 && attempt === 0) {
               // Space out after many 403s
@@ -689,18 +879,24 @@ const HLS = (() => {
         }
         throw lastErr || new Error("세그먼트 실패: " + (seg.url || "").slice(0, 60));
       },
-      (current, total) => {
-        // Report raw counts only — UI maps to honest % (no fake acceleration)
-        const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+      (current, total, lastResult) => {
+        if (lastResult && lastResult.byteLength > 0) {
+          bytesReceived += lastResult.byteLength;
+          sampleBytes += lastResult.byteLength;
+          sampleCount += 1;
+        }
+        const totalEst = estTotal();
+        let message = formatSizeProgress(bytesReceived, totalEst);
+        if (hard403 > 5) {
+          message += " · 제한 대응";
+        }
         onProgress({
           phase: "segments",
           current,
           total,
-          percent: pct, // 0–100 of segments only; outer maps into 6–90 band
-          message:
-            hard403 > 5
-              ? `받는 중… ${current}/${total} 조각 · 제한 대응(동시 ${concurrency})`
-              : `받는 중… ${current}/${total} 조각`
+          bytesReceived,
+          bytesTotal: totalEst,
+          message
         });
       },
       poolCtl
@@ -731,8 +927,6 @@ const HLS = (() => {
       );
     }
 
-    onProgress({ phase: "merge", current: 1, total: 1, message: "병합 중…" });
-
     let totalSize = 0;
     for (const p of parts) totalSize += p.byteLength;
 
@@ -743,11 +937,28 @@ const HLS = (() => {
       );
     }
 
+    onProgress({
+      phase: "merge",
+      current: 0,
+      total: parts.length,
+      message: `파일 만드는 중… 0/${parts.length}`
+    });
+
     const merged = new Uint8Array(totalSize);
     let offset = 0;
-    for (const p of parts) {
-      merged.set(p, offset);
-      offset += p.byteLength;
+    // Report merge progress every ~32 parts so large VOD isn't a silent hang at 90%+
+    const mergeReportEvery = Math.max(1, Math.floor(parts.length / 20));
+    for (let i = 0; i < parts.length; i++) {
+      merged.set(parts[i], offset);
+      offset += parts[i].byteLength;
+      if (i === 0 || i === parts.length - 1 || i % mergeReportEvery === 0) {
+        onProgress({
+          phase: "merge",
+          current: i + 1,
+          total: parts.length,
+          message: `파일 만드는 중… ${i + 1}/${parts.length}`
+        });
+      }
     }
 
     const isFmp4 = parsed.isFmp4;
@@ -761,10 +972,10 @@ const HLS = (() => {
     const filename = `video${qLabel}_${Date.now()}.${ext}`;
 
     onProgress({
-      phase: "done",
-      current: segments.length,
-      total: segments.length,
-      message: "병합 완료"
+      phase: "merge",
+      current: parts.length,
+      total: parts.length,
+      message: "파일 만들기 완료"
     });
 
     return {
@@ -783,6 +994,7 @@ const HLS = (() => {
     downloadAndMerge,
     parsePlaylist,
     qualityFromHeight,
+    heightFromString,
     pickVariant
   };
 })();

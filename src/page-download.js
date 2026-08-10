@@ -7,6 +7,8 @@
   "use strict";
 
   const MIN_VIDEO_BYTES = 200_000; // 200KB — reject playlist-sized fakes
+  /** Active download abort — content STOP_DOWNLOAD calls abort() */
+  let activeAbort = null;
 
   function withTimeout(promise, ms, message) {
     let timer;
@@ -16,16 +18,52 @@
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
+  function throwIfPageStopped() {
+    if (window.__UVD_STOP_DOWNLOAD__ || activeAbort?.signal?.aborted) {
+      const e = new Error("CANCELLED");
+      e.code = "CANCELLED";
+      throw e;
+    }
+  }
+
   async function fetchWithTimeout(url, init = {}, ms = 25000) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ms);
+    const outer = init.signal || activeAbort?.signal;
+    const onOuter = () => {
+      try {
+        ctrl.abort();
+      } catch {
+        /* ignore */
+      }
+    };
+    if (outer) {
+      if (outer.aborted) {
+        clearTimeout(timer);
+        throw new Error("CANCELLED");
+      }
+      outer.addEventListener("abort", onOuter, { once: true });
+    }
     try {
-      return await fetch(url, { ...init, signal: ctrl.signal });
+      const { signal: _s, ...rest } = init;
+      return await fetch(url, { ...rest, signal: ctrl.signal });
     } catch (e) {
-      if (e?.name === "AbortError") throw new Error("요청 시간 초과");
+      if (e?.name === "AbortError" || /abort/i.test(String(e?.message || ""))) {
+        if (outer?.aborted || window.__UVD_STOP_DOWNLOAD__) {
+          throw new Error("CANCELLED");
+        }
+        throw new Error("요청 시간 초과");
+      }
       throw e;
     } finally {
       clearTimeout(timer);
+      if (outer) {
+        try {
+          outer.removeEventListener("abort", onOuter);
+        } catch {
+          /* ignore */
+        }
+      }
     }
   }
 
@@ -209,39 +247,51 @@
     if (typeof HLS === "undefined" || !HLS.downloadAndMerge) {
       throw new Error("HLS 모듈 없음 — 페이지를 새로고침 하세요");
     }
+    throwIfPageStopped();
     onProgress?.({ phase: "playlist", percent: 5, message: "재생목록 분석 중…" });
 
     // Page origin as Referer — critical to avoid Segment HTTP 403 on hotlink CDNs
     const pageUrl = location.href || "";
+    const signal = activeAbort?.signal || null;
     const result = await withTimeout(
       HLS.downloadAndMerge(url, {
         preferQuality: preferQuality || "best",
         pageUrl,
         referer: pageUrl,
+        signal,
+        shouldStop: throwIfPageStopped,
         // Do not set mode:"cors" — causes Failed to fetch on many CDNs in CS
         requestInit: {
           credentials: "include",
           cache: "no-store",
-          headers: pageUrl ? { Referer: pageUrl } : {}
+          headers: pageUrl ? { Referer: pageUrl } : {},
+          signal: signal || undefined
         },
         allowPartial: true,
         onProgress: (p) => {
-          // Honest bands (same as background): segments 6–90, merge 92, save later
-          let percent = 4;
+          throwIfPageStopped();
+          // Same bands as background: segments 5–78, merge 78–85, save later
+          let percent = 3;
           if (p.phase === "segments" && p.total > 0) {
-            percent = Math.round(6 + (p.current / p.total) * 84);
-          } else if (p.phase === "merge") percent = 92;
-          else if (p.phase === "done") percent = 93;
-          else if (p.phase === "playlist" || p.phase === "init") percent = 4;
+            percent = Math.round(5 + (p.current / p.total) * 73);
+          } else if (p.phase === "merge") {
+            if (p.total > 0) {
+              percent = Math.round(
+                78 + (Math.min(p.current, p.total) / p.total) * 7
+              );
+            } else percent = 80;
+          } else if (p.phase === "done") percent = 85;
+          else if (p.phase === "playlist" || p.phase === "init") percent = 3;
           onProgress?.({
             ...p,
             percent,
+            // Keep HLS size-based message (MB); never rewrite to segment counts
             message:
               p.phase === "merge"
-                ? "파일 만드는 중…"
-                : p.phase === "segments" && p.total
-                  ? `받는 중… ${p.current}/${p.total} 조각 (${percent}%)`
-                  : p.message || `준비 중… ${percent}%`
+                ? p.message || "파일 만드는 중…"
+                : p.phase === "segments"
+                  ? p.message || "받는 중…"
+                  : p.message || "준비 중…"
           });
         }
       }),
@@ -294,19 +344,37 @@
     const { url, filename, preferQuality, type } = opts || {};
     if (!url) throw new Error("받을 주소가 없습니다");
 
-    onProgress?.({ phase: "start", percent: 3, message: "시작…" });
+    // Fresh abort controller per download
+    activeAbort = new AbortController();
+    window.__UVD_STOP_DOWNLOAD__ = false;
+    try {
+      throwIfPageStopped();
+      onProgress?.({ phase: "start", percent: 3, message: "시작…" });
 
-    if (url.startsWith("blob:")) {
-      return downloadBlobUrl(url, filename, onProgress);
+      if (url.startsWith("blob:")) {
+        return await downloadBlobUrl(url, filename, onProgress);
+      }
+      if (looksHls(url, type)) {
+        return await downloadHls(url, filename, preferQuality, onProgress);
+      }
+      return await downloadDirect(url, filename, onProgress);
+    } finally {
+      // Keep controller until STOP can still abort mid-flight cleanup
     }
-    if (looksHls(url, type)) {
-      return downloadHls(url, filename, preferQuality, onProgress);
+  }
+
+  function abort() {
+    window.__UVD_STOP_DOWNLOAD__ = true;
+    try {
+      activeAbort?.abort();
+    } catch {
+      /* ignore */
     }
-    return downloadDirect(url, filename, onProgress);
   }
 
   window.__UVD_PAGE_DOWNLOAD__ = {
     smartDownload,
+    abort,
     downloadDirect,
     downloadHls,
     downloadBlobUrl,

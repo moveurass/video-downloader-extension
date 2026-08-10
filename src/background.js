@@ -499,13 +499,22 @@ function throwIfJobStopped(jobId) {
 function finalizePausedJob(jobId) {
   const job = activeDownloads.get(jobId);
   if (!job) return;
+  // Already cancelled wins
+  if (job.status === "cancelled" || job.status === "done") return;
   job.status = "paused";
   job.phase = "paused";
   job.message = "일시정지됨 · 다시 시작 가능";
-  job.pauseRequested = false;
+  // Keep pauseRequested true so in-flight loops still throw until they exit
+  job.pauseRequested = true;
   job.cancelRequested = false;
   job.error = null;
   job.updatedAt = Date.now();
+  try {
+    jobAbortControllers.get(jobId)?.abort();
+  } catch {
+    /* ignore */
+  }
+  // Drop controller after abort so resume can install a fresh one
   jobAbortControllers.delete(jobId);
   persistJobs();
   broadcastJob(job);
@@ -515,13 +524,19 @@ function finalizePausedJob(jobId) {
 function finishCancelledJob(jobId) {
   const job = activeDownloads.get(jobId);
   if (!job) return;
+  if (job.status === "done") return;
   job.status = "cancelled";
   job.phase = "cancelled";
   job.message = "취소됨";
   job.error = "사용자가 취소했습니다";
-  job.cancelRequested = false;
+  job.cancelRequested = true;
   job.pauseRequested = false;
   job.updatedAt = Date.now();
+  try {
+    jobAbortControllers.get(jobId)?.abort();
+  } catch {
+    /* ignore */
+  }
   jobAbortControllers.delete(jobId);
   if (job.tabId != null && tabJobMap.get(job.tabId) === jobId) {
     tabJobMap.delete(job.tabId);
@@ -529,6 +544,16 @@ function finishCancelledJob(jobId) {
   persistJobs();
   broadcastJob(job);
   updateDownloadBadge();
+  // Tell open pages to stop page-context HLS if any
+  try {
+    if (job.tabId != null && job.tabId >= 0) {
+      chrome.tabs
+        .sendMessage(job.tabId, { type: "STOP_DOWNLOAD", jobId })
+        .catch(() => {});
+    }
+  } catch {
+    /* ignore */
+  }
   setTimeout(() => {
     const cur = activeDownloads.get(jobId);
     if (cur && cur.status === "cancelled") {
@@ -537,6 +562,19 @@ function finishCancelledJob(jobId) {
       updateDownloadBadge();
     }
   }, 30_000);
+}
+
+/** True when job must ignore progress / stop work */
+function jobIsStopping(job) {
+  if (!job) return false;
+  return (
+    job.pauseRequested ||
+    job.cancelRequested ||
+    job.status === "paused" ||
+    job.status === "cancelled" ||
+    job.status === "done" ||
+    job.status === "error"
+  );
 }
 
 /**
@@ -550,6 +588,8 @@ async function cancelDownloadJob(jobId) {
   }
   job.cancelRequested = true;
   job.pauseRequested = false;
+  job.message = "취소 중…";
+  job.updatedAt = Date.now();
   try {
     jobAbortControllers.get(jobId)?.abort();
   } catch {
@@ -569,21 +609,9 @@ async function cancelDownloadJob(jobId) {
       /* ignore */
     }
   }
-  // If already paused, finalize cancel immediately
-  if (job.status === "paused" || job.status === "error") {
-    finishCancelledJob(jobId);
-  } else {
-    // Running: asyncFn will reject / stop; also force-cancel after short delay
-    job.message = "취소 중…";
-    broadcastJob(job);
-    setTimeout(() => {
-      const j = activeDownloads.get(jobId);
-      if (j && j.status === "running" && j.cancelRequested) {
-        finishCancelledJob(jobId);
-      }
-    }, 2500);
-  }
-  return { ok: true, status: "cancelling" };
+  // Stop UI / progress immediately — do not wait for network to die
+  finishCancelledJob(jobId);
+  return { ok: true, status: "cancelled" };
 }
 
 /**
@@ -597,6 +625,8 @@ async function pauseDownloadJob(jobId) {
   }
   job.pauseRequested = true;
   job.cancelRequested = false;
+  job.message = "일시정지 중…";
+  job.updatedAt = Date.now();
   try {
     jobAbortControllers.get(jobId)?.abort();
   } catch {
@@ -609,15 +639,19 @@ async function pauseDownloadJob(jobId) {
       /* ignore */
     }
   }
-  job.message = "일시정지 중…";
-  broadcastJob(job);
-  setTimeout(() => {
-    const j = activeDownloads.get(jobId);
-    if (j && j.status === "running" && j.pauseRequested) {
-      finalizePausedJob(jobId);
+  // Tell page-context downloads to stop
+  try {
+    if (job.tabId != null && job.tabId >= 0) {
+      chrome.tabs
+        .sendMessage(job.tabId, { type: "STOP_DOWNLOAD", jobId })
+        .catch(() => {});
     }
-  }, 2000);
-  return { ok: true, status: "pausing" };
+  } catch {
+    /* ignore */
+  }
+  // Immediate UI state — blocks progress overwrite / flicker
+  finalizePausedJob(jobId);
+  return { ok: true, status: "paused" };
 }
 
 /**
@@ -719,18 +753,22 @@ async function buildSaveFilename({
         return safeDownloadName(full, mime);
       }
     }
+    const bound = Naming.bindTitleToPage?.(pageUrl, title || "") || title || "";
     const full = Naming.buildFilename({
-      title: title || "",
-      pageTitle: title || "",
+      title: bound || title || "",
+      pageTitle: bound || title || "",
       quality: quality || "",
-      type: mode === "audio" ? "audio" : "video"
+      type: mode === "audio" ? "audio" : "video",
+      pageUrl: pageUrl || ""
     });
     if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
       return safeDownloadName(full, mime);
     }
   }
   // Fallback legacy template
-  const cleanTitle = UVD.isGenericSaveName(title) ? "" : title || "";
+  const cleanTitle = UVD.isGenericSaveName(title)
+    ? ""
+    : Naming.bindTitleToPage?.(pageUrl, title) || title || "";
   const base = UVD.applyFilenameTemplate("legacy", {
     title: cleanTitle,
     quality: quality || "",
@@ -803,24 +841,51 @@ function lockSaveName({
   seriesTotal = 0
 } = {}) {
   const mime = mediaMode === "audio" ? "audio/mp3" : "video/mp4";
-  // 1) Explicit filename from popup/job wins (already bound to this media)
-  if (filenameHint && !UVD.isGenericSaveName(filenameHint)) {
-    return normalizeIncomingFilename(filenameHint, quality, mediaMode);
+  // Always bind titles to THIS pageUrl so another video's name can't leak in
+  const bound =
+    Naming.bindTitleToPage?.(pageUrl, title || pageTitle || filenameHint) ||
+    Naming.cleanPageTitle?.(title || pageTitle || "") ||
+    title ||
+    pageTitle ||
+    "";
+  const boundHint = filenameHint
+    ? Naming.bindTitleToPage?.(pageUrl, filenameHint) ||
+      Naming.cleanPageTitle?.(
+        String(filenameHint).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+      ) ||
+      filenameHint
+    : "";
+
+  // 1) Explicit filename from popup/job — re-bind to pageUrl identity
+  if (boundHint && !UVD.isGenericSaveName(boundHint)) {
+    const full = Naming.buildFilename({
+      title: boundHint,
+      pageTitle: bound || boundHint,
+      quality: quality || "",
+      type: mediaMode === "audio" ? "audio" : "video",
+      pageUrl: pageUrl || "",
+      existing: boundHint
+    });
+    if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
+      return safeDownloadName(full, mime);
+    }
   }
   // 2) Build from the title that belongs to THIS job only
-  const lockedTitle =
-    Naming.cleanPageTitle?.(title || pageTitle || "") || title || pageTitle || "";
-  if (lockedTitle && !UVD.isGenericSaveName(lockedTitle)) {
+  if (bound && !UVD.isGenericSaveName(bound)) {
     if (
       (playlistTitle || seriesKey || seriesIndex > 0) &&
       Naming.buildSeriesFilename
     ) {
       const full = Naming.buildSeriesFilename({
-        title: lockedTitle,
-        pageTitle: lockedTitle,
+        title: bound,
+        pageTitle: bound,
         quality,
         type: mediaMode === "audio" ? "audio" : "video",
-        seriesKey: seriesKey || Naming.extractProductCode?.(lockedTitle) || "",
+        seriesKey:
+          seriesKey ||
+          Naming.extractProductCode?.(pageUrl) ||
+          Naming.extractProductCode?.(bound) ||
+          "",
         playlistTitle: playlistTitle || "",
         index: seriesIndex || 0,
         total: seriesTotal || 0
@@ -828,10 +893,11 @@ function lockSaveName({
       if (full) return safeDownloadName(full, mime);
     }
     const full = Naming.buildFilename({
-      title: lockedTitle,
-      pageTitle: lockedTitle,
+      title: bound,
+      pageTitle: bound,
       quality,
-      type: mediaMode === "audio" ? "audio" : "video"
+      type: mediaMode === "audio" ? "audio" : "video",
+      pageUrl: pageUrl || ""
     });
     if (full) return safeDownloadName(full, mime);
   }
@@ -845,7 +911,8 @@ function lockSaveName({
       Naming.buildFilename({
         title: code,
         quality,
-        type: mediaMode === "audio" ? "audio" : "video"
+        type: mediaMode === "audio" ? "audio" : "video",
+        pageUrl: pageUrl || ""
       }),
       mime
     );
@@ -1176,6 +1243,16 @@ function phaseRank(phase) {
 function updateDownloadJob(jobId, patch) {
   const job = activeDownloads.get(jobId);
   if (!job) return null;
+  // Hard stop: never let progress revive a paused/cancelled job
+  if (jobIsStopping(job) && job.status !== "running") {
+    return job;
+  }
+  if (job.pauseRequested || job.cancelRequested) {
+    // Still running loop but user asked to stop — ignore progress patches
+    if (patch.status === "running" || patch.percent != null || patch.message) {
+      return job;
+    }
+  }
   if (job.status !== "running" && patch.status === "running") {
     // ignore late progress after finish
     return job;
@@ -1481,41 +1558,81 @@ function detachJobsFromTab(tabId) {
  * @param {string|null} [jobId] — required when multiple downloads run
  */
 /**
- * Map HLS phases to honest percent bands (no "speed up the bar" remapping):
- *   playlist/init  2–6%
- *   segments       6–90%  proportional to completed/total segments
- *   merge          91–93%
- *   save           94–99%  (Chrome writing the file)
+ * Map HLS phases to honest percent bands.
+ * Leave plenty of room AFTER network download so merge + disk write
+ * do not look like "stuck at 99%" for minutes on large files.
+ *
+ *   playlist/init  2–5%
+ *   segments       5–78%  proportional to completed/total segments
+ *   merge          78–85%
+ *   save           85–98%  (Chrome writing the blob to disk)
  *   done           100%
  */
 function hlsPhasePercent(p = {}) {
   if (p.phase === "save") {
     if (typeof p.percent === "number" && p.percent >= 0) {
-      return Math.max(94, Math.min(99, p.percent));
+      return Math.max(85, Math.min(98, p.percent));
     }
-    return 95;
+    return 86;
   }
-  // Segments: ONLY completed/total — never use a "floor remap" that races to 99%
+  // Segments: ONLY completed/total — never remap onto a rising floor
   if (p.phase === "segments") {
     if (p.total > 0) {
       const ratio = Math.max(0, Math.min(1, Number(p.current) / Number(p.total)));
-      return Math.round(6 + ratio * 84); // 6 .. 90
+      return Math.round(5 + ratio * 73); // 5 .. 78
     }
-    return 6;
+    return 5;
   }
-  if (p.phase === "merge") return 92;
+  if (p.phase === "merge") {
+    if (p.total > 0 && p.current >= 0) {
+      const ratio = Math.max(0, Math.min(1, Number(p.current) / Number(p.total)));
+      return Math.round(78 + ratio * 7); // 78 .. 85
+    }
+    return 80;
+  }
   if (p.phase === "done") return 100;
   if (p.phase === "playlist" || p.phase === "init" || p.phase === "start") {
-    return 4;
+    return 3;
   }
-  // Non-HLS (yt-dlp etc.): trust reported percent, cap below 100 until done
+  // Non-HLS (yt-dlp etc.): trust helper mapping; never show 99 until truly done
   if (typeof p.percent === "number" && p.percent >= 0) {
-    return Math.max(0, Math.min(99, p.percent));
+    return Math.max(0, Math.min(98, p.percent));
   }
   return 3;
 }
 
+/**
+ * Estimate disk-write progress when chrome.downloads gives no byte updates
+ * (common for blob: URLs). Advances 85→97 based on elapsed vs size estimate.
+ */
+/**
+ * Estimate disk-write progress when chrome.downloads gives no byte updates
+ * (common for blob: URLs). Advances 85→97 based on elapsed vs size estimate.
+ */
+function estimateSavePercent(blobSize, startedAt, bytesReceived, totalBytes) {
+  // Prefer real Chrome byte progress when it actually moves
+  if (totalBytes > 0 && bytesReceived > 0) {
+    const ratio = Math.min(1, bytesReceived / totalBytes);
+    return Math.round(85 + ratio * 13); // 85 .. 98
+  }
+  const elapsed = Math.max(0, Date.now() - (startedAt || Date.now()));
+  // ~60MB/s local write estimate; min 3s so bar doesn't jump
+  const estMs = Math.min(
+    10 * 60 * 1000,
+    Math.max(3000, ((blobSize || 50_000_000) / (60 * 1024 * 1024)) * 1000)
+  );
+  // Approach 97% asymptotically — never claim 99/100 until save finishes
+  const ratio = Math.min(0.92, elapsed / estMs);
+  return Math.round(85 + ratio * 12); // 85 .. ~96
+}
+
 function emitDownloadProgress(tabId, percent, message, phase = "download", jobId = null, extra = {}) {
+  // If this job is stopping, surface the stop error so download loops exit
+  const explicit = jobId ? activeDownloads.get(jobId) : null;
+  if (explicit && jobIsStopping(explicit)) {
+    throwIfJobStopped(jobId);
+    return; // paused/cancelled — no progress spam
+  }
   try {
     throwIfJobStopped(jobId);
   } catch (e) {
@@ -1540,6 +1657,11 @@ function emitDownloadProgress(tabId, percent, message, phase = "download", jobId
       .catch(() => {});
     return;
   }
+  // Never force status back to "running" if user paused/cancelled
+  if (jobIsStopping(job)) {
+    throwIfJobStopped(job.id);
+    return;
+  }
   const status =
     phase === "done" ? "done" : phase === "error" ? "error" : "running";
   // Don't mark done/error here — finishDownloadJob owns terminal states
@@ -1554,7 +1676,7 @@ function emitDownloadProgress(tabId, percent, message, phase = "download", jobId
       percent: pct,
       message,
       phase,
-      status: "running",
+      // Do NOT set status:"running" every tick — preserves pause transitions
       ...(reset ? { progressReset: true } : {}),
       ...(extra.bytesReceived != null
         ? { bytesReceived: extra.bytesReceived }
@@ -1805,23 +1927,28 @@ function enrichItem(tabId, item) {
     pageIdentityKey(meta.lastUrl || "") === meta.pageKey;
 
   const tabTitle = samePage ? meta?.title || "" : "";
-  // Prefer the item's own title — never overwrite with a longer unrelated tab title
-  // (that was the main "filename ≠ video" bug when tab navigated or title updated).
+  // Prefer the item's own title bound to its pageUrl — never a different video's name
+  const pageRef = item.pageUrl || (samePage ? meta?.lastUrl : "") || "";
   let title = "";
   for (const c of [item.title, item.pageTitle]) {
     if (!c) continue;
-    const cleaned = Naming.cleanPageTitle(c) || c;
+    const cleaned = pageRef
+      ? Naming.bindTitleToPage?.(pageRef, c) || Naming.cleanPageTitle(c) || c
+      : Naming.cleanPageTitle(c) || c;
     if (cleaned && !Naming.isUglyBase(cleaned)) {
       title = cleaned;
       break;
     }
   }
-  if ((!title || Naming.isUglyBase(title)) && tabTitle) {
-    const tt = Naming.cleanPageTitle(tabTitle) || tabTitle;
+  if ((!title || Naming.isUglyBase(title)) && tabTitle && samePage) {
+    const tt = pageRef
+      ? Naming.bindTitleToPage?.(pageRef, tabTitle) ||
+        Naming.cleanPageTitle(tabTitle) ||
+        tabTitle
+      : Naming.cleanPageTitle(tabTitle) || tabTitle;
     if (tt && !Naming.isUglyBase(tt)) title = tt;
-  } else if (title && tabTitle) {
-    // Same page: allow tab title only if it describes the SAME video (product code match)
-    // and is more descriptive.
+  } else if (title && tabTitle && samePage) {
+    // Same page: allow longer tab title only if same product code
     const tt = Naming.cleanPageTitle(tabTitle) || tabTitle;
     if (
       tt &&
@@ -1829,8 +1956,13 @@ function enrichItem(tabId, item) {
       titlesMatchVideo(title, tt) &&
       tt.length > title.length + 5
     ) {
-      title = tt;
+      title = pageRef
+        ? Naming.bindTitleToPage?.(pageRef, tt) || tt
+        : tt;
     }
+  }
+  if (!title && pageRef) {
+    title = Naming.extractProductCode?.(pageRef) || "";
   }
 
   const host = meta?.host || item.host || "";
@@ -1842,7 +1974,7 @@ function enrichItem(tabId, item) {
   const existingOk =
     existingRaw && !Naming.isUglyBase(existingRaw) ? item.filename : "";
 
-  // Filename must stay bound to this item's title, not a foreign tab title
+  // Filename must stay bound to this item's page, not a foreign tab title
   const filename = Naming.buildFilename({
     title,
     pageTitle: item.pageTitle || (samePage ? meta?.title : "") || "",
@@ -1851,7 +1983,8 @@ function enrichItem(tabId, item) {
     isHls,
     isFmp4: true,
     host,
-    existing: existingOk
+    existing: existingOk,
+    pageUrl: pageRef
   });
   const displayName = Naming.displayTitle({
     title,
@@ -2069,6 +2202,18 @@ async function maybeProbeHls(tabId, url) {
       map.set(url, { ...cur, ...updated, foundAt: cur.foundAt, id: cur.id, tabId });
     } else if (info.kind === "media") {
       const dur = info.duration >= 1 ? info.duration : cur.duration;
+      const inferredH =
+        Number(info.inferredHeight) ||
+        (typeof HLS?.heightFromString === "function"
+          ? HLS.heightFromString(url)
+          : 0) ||
+        cur.height ||
+        0;
+      const qLab =
+        (inferredH >= 240 && qualityLabel(inferredH)) ||
+        (cur.quality && !/^(best|all|unknown)$/i.test(String(cur.quality))
+          ? cur.quality
+          : null);
       const updated = enrichItem(tabId, {
         ...cur,
         isHls: true,
@@ -2077,7 +2222,9 @@ async function maybeProbeHls(tabId, url) {
         duration: dur >= 1 ? dur : undefined,
         segmentCount: info.segmentCount,
         encrypted: info.encrypted,
-        isFmp4: true
+        isFmp4: true,
+        height: inferredH >= 240 ? inferredH : cur.height,
+        quality: qLab || cur.quality
       });
       map.set(url, { ...cur, ...updated, foundAt: cur.foundAt, id: cur.id, tabId });
     }
@@ -2575,7 +2722,8 @@ async function downloadTikTok(
         if (/IP address is blocked|blocked from accessing/i.test(message)) {
           message = "TikTok 접근이 막혔습니다. 링크 붙여넣기로 다시 시도해 주세요";
         }
-        emitDownloadProgress(tabId, Math.max(10, p.percent || 10), message, "download", jid);
+        const pct = Math.min(98, Math.max(2, Number(p.percent) || 10));
+        emitDownloadProgress(tabId, pct, message, "download", jid);
       },
       15 * 60 * 1000
     );
@@ -2682,11 +2830,20 @@ async function downloadViaYtDlp(
         if (job) job.helperJobId = p.helperJobId;
       }
       let message = p.message || "받는 중…";
-      if (/\[download\]/i.test(message)) message = `받는 중… ${Math.round(p.percent || 0)}%`;
-      if (/Merging|Merger/i.test(message)) message = "파일 합치는 중…";
-      if (/Destination|Writing|subtitle/i.test(message)) message = "저장 중…";
+      // Prefer helper's already-localized message (includes multi-stage text)
+      if (/Merging|Merger|합치/i.test(message)) {
+        message = "파일 합치는 중… (시간이 걸릴 수 있어요)";
+      } else if (/추가 트랙|단계/.test(message)) {
+        /* keep */
+      } else if (/\[download\]/i.test(message) && !/받는 중/.test(message)) {
+        message = `받는 중… ${Math.round(p.percent || 0)}%`;
+      } else if (/Destination|Writing|subtitle|마무리/i.test(message) && !/받는 중|합치|트랙/.test(message)) {
+        message = "마무리 중…";
+      }
       if (/ERROR/i.test(message)) message = message.slice(0, 120);
-      emitDownloadProgress(tabId, p.percent || 10, message, p.status || "download", jid);
+      // Cap under 99 until job fully completes (avoids "stuck at 99")
+      const pct = Math.min(98, Math.max(2, Number(p.percent) || 10));
+      emitDownloadProgress(tabId, pct, message, p.status || "download", jid);
     },
     40 * 60 * 1000
   );
@@ -2825,7 +2982,8 @@ async function downloadInstagram(
           message =
             "Instagram 인증 문제 — 브라우저에서 로그인·새로고침 후 링크를 다시 붙여 넣어 주세요";
         }
-        emitDownloadProgress(tabId, Math.max(28, p.percent || 28), message, "download", jid);
+        const pct = Math.min(98, Math.max(2, Number(p.percent) || 28));
+        emitDownloadProgress(tabId, pct, message, "download", jid);
       },
       20 * 60 * 1000
     );
@@ -3867,6 +4025,23 @@ async function downloadBlobViaServiceWorker(blob, name, opts = {}) {
   const objectUrl = URL.createObjectURL(blob);
   // Large files need long wait; never clear keepAlive before this returns
   const timeoutMs = Math.min(45 * 60 * 1000, Math.max(180_000, blob.size / 8));
+  const saveStartedAt = Date.now();
+  // Blob: downloads often report 0 bytes until complete — pulse time-based progress
+  let pulse = null;
+  if (opts.onProgress) {
+    pulse = setInterval(() => {
+      try {
+        opts.onProgress({
+          bytesReceived: 0,
+          totalBytes: 0,
+          _elapsed: Date.now() - saveStartedAt,
+          _blobSize: blob.size
+        });
+      } catch {
+        /* ignore */
+      }
+    }, 500);
+  }
   try {
     let id;
     try {
@@ -3881,7 +4056,6 @@ async function downloadBlobViaServiceWorker(blob, name, opts = {}) {
     }
     const done = await waitDownloadComplete(id, timeoutMs, {
       onProgress: (p) => {
-        // Blob URL → disk: total is the blob size when Chrome doesn't report it
         opts.onProgress?.({
           bytesReceived: p.bytesReceived || 0,
           totalBytes: p.totalBytes > 0 ? p.totalBytes : blob.size
@@ -3925,6 +4099,14 @@ async function downloadBlobViaServiceWorker(blob, name, opts = {}) {
       /* ignore */
     }
     throw e;
+  } finally {
+    if (pulse) {
+      try {
+        clearInterval(pulse);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
@@ -4299,19 +4481,30 @@ async function runHlsDownload(
   // Honest progress only — never remap "remaining span" onto a rising floor
   // (that made the bar race to 99% while segments were still downloading).
   const setProg = (p, opts = {}) => {
-    const percent =
-      typeof p.percent === "number" && p.phase === "save"
-        ? Math.max(94, Math.min(99, p.percent))
-        : hlsPhasePercent(p);
+    const percent = hlsPhasePercent(p);
     let message = p.message || "받는 중…";
-    if (p.phase === "segments" && p.total > 0) {
-      message =
-        p.message ||
-        `받는 중… ${p.current}/${p.total} 조각 (${percent}%)`;
+    if (p.phase === "segments") {
+      // Prefer size-based message from HLS downloader; never show raw segment counts
+      if (p.message && /MB|KB|GB|B\s*\/|받는 중/.test(p.message)) {
+        message = p.message;
+      } else if (p.bytesReceived > 0 || p.bytesTotal > 0) {
+        const fmt = (n) => {
+          const b = Number(n) || 0;
+          if (b < 1024 * 1024) return `${Math.round(b / 1024)}KB`;
+          const mb = b / (1024 * 1024);
+          return mb < 10 ? `${mb.toFixed(1)}MB` : `${Math.round(mb)}MB`;
+        };
+        message =
+          p.bytesTotal > 0
+            ? `받는 중… ${fmt(p.bytesReceived)} / 약 ${fmt(p.bytesTotal)}`
+            : `받는 중… ${fmt(p.bytesReceived)}`;
+      } else {
+        message = p.message || "받는 중…";
+      }
     } else if (p.phase === "merge") {
-      message = "파일 만드는 중…";
+      message = p.message || "파일 만드는 중…";
     } else if (p.phase === "save") {
-      message = p.message || "디스크에 저장 중…";
+      message = p.message || "디스크에 저장 중… (대용량은 시간이 걸려요)";
     }
     const progress = {
       ...p,
@@ -4351,18 +4544,38 @@ async function runHlsDownload(
   );
 
   const settingsForSpeed = await UVD.getSettings().catch(() => ({}));
+  // Wire job AbortController so pause/cancel actually stops segment fetches
+  const ac = jid ? jobAbortControllers.get(jid) : null;
+  const stopCheck = () => {
+    if (jid) throwIfJobStopped(jid);
+    if (ac?.signal?.aborted) {
+      const job = jid ? activeDownloads.get(jid) : null;
+      if (job?.pauseRequested) {
+        const e = new Error("PAUSED");
+        e.code = "PAUSED";
+        throw e;
+      }
+      const e = new Error("CANCELLED");
+      e.code = "CANCELLED";
+      throw e;
+    }
+  };
   const result = await HLS.downloadAndMerge(url, {
     preferQuality: preferQuality || "best",
     pageUrl,
     referer: pageUrl,
+    signal: ac?.signal || null,
+    shouldStop: stopCheck,
     requestInit: {
       credentials: "include",
       cache: "no-store",
-      headers: pageUrl ? { Referer: pageUrl } : {}
+      headers: pageUrl ? { Referer: pageUrl } : {},
+      signal: ac?.signal || undefined
     },
     allowPartial: true,
     speedProfile: settingsForSpeed?.downloadSpeed || "fast",
     onProgress: (p) => {
+      stopCheck();
       // Absolute percent from phase + segment ratio (honest)
       setProg(p);
     }
@@ -4402,32 +4615,42 @@ async function runHlsDownload(
     );
   }
 
+  const saveStartedAt = Date.now();
+  const blobSize = result.size || result.blob?.size || 0;
+  const sizeMb = blobSize > 0 ? Math.round(blobSize / (1024 * 1024)) : 0;
   setProg({
     phase: "save",
-    message: `디스크에 쓰는 중… · ${String(name)
-      .replace(/\.[a-z0-9]+$/i, "")
-      .slice(0, 36)}`,
-    percent: 95
+    message: sizeMb
+      ? `디스크에 쓰는 중… 약 ${sizeMb}MB (네트워크 완료)`
+      : "디스크에 쓰는 중… (네트워크 완료)",
+    percent: 86
   });
   const saved = await downloadBlob(result.blob, name, {
     onProgress: (wp) => {
-      // Chrome is still writing a large blob — keep bar honest in 95–99
-      if (wp?.totalBytes > 0 && wp.bytesReceived >= 0) {
-        const ratio = Math.min(1, wp.bytesReceived / wp.totalBytes);
-        setProg({
-          phase: "save",
-          percent: Math.round(95 + ratio * 4),
-          message: `디스크에 쓰는 중… ${Math.round(ratio * 100)}%`,
-          current: wp.bytesReceived,
-          total: wp.totalBytes
-        });
-      } else {
-        setProg({
-          phase: "save",
-          percent: 97,
-          message: "디스크에 쓰는 중…"
-        });
+      const pct = estimateSavePercent(
+        blobSize,
+        saveStartedAt,
+        wp?.bytesReceived,
+        wp?.totalBytes
+      );
+      const rec = wp?.bytesReceived || 0;
+      const tot = wp?.totalBytes > 0 ? wp.totalBytes : blobSize;
+      let msg = "디스크에 쓰는 중…";
+      if (tot > 0 && rec > 0) {
+        const mb = Math.round(rec / (1024 * 1024));
+        const tmb = Math.round(tot / (1024 * 1024));
+        msg = `디스크에 쓰는 중… ${mb}/${tmb}MB`;
+      } else if (sizeMb) {
+        const elapsed = Math.round((Date.now() - saveStartedAt) / 1000);
+        msg = `디스크에 쓰는 중… 약 ${sizeMb}MB · ${elapsed}초`;
       }
+      setProg({
+        phase: "save",
+        percent: pct,
+        message: msg,
+        current: rec,
+        total: tot
+      });
     }
   });
   setProg({ phase: "done", percent: 100, message: "저장 완료" });
@@ -4754,6 +4977,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   const tabId = msg.tabId ?? sender.tab?.id;
 
   switch (msg.type) {
+    case "HLS_PROGRESS": {
+      // Content-script / page-download progress → bind to the active job
+      const p = msg.progress || {};
+      const jid = p.jobId || msg.jobId || null;
+      const tid = tabId ?? msg.tabId ?? sender.tab?.id ?? -1;
+      // Drop progress for stopped jobs (prevents pause→running flicker)
+      if (jid) {
+        const j = activeDownloads.get(jid);
+        if (j && jobIsStopping(j)) {
+          sendResponse({ ok: true, stopped: true });
+          break;
+        }
+      }
+      const percent =
+        typeof p.percent === "number"
+          ? Math.min(98, Math.max(0, p.percent))
+          : hlsPhasePercent(p);
+      const phase = p.phase || "download";
+      const message =
+        p.message ||
+        (phase === "merge"
+          ? "파일 만드는 중…"
+          : phase === "save"
+            ? "디스크에 저장 중…"
+            : "받는 중…");
+      try {
+        emitDownloadProgress(tid, percent, message, phase, jid, {
+          segmentCurrent: p.current,
+          segmentTotal: p.total,
+          bytesReceived: p.bytesReceived,
+          totalBytes: p.bytesTotal
+        });
+      } catch {
+        /* job cancelled / paused — expected */
+      }
+      sendResponse({ ok: true });
+      break;
+    }
     case "PAGE_META": {
       if (tabId != null && msg.pageMeta) {
         const pageUrl = msg.pageMeta.lastUrl || sender.tab?.url || msg.pageUrl || "";
@@ -4826,22 +5087,117 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, error: "url 없음", qualities: [] });
             return;
           }
-          // HLS master playlist — variants from HLS module
+
+          /** Guess height from URL / NAME / path tokens */
+          const heightFromStr = (s) => {
+            if (typeof HLS?.heightFromString === "function") {
+              return HLS.heightFromString(s) || 0;
+            }
+            const str = String(s || "");
+            let m = str.match(
+              /(?:^|[^\dA-Za-z])(2160|1440|1080|720|480|360|240)\s*[pP](?:[^\d]|$)/
+            );
+            if (m) return parseInt(m[1], 10);
+            m = str.match(/[/_-](2160|1440|1080|720|480|360|240)(?:[/_.\-?]|\.m3u8|$)/i);
+            if (m) return parseInt(m[1], 10);
+            return 0;
+          };
+
+          /** Max known player/item height in this tab */
+          const tabHintHeight = () => {
+            if (tid == null) return 0;
+            try {
+              let maxH = 0;
+              let lab = "";
+              for (const it of getTabMap(tid).values()) {
+                if (it?.height >= 240 && it.height > maxH) {
+                  maxH = it.height;
+                  lab = it.quality || qualityLabel(it.height) || "";
+                } else if (
+                  !maxH &&
+                  it?.quality &&
+                  !/^(best|all|unknown)$/i.test(String(it.quality))
+                ) {
+                  lab = it.quality;
+                  const hm = String(it.quality).match(/(\d{3,4})/);
+                  if (hm) maxH = parseInt(hm[1], 10) || 0;
+                }
+              }
+              return { height: maxH, quality: lab };
+            } catch {
+              return { height: 0, quality: "" };
+            }
+          };
+
+          /** Ask content script for <video>.videoHeight */
+          const playerHint = async () => {
+            if (tid == null || tid < 0) return { height: 0, quality: "" };
+            try {
+              const r = await chrome.tabs
+                .sendMessage(tid, { type: "GET_PLAYER_HEIGHT" })
+                .catch(() => null);
+              const h = Number(r?.height) || 0;
+              const q = String(r?.quality || "").trim();
+              return {
+                height: h >= 240 ? h : 0,
+                quality:
+                  q && !/^(best|all|unknown)$/i.test(q)
+                    ? q
+                    : qualityLabel(h) || ""
+              };
+            } catch {
+              return { height: 0, quality: "" };
+            }
+          };
+
+          // HLS master / media playlist
           if (/\.m3u8(\?|$|#)/i.test(url) || msg.mediaType === "stream") {
             try {
               const info = await withTabReferer(tid, () => HLS.probe(url));
+              // Height from scanned item / message (player videoHeight)
+              const itemHintH = Number(msg.itemHeight) || 0;
+              const itemHintQ = String(msg.itemQuality || "").trim();
+              const urlH = heightFromStr(url);
+              const tabH = tabHintHeight();
+
               if (info?.kind === "master" && info.variants?.length) {
                 const seen = new Set();
-                const qualities = [{ id: "best", label: "최고" }];
-                const order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"];
+                const qualities = [];
+                const order = [
+                  "4K",
+                  "1440p",
+                  "1080p",
+                  "720p",
+                  "480p",
+                  "360p",
+                  "240p"
+                ];
                 const byLabel = new Map();
+                // Infer height from bandwidth when RESOLUTION missing
+                const heightFromBw = (bw) => {
+                  const b = Number(bw) || 0;
+                  if (b >= 8_000_000) return 2160;
+                  if (b >= 4_000_000) return 1440;
+                  if (b >= 2_000_000) return 1080;
+                  if (b >= 1_000_000) return 720;
+                  if (b >= 500_000) return 480;
+                  if (b >= 250_000) return 360;
+                  if (b > 0) return 240;
+                  return 0;
+                };
                 for (const v of info.variants) {
+                  let h = v.height || 0;
+                  if (!h) {
+                    h =
+                      heightFromStr(v.name) ||
+                      heightFromStr(v.url) ||
+                      heightFromBw(v.estimateBandwidth || v.bandwidth);
+                  }
                   const lab =
-                    v.quality && v.quality !== "unknown"
-                      ? v.quality
-                      : qualityLabel(v.height) || (v.height ? `${v.height}p` : null);
+                    (v.quality && v.quality !== "unknown" && v.quality) ||
+                    qualityLabel(h) ||
+                    (h ? `${h}p` : null);
                   if (!lab || lab === "unknown") continue;
-                  const h = v.height || 0;
                   const estBw = v.estimateBandwidth || v.bandwidth || 0;
                   if (!byLabel.has(lab) || (byLabel.get(lab).height || 0) < h) {
                     byLabel.set(lab, {
@@ -4852,7 +5208,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     });
                   }
                 }
-                // Media playlist duration if already known on tab item
                 let duration = 0;
                 let estimatedSize = 0;
                 try {
@@ -4863,7 +5218,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 } catch {
                   /* ignore */
                 }
-                // Enrich chip labels with approx size: "1080p · 180MB"
                 for (const [lab, q] of byLabel) {
                   const bw = q.estimateBandwidth || 0;
                   if (bw > 0 && duration >= 1) {
@@ -4875,6 +5229,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                     q.label = `${lab} · ${sizeStr}`;
                   }
                 }
+                // Multiple variants → "최고" + each; single → only that chip (popup collapses)
+                if (byLabel.size > 1) {
+                  qualities.push({ id: "best", label: "최고" });
+                }
                 for (const lab of order) {
                   if (byLabel.has(lab) && !seen.has(lab)) {
                     qualities.push(byLabel.get(lab));
@@ -4884,7 +5242,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 for (const [lab, q] of byLabel) {
                   if (!seen.has(lab)) qualities.push(q);
                 }
-                const best = byLabel.get(qualities[1]?.id) || info.variants[0];
+                const best =
+                  byLabel.get(qualities.find((q) => q.id !== "best")?.id) ||
+                  info.variants[0];
                 const bw =
                   best?.estimateBandwidth ||
                   best?.bandwidth ||
@@ -4892,30 +5252,190 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   0;
                 if (bw > 0 && duration >= 1) {
                   estimatedSize = Math.round((bw / 8) * duration);
-                  if (qualities[0]) {
-                    qualities[0].estimatedSize = estimatedSize;
-                    qualities[0].approx = true;
+                  const bestChip = qualities.find((q) => q.id === "best");
+                  if (bestChip) {
+                    bestChip.estimatedSize = estimatedSize;
+                    bestChip.height = best?.height || bestChip.height;
+                    bestChip.approx = true;
                     const mb = estimatedSize / (1024 * 1024);
                     const sizeStr =
                       mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
-                    qualities[0].label = `최고 · ${sizeStr}`;
+                    bestChip.label = `최고 · ${sizeStr}`;
                   }
                 }
-                sendResponse({
-                  ok: true,
-                  qualities,
-                  source: "hls",
-                  duration: duration || 0,
-                  estimatedSize: estimatedSize || 0
-                });
-                return;
+                if (qualities.length) {
+                  sendResponse({
+                    ok: true,
+                    qualities,
+                    source: "hls",
+                    duration: duration || 0,
+                    estimatedSize: estimatedSize || 0
+                  });
+                  return;
+                }
               }
               if (info?.kind === "media") {
+                // Single media playlist — resolve concrete height for the chip
+                let h =
+                  itemHintH ||
+                  urlH ||
+                  Number(info.inferredHeight) ||
+                  tabH.height ||
+                  0;
+                let lab =
+                  (itemHintQ &&
+                    !/^(best|all|unknown)$/i.test(itemHintQ) &&
+                    itemHintQ) ||
+                  qualityLabel(h) ||
+                  tabH.quality ||
+                  null;
+
+                // Sample segment paths often encode quality when playlist name does not
+                if (!lab && Array.isArray(info.sampleUrls)) {
+                  for (const su of info.sampleUrls) {
+                    const sh = heightFromStr(su);
+                    if (sh >= 240) {
+                      h = sh;
+                      lab = qualityLabel(h);
+                      break;
+                    }
+                  }
+                }
+
+                // Exact item in tab store
+                if (!lab && tid != null) {
+                  try {
+                    const it = getTabMap(tid).get(url);
+                    if (it?.height >= 240) {
+                      h = it.height;
+                      lab = qualityLabel(h);
+                    } else if (
+                      it?.quality &&
+                      !/^(best|all|unknown)$/i.test(it.quality)
+                    ) {
+                      lab = it.quality;
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                }
+
+                // Live player dimensions (123av after play)
+                if (!lab) {
+                  const ph = await playerHint();
+                  if (ph.height >= 240) {
+                    h = ph.height;
+                    lab = ph.quality || qualityLabel(h);
+                  } else if (ph.quality) {
+                    lab = ph.quality;
+                  }
+                }
+
+                // Sibling master playlist may list RESOLUTION (…/playlist.m3u8 ↔ master)
+                if (!lab) {
+                  const candidates = [];
+                  try {
+                    const u = new URL(url);
+                    const base = u.href.replace(/[^/]+$/, "");
+                    for (const name of [
+                      "master.m3u8",
+                      "playlist.m3u8",
+                      "index.m3u8",
+                      "hls.m3u8"
+                    ]) {
+                      const cand = base + name;
+                      if (cand !== url && !candidates.includes(cand)) {
+                        candidates.push(cand);
+                      }
+                    }
+                    // Parent dir master (…/720p/index.m3u8 → …/playlist.m3u8)
+                    const parent = base.replace(/\/[^/]+\/$/, "/");
+                    if (parent && parent !== base) {
+                      for (const name of ["master.m3u8", "playlist.m3u8"]) {
+                        const cand = parent + name;
+                        if (!candidates.includes(cand)) candidates.push(cand);
+                      }
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                  for (const cand of candidates.slice(0, 4)) {
+                    try {
+                      const mi = await withTabReferer(tid, () => HLS.probe(cand));
+                      if (mi?.kind === "master" && mi.variants?.length) {
+                        const tops = mi.variants
+                          .map((v) => v.height || heightFromStr(v.url) || 0)
+                          .filter((x) => x >= 240);
+                        if (tops.length) {
+                          h = Math.max(...tops);
+                          lab = qualityLabel(h);
+                          break;
+                        }
+                        // Match current media URL to a variant
+                        const match = mi.variants.find(
+                          (v) =>
+                            v.url === url ||
+                            String(v.url).includes(
+                              url.split("/").slice(-2).join("/")
+                            )
+                        );
+                        if (match) {
+                          h =
+                            match.height ||
+                            heightFromStr(match.url) ||
+                            heightFromStr(match.name) ||
+                            0;
+                          if (h >= 240) {
+                            lab = qualityLabel(h);
+                            break;
+                          }
+                        }
+                      }
+                    } catch {
+                      /* try next */
+                    }
+                  }
+                }
+
+                const duration = info.duration >= 1 ? info.duration : 0;
+                if (lab) {
+                  // Persist height on tab item so next open keeps it
+                  if (tid != null && h >= 240) {
+                    try {
+                      const map = getTabMap(tid);
+                      const cur = map.get(url);
+                      if (cur && !(cur.height >= 240)) {
+                        map.set(url, {
+                          ...cur,
+                          height: h,
+                          quality: lab
+                        });
+                      }
+                    } catch {
+                      /* ignore */
+                    }
+                  }
+                  sendResponse({
+                    ok: true,
+                    qualities: [
+                      {
+                        id: lab,
+                        label: lab,
+                        height: h || undefined
+                      }
+                    ],
+                    source: "hls-media",
+                    duration,
+                    estimatedSize: 0
+                  });
+                  return;
+                }
+                // Unknown height — still only one option; UI will show 최고
                 sendResponse({
                   ok: true,
                   qualities: [{ id: "best", label: "최고" }],
-                  source: "hls",
-                  duration: info.duration >= 1 ? info.duration : 0,
+                  source: "hls-media",
+                  duration,
                   estimatedSize: 0
                 });
                 return;
@@ -6251,6 +6771,7 @@ exit 1
           tabId: tid,
           title: niceTitle,
           pageUrl: pageUrl || item?.pageUrl || url,
+          mediaUrl: url || "",
           filename: fname,
           quality: msg.preferQuality || "best"
         },
@@ -6443,4 +6964,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-console.log("[VideoDownloader] ready v1.23.2");
+console.log("[VideoDownloader] ready v1.23.3");

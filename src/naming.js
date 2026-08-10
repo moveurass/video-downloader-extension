@@ -14,12 +14,106 @@ const Naming = (() => {
       .slice(0, max);
   }
 
+  function isBadCodePrefix(p) {
+    return /^(http|https|www|mp4|HD|FHD|4K|AVC|HEVC|dm|cdn|img|www\d)$/i.test(
+      p || ""
+    );
+  }
+
+  /**
+   * Match product code in a single path/token.
+   * Prefer hyphenated "SNOS-309". Reject site folders like "dm14".
+   */
+  function matchCodeToken(token) {
+    const seg = String(token || "").trim();
+    if (!seg) return "";
+    // Hyphen / underscore form: SNOS-309, sone_791
+    let m = seg.match(/^([A-Za-z]{2,12})[-_](\d{2,5})(?:[a-z])?$/i);
+    if (m && !isBadCodePrefix(m[1])) {
+      return `${m[1].toUpperCase()}-${m[2]}`;
+    }
+    // Glued only when letters are longer (SSIS001) — not dm14
+    m = seg.match(/^([A-Za-z]{3,12})(\d{3,5})(?:[a-z])?$/i);
+    if (m && !isBadCodePrefix(m[1])) {
+      return `${m[1].toUpperCase()}-${m[2]}`;
+    }
+    return "";
+  }
+
   /** Pull JAV-style product code if present */
   function extractProductCode(text) {
-    const m = String(text || "").match(/\b([A-Za-z]{2,12})[-_ ]?(\d{2,5})\b/);
-    if (!m) return "";
-    if (/^(http|https|www|mp4|HD|FHD|4K|AVC|HEVC)$/i.test(m[1])) return "";
-    return `${m[1].toUpperCase()}-${m[2]}`;
+    const s = String(text || "");
+    // Prefer path segment style: /snos-309/ at end of URL path
+    try {
+      if (/^https?:\/\//i.test(s)) {
+        const u = new URL(s);
+        const segs = u.pathname.split("/").filter(Boolean);
+        for (let i = segs.length - 1; i >= 0; i--) {
+          const code = matchCodeToken(decodeURIComponent(segs[i]));
+          if (code) return code;
+        }
+        for (const k of ["v", "id", "code", "video", "no"]) {
+          const val = u.searchParams.get(k);
+          const code = matchCodeToken(val);
+          if (code) return code;
+        }
+        return ""; // URL with no product code — do not scan host/path junk
+      }
+    } catch {
+      /* fall through */
+    }
+    // Free text: prefer hyphenated codes first
+    let m = s.match(/\b([A-Za-z]{2,12})-(\d{2,5})\b/);
+    if (m && !isBadCodePrefix(m[1])) {
+      return `${m[1].toUpperCase()}-${m[2]}`;
+    }
+    m = s.match(/\b([A-Za-z]{3,12})(\d{3,5})\b/);
+    if (m && !isBadCodePrefix(m[1])) {
+      return `${m[1].toUpperCase()}-${m[2]}`;
+    }
+    return "";
+  }
+
+  /**
+   * Bind a human title to the page being downloaded.
+   * If title belongs to a different product code than pageUrl, discard it.
+   * Always prefix with the page's product code when known.
+   */
+  function bindTitleToPage(pageUrl, title) {
+    const urlCode = extractProductCode(pageUrl || "") || "";
+    let t = cleanPageTitle(title || "") || "";
+    const titleCode = extractProductCode(t) || "";
+
+    // Title is clearly for another video → keep only the URL code
+    if (urlCode && titleCode && urlCode.toUpperCase() !== titleCode.toUpperCase()) {
+      return urlCode;
+    }
+
+    if (urlCode) {
+      if (!t) return urlCode;
+      // Strip any code from body then re-prefix with page code
+      const rest = t
+        .replace(new RegExp(urlCode.replace("-", "[-_ ]?"), "i"), " ")
+        .replace(new RegExp((titleCode || "NOPE").replace("-", "[-_ ]?"), "i"), " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      // Drop leftover episode counters like "6/100" or "6_100"
+      const body = rest
+        .replace(/\b\d{1,3}\s*[/／]\s*\d{1,3}\b/g, " ")
+        .replace(/\b\d{1,3}_\d{2,3}\b/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      return body ? `${urlCode} ${body}` : urlCode;
+    }
+
+    // No code in URL — clean title, still drop episode counters
+    if (!t) return "";
+    t = t
+      .replace(/\b\d{1,3}\s*[/／]\s*\d{1,3}\b/g, " ")
+      .replace(/\b\d{1,3}_\d{2,3}\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return t;
   }
 
   /**
@@ -85,6 +179,11 @@ const Naming = (() => {
     t = t.replace(/\s*[-]{2,}\s*/g, " ");
     // Single hyphen used as separator between code and English junk already stripped
     t = t.replace(/\s+-\s+/g, " ");
+
+    // Episode / progress junk: "6/100", "6／100", "Part 1/2"
+    t = t.replace(/\b(?:part|ep|episode|vol\.?)\s*\d{1,3}\s*[/／]\s*\d{1,3}\b/gi, " ");
+    t = t.replace(/\b\d{1,3}\s*[/／]\s*\d{1,3}\b/g, " ");
+    t = t.replace(/\b\d{1,3}_\d{2,3}\b/g, " ");
 
     // Drop leftover leading/trailing punctuation / quality glued with underscore only
     t = t.replace(/^[\s\-–—|:·•._]+|[\s\-–—|:·•._]+$/g, "");
@@ -207,17 +306,37 @@ const Naming = (() => {
       type = "video",
       host = "",
       existing = "",
-      index = 0
+      index = 0,
+      pageUrl = "",
+      url = ""
     } = opts;
 
     const isAudio = type === "audio";
     const ext = isAudio ? "mp3" : "mp4";
 
-    let base = pickBestTitle(
-      title,
-      pageTitle,
-      existing?.replace(/\.[a-z0-9]{2,5}$/i, "")
-    );
+    // Bind title to the page/url being saved so we never use another video's name
+    const pageRef = pageUrl || url || "";
+    const boundTitle = pageRef
+      ? bindTitleToPage(pageRef, title || pageTitle || existing)
+      : "";
+    const boundPage = pageRef
+      ? bindTitleToPage(pageRef, pageTitle || title || "")
+      : "";
+    const boundExisting = pageRef
+      ? bindTitleToPage(
+          pageRef,
+          String(existing || "").replace(/\.[a-z0-9]{2,5}$/i, "")
+        )
+      : String(existing || "").replace(/\.[a-z0-9]{2,5}$/i, "");
+
+    let base =
+      pickBestTitle(boundTitle, boundPage, boundExisting, title, pageTitle) ||
+      "";
+
+    // If page has a product code, force it as identity even when titles empty
+    if (!base && pageRef) {
+      base = extractProductCode(pageRef) || "";
+    }
 
     if (!base) {
       base = isAudio ? "오디오" : "영상";
@@ -225,6 +344,9 @@ const Naming = (() => {
 
     // One more cleanup pass (existing may still carry leak tags)
     base = cleanPageTitle(base) || base;
+    if (pageRef) {
+      base = bindTitleToPage(pageRef, base) || base;
+    }
 
     // Drop bare "영상"/"video" if we still have a better existing candidate
     if (/^(영상|동영상|video|media)$/i.test(base)) {
@@ -461,6 +583,7 @@ const Naming = (() => {
     sanitize,
     cleanPageTitle,
     extractProductCode,
+    bindTitleToPage,
     isUglyBase,
     extFromUrl,
     buildFilename,

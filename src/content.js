@@ -30,6 +30,35 @@
     return `${h}p`;
   }
 
+  /** Guess height from m3u8/CDN path tokens */
+  function heightFromUrl(url) {
+    const s = String(url || "");
+    let m = s.match(
+      /(?:^|[^\dA-Za-z])(2160|1440|1080|720|480|360|240)\s*[pP](?:[^\d]|$)/
+    );
+    if (m) return parseInt(m[1], 10);
+    m = s.match(/[/_-](2160|1440|1080|720|480|360|240)(?:[/_.\-?]|\.m3u8|$)/i);
+    if (m) return parseInt(m[1], 10);
+    m = s.match(
+      /[?&](?:quality|res|resolution|h|height)=?(2160|1440|1080|720|480|360|240)\b/i
+    );
+    if (m) return parseInt(m[1], 10);
+    return 0;
+  }
+
+  /** Largest playing / loaded <video> dimensions on the page */
+  function bestPlayerDimensions() {
+    let best = { width: 0, height: 0 };
+    document.querySelectorAll("video").forEach((el) => {
+      const w = el.videoWidth || 0;
+      const h = el.videoHeight || 0;
+      if (h >= 240 && h * w >= best.height * best.width) {
+        best = { width: w, height: h };
+      }
+    });
+    return best;
+  }
+
   function cleanPageTitle(title) {
     if (!title) return "";
     let t = String(title).trim();
@@ -327,6 +356,7 @@
         url: u,
         title: niceTitle,
         pageTitle: pageTitle(),
+        pageUrl: location.href,
         host,
         filename: buildFilename(niceTitle, quality, ext),
         type: isAudio ? "audio" : isStream ? "stream" : "video",
@@ -469,19 +499,39 @@
     }
 
     // Script sniff — critical for 123av / missav-style players
+    const playerDim = bestPlayerDimensions();
     for (const u of sniffUrlsFromPageText()) {
       const isHls = /\.m3u8/i.test(u);
+      const fromUrl = heightFromUrl(u);
+      const h = fromUrl || playerDim.height || 0;
+      const q = qualityFromHeight(h);
       items.push({
         url: u,
         title,
         pageTitle: title,
         host,
-        filename: buildFilename(title, null, "mp4"),
+        filename: buildFilename(title, q, "mp4"),
         type: isHls ? "stream" : "video",
         source: "script-sniff",
         isHls,
+        width: h ? playerDim.width || undefined : undefined,
+        height: h || undefined,
+        quality: q,
         thumbnail: thumb || undefined
       });
+    }
+
+    // If page has a loaded player but sniff/items lack height, stamp max height
+    if (playerDim.height >= 240) {
+      const q = qualityFromHeight(playerDim.height);
+      for (const it of items) {
+        if (!(it.height >= 240) && (it.isHls || it.type === "stream" || /\.m3u8/i.test(it.url || ""))) {
+          it.height = playerDim.height;
+          it.width = playerDim.width || it.width;
+          it.quality = q;
+          it.filename = buildFilename(it.title || title, q, "mp4");
+        }
+      }
     }
 
     // TikTok: pull play URLs from embedded page JSON (works while watching)
@@ -811,6 +861,7 @@
               url,
               title,
               pageTitle: title,
+              pageUrl: location.href,
               host: location.hostname,
               filename: buildFilename(title, i.quality, isHls ? "mp4" : "mp4"),
               source: "injected",
@@ -1011,6 +1062,19 @@
       return false;
     }
 
+    // Player videoHeight for quality chips when m3u8 has no RESOLUTION
+    if (msg.type === "GET_PLAYER_HEIGHT") {
+      const dim = bestPlayerDimensions();
+      const h = dim.height || 0;
+      sendResponse({
+        ok: h >= 240,
+        height: h,
+        width: dim.width || 0,
+        quality: qualityFromHeight(h) || ""
+      });
+      return false;
+    }
+
     if (msg.type === "PROBE_PAGE_META") {
       probePageMeta(msg.url || msg.pageUrl, msg.expectedKey || msg.key || "")
         .then((r) => sendResponse(r))
@@ -1125,21 +1189,41 @@
       return false;
     }
 
+    if (msg.type === "STOP_DOWNLOAD") {
+      // User paused/cancelled — abort in-page HLS if active
+      window.__UVD_STOP_DOWNLOAD__ = true;
+      window.__UVD_STOP_JOB_ID__ = msg.jobId || null;
+      try {
+        window.__UVD_PAGE_DOWNLOAD__?.abort?.();
+      } catch {
+        /* ignore */
+      }
+      sendResponse({ ok: true });
+      return false;
+    }
+
     if (msg.type === "SMART_DOWNLOAD") {
       const api = window.__UVD_PAGE_DOWNLOAD__;
       if (!api?.smartDownload) {
         sendResponse({ ok: false, error: "다운로드 모듈 로드 실패 — 페이지를 새로고침 하세요" });
         return false;
       }
+      window.__UVD_STOP_DOWNLOAD__ = false;
+      window.__UVD_STOP_JOB_ID__ = null;
+      const jobId = msg.jobId || null;
       api
         .smartDownload(
           {
             url: msg.url,
             filename: msg.filename,
             preferQuality: msg.preferQuality || "best",
-            type: msg.mediaType || msg.type
+            type: msg.mediaType || msg.type,
+            jobId
           },
           (p) => {
+            if (window.__UVD_STOP_DOWNLOAD__) {
+              throw new Error("CANCELLED");
+            }
             chrome.runtime
               .sendMessage({
                 type: "HLS_PROGRESS",
@@ -1147,7 +1231,7 @@
                 progress: {
                   ...p,
                   // Bind to tracked download job (stops bar thrash across retries)
-                  jobId: msg.jobId || p.jobId || null,
+                  jobId: jobId || p.jobId || null,
                   percent:
                     typeof p.percent === "number" ? p.percent : undefined
                 }
@@ -1155,7 +1239,13 @@
               .catch(() => {});
           }
         )
-        .then((result) => sendResponse(result))
+        .then((result) => {
+          if (window.__UVD_STOP_DOWNLOAD__) {
+            sendResponse({ ok: false, error: "CANCELLED" });
+            return;
+          }
+          sendResponse(result);
+        })
         .catch((err) =>
           sendResponse({ ok: false, error: String(err?.message || err) })
         );

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Universal Video Downloader",
-  "version": "1.23.2",
-  "description": "읽기 쉬운 파일명 · 정직한 진행률 · 다운로드 속도 개선",
+  "version": "1.23.3",
+  "description": "실제 화질 칩 · 읽기 쉬운 파일명 · 정직한 진행률",
   "permissions": [
     "downloads",
     "storage",

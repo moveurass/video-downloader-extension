@@ -633,18 +633,25 @@ function siteLabel() {
  * 예: "SSIS-001 이복 여동생이 귀에 키스하는 이야기"
  */
 function displayName(item) {
+  const pageUrl = item.pageUrl || currentTabUrl || "";
   const candidates = [
     item.title,
     item.pageTitle,
     item.displayName,
     item.filename
   ];
-  // 가장 길고 읽기 좋은 제목 선택
+  // Prefer title bound to this page (same product code)
   let best = "";
   for (const c of candidates) {
-    const cleaned = cleanTitleText(c);
+    let cleaned = cleanTitleText(c);
     if (!cleaned || isUglyName(cleaned) || cleaned.length < 2) continue;
+    if (typeof Naming !== "undefined" && Naming.bindTitleToPage && pageUrl) {
+      cleaned = Naming.bindTitleToPage(pageUrl, cleaned) || cleaned;
+    }
     if (cleaned.length > best.length) best = cleaned;
+  }
+  if (!best && pageUrl && typeof Naming !== "undefined") {
+    best = Naming.extractProductCode?.(pageUrl) || "";
   }
   if (!best) best = "영상";
   if (best.length > 70) best = best.slice(0, 68).trim() + "…";
@@ -657,17 +664,35 @@ function displayName(item) {
  * 제목을 모를 때는 빈 문자열 → yt-dlp가 실제 제목(유니코드·공백 유지) 사용
  */
 function downloadFilename(item) {
+  const pageUrl = item.pageUrl || currentTabUrl || "";
+  const urlCode =
+    (typeof Naming !== "undefined" &&
+      Naming.extractProductCode?.(pageUrl || item.title || "")) ||
+    "";
+
+  // Only accept titles that match this page's product code (prevents wrong-video names)
   let title = "";
   for (const c of [item.title, item.pageTitle, item.displayName, item.filename]) {
-    const cleaned = cleanTitleText(c);
-    if (
-      cleaned &&
-      !isUglyName(cleaned) &&
-      !UVD.isGenericSaveName(cleaned) &&
-      cleaned.length > title.length
-    ) {
-      title = cleaned;
+    let cleaned = cleanTitleText(c);
+    if (!cleaned || isUglyName(cleaned) || UVD.isGenericSaveName(cleaned)) continue;
+    if (typeof Naming !== "undefined" && Naming.bindTitleToPage && pageUrl) {
+      cleaned = Naming.bindTitleToPage(pageUrl, cleaned) || cleaned;
     }
+    const cCode =
+      (typeof Naming !== "undefined" && Naming.extractProductCode?.(cleaned)) ||
+      "";
+    if (urlCode && cCode && cCode.toUpperCase() !== urlCode.toUpperCase()) {
+      continue; // different video — skip
+    }
+    if (cleaned.length > title.length) title = cleaned;
+  }
+  if (urlCode && !title) title = urlCode;
+  if (
+    urlCode &&
+    title &&
+    !title.toUpperCase().includes(urlCode.toUpperCase())
+  ) {
+    title = `${urlCode} ${title}`.trim();
   }
 
   let quality = "";
@@ -692,6 +717,7 @@ function downloadFilename(item) {
       pageTitle: title,
       quality,
       type: isAudio ? "audio" : "video",
+      pageUrl,
       existing: item.filename || ""
     });
   }
@@ -700,7 +726,7 @@ function downloadFilename(item) {
   let base = UVD.applyFilenameTemplate("legacy", {
     title,
     quality,
-    site: UVD.siteFromUrl(item.pageUrl || item.url || currentTabUrl || ""),
+    site: UVD.siteFromUrl(pageUrl || item.url || ""),
     mediaMode
   });
   if (!base) {
@@ -718,16 +744,47 @@ function downloadFilename(item) {
   return base.endsWith(ext) ? base : `${base}${ext}`;
 }
 
-/** Always-available quality choices (yt-dlp maps height caps) */
-const STANDARD_QUALITY_CHIPS = [
-  { id: "best", label: "최고" },
-  { id: "4K", label: "4K" },
-  { id: "1440p", label: "1440p" },
-  { id: "1080p", label: "1080p" },
-  { id: "720p", label: "720p" },
-  { id: "480p", label: "480p" }
-];
+/** Fallback only when we truly cannot probe — never invent 4K/1080p */
+const FALLBACK_QUALITY_CHIPS = [{ id: "best", label: "최고" }];
 
+function heightToQualityId(h) {
+  const n = Number(h) || 0;
+  if (n >= 2160) return "4K";
+  if (n >= 1440) return "1440p";
+  if (n >= 1080) return "1080p";
+  if (n >= 720) return "720p";
+  if (n >= 480) return "480p";
+  if (n >= 360) return "360p";
+  if (n >= 240) return "240p";
+  return "";
+}
+
+/** Build a single concrete quality chip (not "best") from height/size info */
+function concreteQualityChip(q) {
+  if (!q) return null;
+  let id = String(q.id || "");
+  if (!id || id === "best" || /^(best|all|unknown)$/i.test(id)) {
+    id = heightToQualityId(q.height) || "";
+  }
+  if (!id) return null;
+  const sizeStr = q.estimatedSize > 0 ? formatMb(q.estimatedSize) : "";
+  const codec = q.codec || "";
+  const parts = [id];
+  if (sizeStr) parts.push(sizeStr);
+  if (codec) parts.push(codec);
+  return {
+    ...q,
+    id,
+    label: parts.join(" · "),
+    height: q.height || 0
+  };
+}
+
+/**
+ * Keep only qualities that were actually probed for this video.
+ * Do NOT pad with a fixed 4K/1080p/720p list — those may not exist.
+ * When only ONE real height exists, show that chip (e.g. 720p) — not "최고".
+ */
 function ensureQualityChoices(list) {
   const cleaned = (Array.isArray(list) ? list : [])
     .filter(
@@ -741,14 +798,67 @@ function ensureQualityChoices(list) {
       ...q,
       label: q.label || q.id
     }));
-  // Need at least a few options so the user can actually pick a quality
-  if (cleaned.length >= 2) return cleaned;
-  if (cleaned.length === 1 && cleaned[0].id === "best") {
-    return STANDARD_QUALITY_CHIPS.map((s) =>
-      s.id === "best" ? { ...s, ...cleaned[0], label: cleaned[0].label || s.label } : { ...s }
-    );
+
+  // Dedupe by id, keep first (usually "best" then high→low)
+  const seen = new Set();
+  const unique = [];
+  for (const q of cleaned) {
+    const id = String(q.id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    unique.push(q);
   }
-  return STANDARD_QUALITY_CHIPS.map((s) => ({ ...s }));
+
+  const bestEntry = unique.find((q) => q.id === "best");
+  const real = unique.filter((q) => q.id !== "best");
+
+  // Only one concrete quality → show that chip alone (e.g. "720p · 180MB")
+  if (real.length === 1) {
+    const only = concreteQualityChip(real[0]) || real[0];
+    return [only];
+  }
+
+  // Only "best" but it carries a height → show as that height chip
+  if (real.length === 0 && bestEntry) {
+    const concrete = concreteQualityChip(bestEntry);
+    if (concrete) return [concrete];
+    return [{ ...bestEntry, label: bestEntry.label || "최고" }];
+  }
+
+  // Multiple real heights → optional "최고" first, then each height
+  if (real.length > 1) {
+    const out = [];
+    if (bestEntry) {
+      out.push({
+        ...bestEntry,
+        label: bestEntry.label || "최고"
+      });
+    } else {
+      const top = real[0];
+      out.push({
+        id: "best",
+        label: top.estimatedSize
+          ? `최고 · ${formatMb(top.estimatedSize)}`
+          : "최고",
+        height: top.height,
+        estimatedSize: top.estimatedSize,
+        codec: top.codec,
+        approx: top.approx
+      });
+    }
+    for (const q of real) out.push(q);
+    return out;
+  }
+
+  if (unique.length) return unique;
+  // Probe failed / not ready
+  return FALLBACK_QUALITY_CHIPS.map((s) => ({ ...s }));
+}
+
+function formatMb(bytes) {
+  const mb = Number(bytes) / (1024 * 1024);
+  if (!Number.isFinite(mb) || mb <= 0) return "";
+  return mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
 }
 
 function qualityPickerHtml() {
@@ -756,27 +866,28 @@ function qualityPickerHtml() {
     return `
       <div class="quality-picker" id="qualityPicker">
         <span class="quality-label">화질 선택</span>
-        <p class="quality-hint">가능한 화질 확인 중…</p>
+        <p class="quality-hint">이 영상에서 받을 수 있는 화질 확인 중…</p>
         <div class="quality-chips" role="group" aria-label="화질 선택">
-          ${STANDARD_QUALITY_CHIPS.map(
-            (q) =>
-              `<button type="button" class="q-chip${
-                selectedQuality === q.id ? " active" : ""
-              }" data-quality="${escapeAttr(q.id)}" disabled>${escapeHtml(
-                q.label
-              )}</button>`
-          ).join("")}
+          <button type="button" class="q-chip active" data-quality="best" disabled>최고</button>
         </div>
       </div>`;
   }
   const opts = ensureQualityChoices(availableQualities);
-  // Ensure selection is still valid
+  // Ensure selection is still valid (single chip → auto-select that quality id)
   if (!opts.some((q) => q.id === selectedQuality)) {
-    selectedQuality = opts[0].id;
+    selectedQuality = opts[0]?.id || "best";
   }
+  const singleConcrete =
+    opts.length === 1 && opts[0].id !== "best";
   return `
     <div class="quality-picker" id="qualityPicker">
-      <span class="quality-label">화질 선택 <span class="quality-hint-inline">탭해서 변경</span></span>
+      <span class="quality-label">화질 선택${
+        singleConcrete
+          ? ` <span class="quality-hint-inline">이 영상 화질</span>`
+          : opts.length > 1
+            ? ` <span class="quality-hint-inline">실제 가능 화질만 표시</span>`
+            : ""
+      }</span>
       <div class="quality-chips" role="group" aria-label="화질 선택">
         ${opts
           .map((q) => {
@@ -808,27 +919,133 @@ function formatQualityChipLabel(q) {
   // Prefer short id-style on crowded chips; keep rich label if not too long
   const rich = q.label && (q.label.includes("·") || q.label.includes("MB"));
   if (rich && String(q.label).length <= 22) return q.label;
-  // Compact: "1080p" or "1080p · 180MB"
-  const id = q.id === "best" ? "최고" : q.id || q.label || "최고";
-  if (q.estimatedSize > 0) {
-    const mb = q.estimatedSize / (1024 * 1024);
-    const sizeStr = mb >= 10 ? `${Math.round(mb)}MB` : `${mb.toFixed(1)}MB`;
-    return `${id} · ${sizeStr}`;
+  // Compact: "1080p" or "1080p · 180MB" — never show "최고" when id is a real height
+  let id = q.id || q.label || "최고";
+  if (id === "best") {
+    const fromH = heightToQualityId(q.height);
+    id = fromH || "최고";
   }
-  if (q.codec && q.id !== "best") return `${id} · ${q.codec}`;
+  if (q.estimatedSize > 0) {
+    const sizeStr = formatMb(q.estimatedSize);
+    return sizeStr ? `${id} · ${sizeStr}` : id;
+  }
+  if (q.codec && id !== "최고") return `${id} · ${q.codec}`;
   return id;
+}
+
+function qualityIdFromHeight(h) {
+  return heightToQualityId(h) || "";
+}
+
+/** Guess height from m3u8/CDN URL path tokens (…/720/…, …_720p.m3u8) */
+function qualityFromMediaUrl(url) {
+  const s = String(url || "");
+  const m =
+    s.match(/(?:^|[^\dA-Za-z])(2160|1440|1080|720|480|360|240)\s*[pP](?:[^\d]|$)/i) ||
+    s.match(/[/_-](2160|1440|1080|720|480|360|240)(?:[/_.\-?]|\.m3u8|$)/i) ||
+    s.match(
+      /[?&](?:quality|res|resolution|h|height)=?(2160|1440|1080|720|480|360|240)\b/i
+    );
+  if (!m) return null;
+  const h = parseInt(m[1], 10);
+  const id = qualityIdFromHeight(h);
+  if (!id) return null;
+  return { id, label: id, height: h };
+}
+
+/** Ask content script for <video>.videoHeight (after play on 123av etc.) */
+async function fetchPlayerHeight(tabId) {
+  if (tabId == null || tabId < 0) return null;
+  try {
+    const r = await chrome.tabs
+      .sendMessage(tabId, { type: "GET_PLAYER_HEIGHT" })
+      .catch(() => null);
+    const h = Number(r?.height) || 0;
+    if (h < 240) return null;
+    const id =
+      (r?.quality && !/^(best|all|unknown)$/i.test(String(r.quality))
+        ? r.quality
+        : null) || qualityIdFromHeight(h);
+    if (!id) return null;
+    return { id, label: id, height: h };
+  } catch {
+    return null;
+  }
+}
+
+/** True when list is only a bare "best/최고" with no real height */
+function isOnlyBareBest(list) {
+  const opts = ensureQualityChoices(list);
+  if (opts.length !== 1) return false;
+  const q = opts[0];
+  if (q.id !== "best" && !/^최고/.test(String(q.label || ""))) return false;
+  return !(q.height >= 240);
 }
 
 async function loadAvailableQualities(item) {
   qualitiesLoading = true;
-  availableQualities = STANDARD_QUALITY_CHIPS.map((s) => ({ ...s }));
+  // While probing: only "최고" — never show fake 4K/1080p list
+  availableQualities = FALLBACK_QUALITY_CHIPS.map((s) => ({ ...s }));
   const pageUrl = currentTabUrl || item?.pageUrl || item?.url || "";
   const mediaUrl = item?.url || pageUrl;
+  const isHls =
+    item?.isHls ||
+    item?.type === "stream" ||
+    /\.m3u8(\?|$|#)/i.test(mediaUrl || "");
+  const isDirectMedia = /\.(mp4|webm|mkv|m4v)(\?|$|#)/i.test(mediaUrl || "");
+  // Social single-video pages OR captured HLS/mp4 on generic sites (123av etc.)
+  const canProbe =
+    isDownloadableSiteVideo(mediaUrl) ||
+    isDownloadableSiteVideo(pageUrl) ||
+    isHls ||
+    isDirectMedia ||
+    !!(item?.url && /^https?:/i.test(item.url));
 
-  // Don't probe homepage/profile — yt-dlp returns "Unsupported URL"
-  // Still keep standard chips so the user can pick before paste/download
-  if (!isDownloadableSiteVideo(mediaUrl) && !isDownloadableSiteVideo(pageUrl)) {
-    availableQualities = ensureQualityChoices(STANDARD_QUALITY_CHIPS);
+  // Seed from already-known media height / quality / URL / title / live player
+  const seedFromItem = [];
+  if (item?.quality && !/^(best|all|unknown)$/i.test(String(item.quality))) {
+    seedFromItem.push({
+      id: item.quality,
+      label: item.quality,
+      height: item.height || 0
+    });
+  } else if (item?.height >= 240) {
+    const lab = qualityIdFromHeight(item.height);
+    if (lab) seedFromItem.push({ id: lab, label: lab, height: item.height });
+  } else {
+    const fromUrl = qualityFromMediaUrl(mediaUrl);
+    if (fromUrl) seedFromItem.push(fromUrl);
+  }
+  // Title often embeds quality on 123av: "SSIS-001 … 720p"
+  if (!seedFromItem.length) {
+    const titleBlob = [
+      item?.title,
+      item?.pageTitle,
+      item?.displayName,
+      typeof document !== "undefined" ? document.title : ""
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const tm = String(titleBlob).match(
+      /(?:^|[^\dA-Za-z])(2160|1440|1080|720|480|360|240)\s*[pP]\b/
+    );
+    if (tm) {
+      const h = parseInt(tm[1], 10);
+      const id = qualityIdFromHeight(h);
+      if (id) seedFromItem.push({ id, label: id, height: h });
+    }
+  }
+  // Player may already know height even when item does not
+  if (!seedFromItem.length) {
+    const ph = await fetchPlayerHeight(currentTabId);
+    if (ph) seedFromItem.push(ph);
+  }
+
+  // Homepage with no media — cannot list formats
+  if (!canProbe) {
+    availableQualities = ensureQualityChoices(
+      seedFromItem.length ? seedFromItem : FALLBACK_QUALITY_CHIPS
+    );
     applySiteDefaultQuality(pageUrl || mediaUrl);
     qualitiesLoading = false;
     return;
@@ -840,13 +1057,28 @@ async function loadAvailableQualities(item) {
       url: mediaUrl,
       pageUrl,
       tabId: currentTabId,
-      mediaType: item?.type,
+      mediaType: item?.type || (isHls ? "stream" : undefined),
+      // Pass known height so single media playlists can show e.g. 720p not "최고"
+      itemHeight: item?.height || seedFromItem[0]?.height || 0,
+      itemQuality: item?.quality || seedFromItem[0]?.id || "",
       forceYtDlp: !!(item?.isSiteDownload || isDownloadableSiteVideo(pageUrl))
     });
     if (res?.ok && res.qualities?.length) {
+      // Real probed list only (HLS variants / yt-dlp heights)
       availableQualities = ensureQualityChoices(res.qualities);
+    } else if (seedFromItem.length) {
+      availableQualities = ensureQualityChoices(seedFromItem);
     } else {
-      availableQualities = ensureQualityChoices(STANDARD_QUALITY_CHIPS);
+      availableQualities = ensureQualityChoices(FALLBACK_QUALITY_CHIPS);
+    }
+
+    // Still only bare "최고"? Recover height from player / seed
+    if (isOnlyBareBest(availableQualities)) {
+      let recovered = seedFromItem[0] || null;
+      if (!recovered) recovered = await fetchPlayerHeight(currentTabId);
+      if (recovered) {
+        availableQualities = ensureQualityChoices([recovered]);
+      }
     }
 
     // Apply duration / size / title / thumb preview onto the card item
@@ -864,7 +1096,13 @@ async function loadAvailableQualities(item) {
       }
       if (res.thumbnail && !patch.thumbnail) patch.thumbnail = res.thumbnail;
       const bestQ = availableQualities.find((q) => q.id === "best") || availableQualities[0];
-      if (bestQ?.height) patch._bestHeight = bestQ.height;
+      if (bestQ?.height) {
+        patch._bestHeight = bestQ.height;
+        if (!(patch.height >= 240)) {
+          patch.height = bestQ.height;
+          patch.quality = bestQ.id !== "best" ? bestQ.id : qualityIdFromHeight(bestQ.height);
+        }
+      }
       // Per-quality sizes already on chips; also stash on item for "best"
       if (bestQ?.estimatedSize) {
         patch.estimatedSize = bestQ.estimatedSize;
@@ -873,7 +1111,14 @@ async function loadAvailableQualities(item) {
       allItems[0] = patch;
     }
   } catch {
-    availableQualities = ensureQualityChoices(STANDARD_QUALITY_CHIPS);
+    if (seedFromItem.length) {
+      availableQualities = ensureQualityChoices(seedFromItem);
+    } else {
+      const ph = await fetchPlayerHeight(currentTabId);
+      availableQualities = ensureQualityChoices(
+        ph ? [ph] : FALLBACK_QUALITY_CHIPS
+      );
+    }
   }
   applySiteDefaultQuality(pageUrl || mediaUrl);
   if (!availableQualities.some((q) => q.id === selectedQuality)) {
@@ -887,19 +1132,27 @@ async function loadAvailableQualities(item) {
 
 /**
  * Auto-select quality when chips load.
- * Default: always 최고 (best). User can still tap another chip before download.
+ * Single concrete quality → select that id (e.g. 720p).
+ * Multiple → prefer 최고 if present.
  */
 function applySiteDefaultQuality(pageUrl) {
-  if (availableQualities.some((q) => q.id === "best")) {
+  const opts = ensureQualityChoices(availableQualities);
+  availableQualities = opts;
+  // Only one real height → select it (not "best")
+  if (opts.length === 1) {
+    selectedQuality = opts[0].id;
+    return;
+  }
+  if (opts.some((q) => q.id === "best")) {
     selectedQuality = "best";
     return;
   }
   const pref = UVD.qualityForSite(uvdSettings, pageUrl || currentTabUrl || "");
-  if (pref && availableQualities.some((q) => q.id === pref)) {
+  if (pref && opts.some((q) => q.id === pref)) {
     selectedQuality = pref;
     return;
   }
-  selectedQuality = availableQualities[0]?.id || "best";
+  selectedQuality = opts[0]?.id || "best";
 }
 
 /**
@@ -1077,17 +1330,21 @@ function jobPhaseLabel(job) {
 }
 
 function cleanJobMessage(msg, phase) {
-  // Always collapse noisy progress into a few stable Korean phrases
-  // so the queue text does not thrash every poll tick.
+  // Keep user-visible detail for long phases (disk write / merge / segments)
+  // so "99% stuck" is explained as "writing 800MB" not a silent hang.
   let text = String(msg || "").trim();
   if (phase === "error" || /ERROR|실패|error/i.test(text)) {
     const clean = text.replace(/^Error:\s*/i, "").trim();
     return clean.length > 56 ? clean.slice(0, 54) + "…" : clean || "실패";
   }
-  if (phase === "merge" || /만들|합치|Merg|ffmpeg/i.test(text)) {
-    return "파일 만드는 중…";
-  }
-  if (phase === "save" || /^저장|Destination|Merging into/i.test(text)) {
+  // Disk write — preserve MB / elapsed so it doesn't look frozen at 99%
+  if (
+    phase === "save" ||
+    /디스크|쓰는 중|저장 중|Destination|Merging into/i.test(text)
+  ) {
+    if (/디스크|쓰는 중|MB|약 \d/.test(text)) {
+      return text.length > 52 ? text.slice(0, 50) + "…" : text;
+    }
     const dest = text.match(
       /(?:Destination|Merging into|to:\s*)(.+\.(?:mp4|mkv|webm|mp3))/i
     );
@@ -1095,14 +1352,35 @@ function cleanJobMessage(msg, phase) {
       const name = dest[1].split(/[/\\]/).pop();
       return `저장 중 · ${name.length > 28 ? name.slice(0, 26) + "…" : name}`;
     }
-    return "저장 중…";
+    return "디스크에 저장 중…";
+  }
+  if (phase === "merge" || /만들|합치|Merg|ffmpeg/i.test(text)) {
+    if (/\d+\s*\/\s*\d+/.test(text) || /MB|KB|GB/.test(text)) {
+      return text.length > 48 ? text.slice(0, 46) + "…" : text;
+    }
+    return "파일 만드는 중…";
+  }
+  // Size progress: "받는 중… 125MB / 약 800MB"
+  if (
+    /받는 중…\s*[\d.]+(KB|MB|GB)/i.test(text) ||
+    /[\d.]+\s*(KB|MB|GB)\s*\/\s*약/i.test(text) ||
+    /추가 트랙/.test(text)
+  ) {
+    return text.length > 48 ? text.slice(0, 46) + "…" : text;
   }
   if (
     !text ||
-    /\d+\s*\/\s*\d+/.test(text) ||
     /조각|세그먼트|\[download\]|ETA|at\s+\d|% of|MiB|KiB/i.test(text) ||
     /받는 중|다운로드/i.test(text)
   ) {
+    // Keep "받는 중… 45%" or size text if present
+    if (
+      /받는 중…\s*\d/.test(text) ||
+      /전체 \d/.test(text) ||
+      /(KB|MB|GB)/i.test(text)
+    ) {
+      return text.length > 48 ? text.slice(0, 46) + "…" : text;
+    }
     return "받는 중…";
   }
   if (/시작|준비|해석|목록|쿠키|연결/i.test(text)) return "준비 중…";
@@ -1139,6 +1417,14 @@ async function refreshJobsFromBackground() {
       if (!j?.id) continue;
       trackedJobIds.add(j.id);
       const prev = uiJobs.get(j.id);
+      // Never let a still-running SW tick undo a local pause/cancel click
+      if (
+        prev &&
+        (prev.status === "paused" || prev.status === "cancelled") &&
+        j.status === "running"
+      ) {
+        continue;
+      }
       const prevPct = Math.round(prev?.percent || 0);
       const nextPct = Math.round(
         typeof j.percent === "number" ? j.percent : prevPct
@@ -1751,16 +2037,6 @@ function renderDownloadQueue(_force = false) {
     });
 
   bindRecoveryButtons(dlQueueList);
-  // Dismiss finished/error rows without fighting auto-refresh
-  dlQueueList.querySelectorAll('[data-act="dismiss"]').forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const id = btn.getAttribute("data-job") || "";
-      if (!id) return;
-      uiJobs.delete(id);
-      renderDownloadQueue(true);
-    });
-  });
   syncDownloadingFlag();
   if (playlistDl.jobIds.size) updatePlaylistProgressUi();
 }
@@ -1818,86 +2094,187 @@ function recoveryActionsHtml(errMeta, pageUrl, job) {
   return `<div class="dl-job-actions">${buttons.join("")}</div>`;
 }
 
+/** Resolve UI job id → real background job id (optimistic local_* rows) */
+function resolveRealJobId(jobId) {
+  if (!jobId) return "";
+  if (!String(jobId).startsWith("local_")) return jobId;
+  const local = uiJobs.get(jobId);
+  // Prefer tracked real id with same page/title
+  for (const [id, j] of uiJobs) {
+    if (String(id).startsWith("local_")) continue;
+    if (j.status !== "running" && j.status !== "paused") continue;
+    if (
+      local &&
+      ((local.pageUrl && j.pageUrl && local.pageUrl === j.pageUrl) ||
+        (local.title && j.title && local.title === j.title))
+    ) {
+      return id;
+    }
+  }
+  // Fallback: first running real job if only one
+  const running = [...uiJobs.entries()].filter(
+    ([id, j]) =>
+      !String(id).startsWith("local_") &&
+      (j.status === "running" || j.status === "paused")
+  );
+  if (running.length === 1) return running[0][0];
+  return jobId;
+}
+
 function bindRecoveryButtons(root) {
   if (!root) return;
-  root.querySelectorAll("[data-act]").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const act = btn.getAttribute("data-act");
-      const url = btn.getAttribute("data-url") || "";
-      const path = btn.getAttribute("data-path") || "";
-      const did = btn.getAttribute("data-did");
-      const jobId = btn.getAttribute("data-job") || "";
-      try {
-        if (act === "cancel" && jobId) {
-          btn.disabled = true;
-          await chrome.runtime.sendMessage({ type: "CANCEL_DOWNLOAD", jobId });
-          toast("취소했습니다", "ok");
+  // Event delegation — survives partial re-renders better than per-button binds
+  if (root.dataset.actBound === "1") return;
+  root.dataset.actBound = "1";
+  root.addEventListener("click", async (e) => {
+    const btn = e.target?.closest?.("[data-act]");
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const act = btn.getAttribute("data-act");
+    const url = btn.getAttribute("data-url") || "";
+    const path = btn.getAttribute("data-path") || "";
+    const did = btn.getAttribute("data-did");
+    const jobId = resolveRealJobId(btn.getAttribute("data-job") || "");
+    try {
+      if (act === "cancel" && jobId) {
+        btn.disabled = true;
+        // Optimistic UI first — avoid flicker from late progress
+        const rawId = btn.getAttribute("data-job") || jobId;
+        const j = uiJobs.get(jobId) || uiJobs.get(rawId);
+        if (j) {
+          upsertUiJob(
+            {
+              ...j,
+              id: jobId,
+              status: "cancelled",
+              message: "취소됨",
+              phase: "cancelled",
+              percent: j.percent || 0
+            },
+            { toast: false, forceStructure: true }
+          );
+        }
+        const r = await chrome.runtime.sendMessage({
+          type: "CANCEL_DOWNLOAD",
+          jobId
+        });
+        if (r?.ok === false) {
+          toast(r.error || "취소 실패", "error");
+          btn.disabled = false;
+          // Revert if needed
           await refreshJobsFromBackground();
           return;
         }
-        if (act === "pause" && jobId) {
-          btn.disabled = true;
-          await chrome.runtime.sendMessage({ type: "PAUSE_DOWNLOAD", jobId });
-          toast("일시정지했습니다", "ok");
-          await refreshJobsFromBackground();
-          return;
-        }
-        if (act === "resume" && jobId) {
-          btn.disabled = true;
-          await chrome.runtime.sendMessage({ type: "RESUME_DOWNLOAD", jobId });
-          toast("다시 시작합니다", "ok");
-          ensureQueuePoll();
-          await refreshJobsFromBackground();
-          return;
-        }
-        if (act === "play_retry" && url) {
-          await chrome.runtime.sendMessage({ type: "OPEN_URL", url });
-          toast("페이지에서 재생을 시작한 뒤 다시 받기를 누르세요", "ok");
-          return;
-        }
-        if (act === "retry" && url) {
-          await downloadByPastedLink(url, { skipDupCheck: true });
-          return;
-        }
-        if (act === "open" && url) {
-          await chrome.runtime.sendMessage({ type: "OPEN_URL", url });
-          return;
-        }
-        if (act === "login" && url) {
-          let loginUrl = url;
-          try {
-            const u = new URL(url);
-            loginUrl = u.origin + "/";
-          } catch {
-            /* keep */
-          }
-          await chrome.runtime.sendMessage({ type: "OPEN_URL", url: loginUrl });
-          toast("로그인 후 다시 받아 주세요", "ok");
-          return;
-        }
-        if (act === "helper_start") {
-          await downloadHelperStarter();
-          return;
-        }
-        if (act === "helper") {
-          showHelperHelp();
-          return;
-        }
-        if (act === "show") {
-          await chrome.runtime.sendMessage({
-            type: "SHOW_DOWNLOAD",
-            downloadId: did ? Number(did) : null,
-            path
-          });
-          return;
-        }
-      } catch (err) {
-        toast(userError(err?.message) || "실행 실패", "error");
+        toast("취소했습니다", "ok");
+        // Delayed sync — SW already set cancelled
+        setTimeout(() => refreshJobsFromBackground(), 400);
+        return;
       }
-    });
+      if (act === "pause" && jobId) {
+        btn.disabled = true;
+        const rawId = btn.getAttribute("data-job") || jobId;
+        const j = uiJobs.get(jobId) || uiJobs.get(rawId);
+        if (j) {
+          upsertUiJob(
+            {
+              ...j,
+              id: jobId,
+              status: "paused",
+              message: "일시정지됨 · 다시 시작 가능",
+              phase: "paused"
+            },
+            { toast: false, forceStructure: true }
+          );
+        }
+        const r = await chrome.runtime.sendMessage({
+          type: "PAUSE_DOWNLOAD",
+          jobId
+        });
+        if (r?.ok === false) {
+          toast(r.error || "일시정지 실패", "error");
+          btn.disabled = false;
+          await refreshJobsFromBackground();
+          return;
+        }
+        toast("일시정지했습니다", "ok");
+        setTimeout(() => refreshJobsFromBackground(), 400);
+        return;
+      }
+      if (act === "resume" && jobId) {
+        btn.disabled = true;
+        const r = await chrome.runtime.sendMessage({
+          type: "RESUME_DOWNLOAD",
+          jobId
+        });
+        if (r?.ok === false) {
+          toast(r.error || "다시 시작 실패", "error");
+          btn.disabled = false;
+          return;
+        }
+        toast("다시 시작합니다", "ok");
+        ensureQueuePoll();
+        await refreshJobsFromBackground();
+        return;
+      }
+      // Continue with other acts using same handler body — re-read rest of function
+      await handleQueueAction(act, { url, path, did, jobId, btn });
+    } catch (err) {
+      btn.disabled = false;
+      toast(String(err?.message || err || "실패"), "error");
+    }
   });
+}
+
+async function handleQueueAction(act, { url, path, did, jobId, btn }) {
+  if (act === "dismiss") {
+    const id = btn?.getAttribute("data-job") || jobId || "";
+    if (id) {
+      uiJobs.delete(id);
+      renderDownloadQueue(true);
+    }
+    return;
+  }
+  if (act === "play_retry" && url) {
+    await chrome.runtime.sendMessage({ type: "OPEN_URL", url });
+    toast("페이지에서 재생을 시작한 뒤 다시 받기를 누르세요", "ok");
+    return;
+  }
+  if (act === "retry" && url) {
+    await downloadByPastedLink(url, { skipDupCheck: true });
+    return;
+  }
+  if (act === "open" && url) {
+    await chrome.runtime.sendMessage({ type: "OPEN_URL", url });
+    return;
+  }
+  if (act === "login" && url) {
+    let loginUrl = url;
+    try {
+      const u = new URL(url);
+      loginUrl = u.origin + "/";
+    } catch {
+      /* keep */
+    }
+    await chrome.runtime.sendMessage({ type: "OPEN_URL", url: loginUrl });
+    toast("로그인 후 다시 받아 주세요", "ok");
+    return;
+  }
+  if (act === "helper_start") {
+    await downloadHelperStarter();
+    return;
+  }
+  if (act === "helper") {
+    showHelperHelp();
+    return;
+  }
+  if (act === "show") {
+    await chrome.runtime.sendMessage({
+      type: "SHOW_DOWNLOAD",
+      downloadId: did ? Number(did) : null,
+      path
+    });
+  }
 }
 
 async function downloadHelperStarter() {
@@ -5191,6 +5568,8 @@ function applyJobProgress(jobOrProgress, opts = {}) {
     if (running.length > 1) return;
     if (running.length === 1) {
       const prev = running[0];
+      // Don't revive paused/cancelled rows from ambient progress
+      if (prev.status === "paused" || prev.status === "cancelled") return;
       const raw = typeof p.percent === "number" ? p.percent : prev.percent || 0;
       // Never lower a running job's bar from unscoped page events
       const percent =
@@ -5218,11 +5597,35 @@ function applyJobProgress(jobOrProgress, opts = {}) {
     return;
   }
   const prev = uiJobs.get(jobId);
+  // Paused/cancelled rows stay put — ignore late progress (main flicker source)
+  if (
+    prev &&
+    (prev.status === "paused" ||
+      prev.status === "cancelled" ||
+      prev.status === "done" ||
+      prev.status === "error") &&
+    !p.status &&
+    p.phase !== "done" &&
+    p.phase !== "error"
+  ) {
+    return;
+  }
   const raw = typeof p.percent === "number" ? p.percent : prev?.percent || 0;
   const percent =
     prev?.status === "running" && typeof prev.percent === "number"
       ? Math.max(prev.percent, raw)
       : raw;
+  const nextStatus =
+    p.status ||
+    (p.phase === "done"
+      ? "done"
+      : p.phase === "error"
+        ? "error"
+        : p.phase === "paused"
+          ? "paused"
+          : prev?.status === "paused" || prev?.status === "cancelled"
+            ? prev.status
+            : "running");
   upsertUiJob(
     {
       id: jobId,
@@ -5230,9 +5633,7 @@ function applyJobProgress(jobOrProgress, opts = {}) {
       percent,
       message: p.message || p.error,
       phase: p.phase,
-      status:
-        p.status ||
-        (p.phase === "done" ? "done" : p.phase === "error" ? "error" : "running"),
+      status: nextStatus,
       error: p.error,
       result: p.result,
       path: p.path,
