@@ -324,6 +324,10 @@ function buildLocalSiteItem(tab) {
 
 let helperPollTimer = null;
 
+/** Last known helper outDir (from /health) for settings display */
+let helperOutDirCache = "";
+let helperWasOk = null;
+
 function stopHelperPoll() {
   if (helperPollTimer) {
     clearInterval(helperPollTimer);
@@ -331,13 +335,23 @@ function stopHelperPoll() {
   }
 }
 
-function startHelperPoll() {
+/** Keep polling while popup is open so helper reconnect is picked up without reload */
+function startHelperPoll(intervalMs = 2800) {
   if (helperPollTimer) return;
   helperPollTimer = setInterval(() => {
-    refreshHelperStatus(true).then(() => {
-      if (helperOk) stopHelperPoll();
-    });
-  }, 2800);
+    refreshHelperStatus(true).catch(() => {});
+  }, intervalMs);
+}
+
+function updateHelperOutDirUi(outDir) {
+  if (outDir) helperOutDirCache = String(outDir);
+  const el = $("#setHelperOutDir");
+  if (!el) return;
+  el.textContent = helperOutDirCache
+    ? helperOutDirCache
+    : helperOk
+      ? "연결됨 (경로 미보고)"
+      : "도우미 꺼짐 — 실행 후 여기에 표시됩니다";
 }
 
 async function refreshHelperStatus(force = false) {
@@ -346,7 +360,8 @@ async function refreshHelperStatus(force = false) {
     isSitePage(currentTabUrl) ||
     allItems.some((i) => i.isSiteDownload || i.site) ||
     !!$("#linkInput")?.value ||
-    helperBar.classList.contains("warn");
+    helperBar.classList.contains("warn") ||
+    helperWasOk === false;
   const fixBtn = $("#btnHelperFix");
   const startBtn = $("#btnHelperStart");
   const recheckBtn = $("#btnHelperRecheck");
@@ -355,46 +370,66 @@ async function refreshHelperStatus(force = false) {
     fixBtn?.classList.add("hidden");
     startBtn?.classList.add("hidden");
     recheckBtn?.classList.add("hidden");
-    stopHelperPoll();
+    // Slow poll so reconnect / disconnect still surfaces
+    if (!helperPollTimer) startHelperPoll(8000);
     return;
   }
   helperBar.classList.remove("hidden");
   helperBar.classList.remove("ok", "warn");
-  if (helperText) helperText.textContent = "도우미 확인 중…";
+  if (helperText && !force) helperText.textContent = "도우미 확인 중…";
   try {
     const h = await chrome.runtime.sendMessage({ type: "YTDLP_HEALTH", force });
-    helperOk = !!(h?.ok && h?.ytdlp);
+    const nowOk = !!(h?.ok && h?.ytdlp);
+    if (h?.outDir) helperOutDirCache = String(h.outDir);
+    updateHelperOutDirUi(helperOutDirCache);
+    // Reconnected while popup open
+    if (helperWasOk === false && nowOk) {
+      toast("도우미 연결됨 — YouTube 등 받기 가능", "ok");
+    }
+    helperWasOk = nowOk;
+    helperOk = nowOk;
     if (helperOk) {
       helperBar.classList.add("ok");
       if (helperText) {
+        const pathHint = h.outDir
+          ? ` · ${String(h.outDir).replace(/\/$/, "").split(/[/\\]/).slice(-2).join("/")}`
+          : "";
         helperText.textContent = `도우미 준비됨${
           h.ytdlpVersion ? ` · yt-dlp ${h.ytdlpVersion}` : ""
-        }`;
+        }${pathHint}`;
       }
       fixBtn?.classList.add("hidden");
       startBtn?.classList.add("hidden");
       recheckBtn?.classList.add("hidden");
+      // Stay on slow poll to notice if helper dies
       stopHelperPoll();
+      startHelperPoll(8000);
     } else {
       helperBar.classList.add("warn");
       if (helperText) {
-        helperText.textContent = "도우미 꺼짐 — 실행 파일 저장 후 더블클릭";
+        helperText.textContent = "도우미 꺼짐 — 실행 파일 저장 후 더블클릭 (자동 재확인 중)";
       }
       fixBtn?.classList.remove("hidden");
       startBtn?.classList.remove("hidden");
       recheckBtn?.classList.remove("hidden");
-      startHelperPoll();
+      stopHelperPoll();
+      startHelperPoll(2800);
     }
   } catch {
+    const was = helperOk;
     helperOk = false;
+    helperWasOk = false;
     helperBar.classList.add("warn");
     if (helperText) {
-      helperText.textContent = "도우미 꺼짐 — 실행 파일 저장 후 더블클릭";
+      helperText.textContent = "도우미 꺼짐 — 실행 파일 저장 후 더블클릭 (자동 재확인 중)";
     }
     fixBtn?.classList.remove("hidden");
     startBtn?.classList.remove("hidden");
     recheckBtn?.classList.remove("hidden");
-    startHelperPoll();
+    updateHelperOutDirUi("");
+    stopHelperPoll();
+    startHelperPoll(2800);
+    if (was) toast("도우미 연결이 끊겼습니다", "error");
   }
 }
 
@@ -879,6 +914,11 @@ function qualityPickerHtml() {
   }
   const singleConcrete =
     opts.length === 1 && opts[0].id !== "best";
+  // Bare "최고" only — resolution unknown (common on 123av before play)
+  const bareBestOnly =
+    opts.length === 1 &&
+    (opts[0].id === "best" || /^최고/.test(String(opts[0].label || ""))) &&
+    !(Number(opts[0].height) >= 240);
   return `
     <div class="quality-picker" id="qualityPicker">
       <span class="quality-label">화질 선택${
@@ -886,8 +926,15 @@ function qualityPickerHtml() {
           ? ` <span class="quality-hint-inline">이 영상 화질</span>`
           : opts.length > 1
             ? ` <span class="quality-hint-inline">실제 가능 화질만 표시</span>`
-            : ""
+            : bareBestOnly
+              ? ` <span class="quality-hint-inline">화질 미확인</span>`
+              : ""
       }</span>
+      ${
+        bareBestOnly
+          ? `<p class="quality-hint quality-hint-warn">화질을 특정하지 못했습니다. 페이지에서 <strong>재생</strong>한 뒤 「다시 확인」을 누르세요.</p>`
+          : ""
+      }
       <div class="quality-chips" role="group" aria-label="화질 선택">
         ${opts
           .map((q) => {
@@ -909,6 +956,11 @@ function qualityPickerHtml() {
             )}">${escapeHtml(chip)}</button>`;
           })
           .join("")}
+        ${
+          bareBestOnly
+            ? `<button type="button" class="q-chip q-chip-action" id="btnReprobeQuality" title="플레이어 해상도·스트림 다시 확인">다시 확인</button>`
+            : ""
+        }
       </div>
     </div>`;
 }
@@ -2387,7 +2439,7 @@ function updateFooterNote() {
   if (!el) return;
   const folder = uvdSettings.subfolder || "VideoDownloader";
   const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.22.0`;
+  el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.23.3`;
 }
 
 function fillSettingsForm() {
@@ -2407,6 +2459,15 @@ function fillSettingsForm() {
   if (notify) notify.checked = uvdSettings.notifyOnComplete !== false;
   if (clip) clip.checked = !!uvdSettings.clipboardWatch;
   if (warnDup) warnDup.checked = uvdSettings.warnDuplicates !== false;
+  updateHelperOutDirUi(helperOutDirCache);
+  // Refresh helper path when opening settings
+  chrome.runtime
+    .sendMessage({ type: "YTDLP_HEALTH", force: false })
+    .then((h) => {
+      if (h?.outDir) helperOutDirCache = String(h.outDir);
+      updateHelperOutDirUi(helperOutDirCache);
+    })
+    .catch(() => updateHelperOutDirUi(""));
   const saveThumb = $("#setSaveThumb");
   if (saveThumb) saveThumb.checked = uvdSettings.saveThumbnail !== false;
   const density = $("#setUiDensity");
@@ -3175,6 +3236,11 @@ function rebuildSeriesVisibleItems() {
   } catch {
     annotated = all;
   }
+  // "빠진 편만" — hide already-downloaded from the list
+  let pool = annotated;
+  if (seriesPending.missingOnly) {
+    pool = annotated.filter((x) => !x.downloaded);
+  }
   // Preserve user selection across rebuild when possible
   const prevSel = new Map(
     (seriesPending.items || []).map((x, i) => [
@@ -3182,13 +3248,15 @@ function rebuildSeriesVisibleItems() {
       x.selected
     ])
   );
-  const windowed = annotated.slice(0, limit).map((x, i) => {
+  const windowed = pool.slice(0, limit).map((x, i) => {
     const k = String(x.id || x.key || x.url || i);
     let selected = x.selected;
     if (prevSel.has(k)) selected = prevSel.get(k);
     // Downloaded default off unless user re-checked
     if (x.downloaded && !prevSel.has(k)) selected = false;
     if (selected == null) selected = !x.downloaded;
+    // missingOnly view: default all selected
+    if (seriesPending.missingOnly && !prevSel.has(k)) selected = true;
     return {
       ...x,
       index: i,
@@ -3289,6 +3357,32 @@ function renderSeriesRangeChips() {
     const r = btn.getAttribute("data-range");
     btn.classList.toggle("active", r === pref);
   });
+  const miss = $("#btnSeriesMissingOnly");
+  if (miss) {
+    miss.classList.toggle("active", !!seriesPending.missingOnly);
+    miss.setAttribute("aria-pressed", seriesPending.missingOnly ? "true" : "false");
+  }
+}
+
+function toggleSeriesMissingOnly(on) {
+  if (!seriesPending) return;
+  seriesPending.missingOnly =
+    on == null ? !seriesPending.missingOnly : !!on;
+  rebuildSeriesVisibleItems();
+  renderSeriesRangeChips();
+  renderSeriesListBody();
+  updateSeriesGoButton();
+  const sub = $("#seriesBannerSub");
+  if (sub && !seriesPending.loading) {
+    const items = seriesPending.items || [];
+    const totalAll = (seriesPending.allItems || []).length;
+    const doneN = (seriesPending.allItems || []).filter((x) => x.downloaded).length;
+    if (seriesPending.missingOnly) {
+      sub.textContent = `빠진 편만 · ${items.length}편${
+        doneN ? ` (받음 ${doneN} 숨김)` : ""
+      } · 전체 ${totalAll}`;
+    }
+  }
 }
 
 function renderSeriesListBody() {
@@ -5699,13 +5793,29 @@ function userError(err) {
   if (!err) return null;
   const s = String(err);
 
+  // Prefer shared classifier (helper / 403 / DRM / incomplete / …)
+  try {
+    if (typeof UVD?.classifyError === "function") {
+      const meta = UVD.classifyError(s);
+      if (meta && meta.code && meta.code !== "other") {
+        const label = meta.label || "";
+        const hint = meta.hint || "";
+        if (label && hint) return `${label} — ${hint}`;
+        if (label) return label;
+        if (hint) return hint;
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+
   if (/파일 저장 실패|다운로드 시작 실패|Invalid filename|invalid filename|filename/i.test(s)) {
     return "파일 저장에 실패했습니다. 확장 프로그램을 새로고침한 뒤 다시 받아 주세요 (파일명·권한 문제일 수 있음)";
   }
   if (/다운로드가 완료되지 않았습니다|chrome:\/\/downloads/i.test(s)) {
     return "다운로드가 중간에 끊겼습니다. chrome://downloads 에서 확인하거나 다시 받아 주세요";
   }
-  if (/파일이 너무 작|세그먼트 부족|병합 결과/i.test(s)) {
+  if (/파일이 너무 작|세그먼트 부족|병합 결과|빈 파일/i.test(s)) {
     return "영상 데이터가 불완전합니다. 페이지에서 재생을 누른 뒤 다시 받아 주세요";
   }
   if (/403|접근 거부|Segment HTTP/i.test(s)) {
@@ -5974,7 +6084,44 @@ function render() {
   }
 
   card.querySelectorAll(".q-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
+    chip.addEventListener("click", async () => {
+      if (chip.id === "btnReprobeQuality" || chip.classList.contains("q-chip-action")) {
+        chip.disabled = true;
+        const prev = chip.textContent;
+        chip.textContent = "확인 중…";
+        try {
+          // Rescan page so player height lands on media items
+          if (currentTabId != null) {
+            await chrome.tabs
+              .sendMessage(currentTabId, { type: "SCAN_NOW" })
+              .catch(() => null);
+            await new Promise((r) => setTimeout(r, 400));
+            const media = await chrome.runtime
+              .sendMessage({
+                type: "GET_MEDIA",
+                tabId: currentTabId,
+                pageUrl: currentTabUrl
+              })
+              .catch(() => null);
+            if (media?.items?.length) allItems = media.items;
+          }
+          await loadAvailableQualities(allItems[0] || item);
+          render();
+          if (isOnlyBareBest(availableQualities)) {
+            toast("아직 화질을 못 읽었습니다. 재생 후 다시 확인해 주세요", "error");
+          } else {
+            toast(
+              `화질: ${formatQualityChipLabel(availableQualities[0])}`,
+              "ok"
+            );
+          }
+        } catch {
+          toast("화질 확인 실패", "error");
+          chip.disabled = false;
+          chip.textContent = prev || "다시 확인";
+        }
+        return;
+      }
       selectedQuality = chip.getAttribute("data-quality") || "best";
       // Re-render so filename + active chip update
       render();
@@ -6896,6 +7043,10 @@ $("#btnSeriesSelNone")?.addEventListener("click", () =>
 $("#seriesRange")?.addEventListener("click", (e) => {
   const btn = e.target?.closest?.(".series-range-chip");
   if (!btn) return;
+  if (btn.id === "btnSeriesMissingOnly") {
+    toggleSeriesMissingOnly();
+    return;
+  }
   const r = btn.getAttribute("data-range");
   if (r) setSeriesRange(r);
 });

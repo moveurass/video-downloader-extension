@@ -7,3 +7,7 @@ node_modules/
 .idea/
 .vscode/
 *.zip
+# Local agent / workspace junk
+youtube/
+paseo.json
+**/.paseo/

@@ -97,10 +97,11 @@
           <button type="button" class="series-range-chip" data-range="5">5</button>
           <button type="button" class="series-range-chip" data-range="10">10</button>
           <button type="button" class="series-range-chip" data-range="all">전체</button>
+          <button type="button" class="series-range-chip series-missing-chip" id="btnSeriesMissingOnly" aria-pressed="false" title="이미 받은 편 숨기기">빠진 편만</button>
         </div>
         <div class="series-select-actions">
           <button type="button" id="btnSeriesSelAll" class="btn ghost tiny">전체</button>
-          <button type="button" id="btnSeriesSelPending" class="btn ghost tiny">미받음</button>
+          <button type="button" id="btnSeriesSelPending" class="btn ghost tiny">미받음 선택</button>
           <button type="button" id="btnSeriesSelNone" class="btn ghost tiny">해제</button>
         </div>
       </div>
@@ -278,8 +279,13 @@
       <label class="field">
         <span class="field-label">저장 폴더 (다운로드 아래)</span>
         <input id="setSubfolder" class="field-input" type="text" placeholder="VideoDownloader" />
-        <span class="field-hint">예: VideoDownloader 또는 VideoDownloader/YouTube</span>
+        <span class="field-hint">예: VideoDownloader 또는 VideoDownloader/YouTube · 브라우저 저장</span>
       </label>
+      <div class="field">
+        <span class="field-label">도우미 저장 위치 (yt-dlp)</span>
+        <code id="setHelperOutDir" class="field-preview">확인 중…</code>
+        <span class="field-hint">로컬 도우미가 실제로 쓰는 폴더 · 연결 시 자동 표시</span>
+      </div>
       <label class="field">
         <span class="field-label">파일명 템플릿</span>
         <input
@@ -488,7 +494,7 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.23.2</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.23.3</p>
   </footer>
 
   <script src="uvd-common.js"></script>

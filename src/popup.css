@@ -1057,6 +1057,24 @@ h1 {
   opacity: 0.85;
 }
 
+.quality-hint-warn {
+  color: var(--warn, #c47b00);
+  opacity: 1;
+  line-height: 1.35;
+  margin: 4px 0 2px;
+}
+
+.q-chip-action {
+  border-style: dashed;
+  color: var(--accent, #3b82f6);
+}
+
+.series-missing-chip.active {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+  border-color: transparent;
+}
+
 .quality-chips {
   display: flex;
   flex-wrap: wrap;

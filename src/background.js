@@ -1310,6 +1310,25 @@ function updateDownloadJob(jobId, patch) {
 function finishDownloadJob(jobId, result, error) {
   const job = activeDownloads.get(jobId);
   if (!job) return;
+
+  // Post-download size guard (blob/HLS). yt-dlp may omit size — only fail when known-small.
+  if (!error && result) {
+    const sz = Number(result.size) || 0;
+    const method = String(result.method || result.source || "");
+    const isBlobish =
+      /hls|blob|page|fetch|merge|offscreen|tab/i.test(method) ||
+      (!method && result.blob);
+    if (sz > 0 && sz < 100_000) {
+      error = new Error(
+        `파일이 너무 작습니다 (${Math.round(sz / 1024)}KB) — 불완전한 다운로드`
+      );
+      result = null;
+    } else if (isBlobish && sz <= 0) {
+      error = new Error("빈 파일은 저장할 수 없습니다");
+      result = null;
+    }
+  }
+
   if (error) {
     job.status = "error";
     job.phase = "error";
@@ -1318,6 +1337,8 @@ function finishDownloadJob(jobId, result, error) {
     job.percent = job.percent || 0;
     const meta = UVD.classifyError(job.error);
     job.errorCode = meta.code;
+    job.errorLabel = meta.label || "";
+    job.errorHint = meta.hint || "";
   } else {
     job.status = "done";
     job.phase = "done";
@@ -1325,6 +1346,8 @@ function finishDownloadJob(jobId, result, error) {
     job.result = result || null;
     job.error = null;
     job.errorCode = null;
+    job.errorLabel = null;
+    job.errorHint = null;
     // Surface the real saved name so the popup can show what finished
     const savedName =
       result?.filename ||
@@ -1434,15 +1457,27 @@ async function notifyDownloadFinished(job, result, error) {
       notifActions.delete(first);
     }
 
+    let failMsg = String(error?.message || job?.error || "실패");
+    try {
+      const meta = UVD.classifyError(failMsg);
+      if (meta?.code && meta.code !== "other") {
+        failMsg = meta.hint
+          ? `${meta.label} — ${meta.hint}`
+          : meta.label || failMsg;
+      }
+    } catch {
+      /* keep raw */
+    }
+
     await chrome.notifications.create(notifId, {
       type: "basic",
       iconUrl: chrome.runtime.getURL("icons/icon128.png"),
       title: ok ? "저장 완료" : "다운로드 실패",
       message: ok
         ? `${title}${sizeTxt ? ` · ${sizeTxt}` : ""}\n클릭하면 폴더를 엽니다`
-        : `${title}\n${String(error?.message || job?.error || "실패").slice(0, 100)}`,
-      priority: 1,
-      requireInteraction: false
+        : `${title}\n${failMsg.slice(0, 120)}`,
+      priority: ok ? 1 : 2,
+      requireInteraction: !ok
     });
   } catch (e) {
     console.warn("[UVD] notify", e);
@@ -5331,9 +5366,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                   }
                 }
 
-                // Sibling master playlist may list RESOLUTION (…/playlist.m3u8 ↔ master)
+                // Sibling / parent master playlists may list RESOLUTION
                 if (!lab) {
                   const candidates = [];
+                  const pushCand = (c) => {
+                    if (c && c !== url && !candidates.includes(c)) candidates.push(c);
+                  };
                   try {
                     const u = new URL(url);
                     const base = u.href.replace(/[^/]+$/, "");
@@ -5341,25 +5379,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                       "master.m3u8",
                       "playlist.m3u8",
                       "index.m3u8",
-                      "hls.m3u8"
+                      "hls.m3u8",
+                      "stream.m3u8",
+                      "video.m3u8"
                     ]) {
-                      const cand = base + name;
-                      if (cand !== url && !candidates.includes(cand)) {
-                        candidates.push(cand);
-                      }
+                      pushCand(base + name);
                     }
                     // Parent dir master (…/720p/index.m3u8 → …/playlist.m3u8)
-                    const parent = base.replace(/\/[^/]+\/$/, "/");
+                    let parent = base.replace(/\/[^/]+\/$/, "/");
                     if (parent && parent !== base) {
+                      for (const name of [
+                        "master.m3u8",
+                        "playlist.m3u8",
+                        "index.m3u8"
+                      ]) {
+                        pushCand(parent + name);
+                      }
+                    }
+                    // Strip quality folder: …/720p/video.m3u8 → …/playlist.m3u8
+                    const stripped = u.href.replace(
+                      /\/(?:2160|1440|1080|720|480|360|240)p?(?:\/|$)/i,
+                      "/"
+                    );
+                    if (stripped !== u.href) {
+                      const sb = stripped.replace(/[^/]+$/, "");
+                      for (const name of ["master.m3u8", "playlist.m3u8", "index.m3u8"]) {
+                        pushCand(sb + name);
+                      }
+                    }
+                    // Grandparent (uuid/quality/file → uuid/)
+                    parent = parent.replace(/\/[^/]+\/$/, "/");
+                    if (parent) {
                       for (const name of ["master.m3u8", "playlist.m3u8"]) {
-                        const cand = parent + name;
-                        if (!candidates.includes(cand)) candidates.push(cand);
+                        pushCand(parent + name);
                       }
                     }
                   } catch {
                     /* ignore */
                   }
-                  for (const cand of candidates.slice(0, 4)) {
+                  for (const cand of candidates.slice(0, 8)) {
                     try {
                       const mi = await withTabReferer(tid, () => HLS.probe(cand));
                       if (mi?.kind === "master" && mi.variants?.length) {

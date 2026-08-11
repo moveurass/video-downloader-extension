@@ -904,23 +904,23 @@ const UVD = (() => {
 
   function classifyError(msg) {
     const s = String(msg || "");
-    if (/도우미|8787|yt-dlp not|start\.command|install_autostart|연결할 수 없|헬퍼/i.test(s)) {
+    if (/도우미|8787|yt-dlp not|start\.command|install_autostart|연결할 수 없|헬퍼|ECONNREFUSED|Failed to fetch.*8787/i.test(s)) {
       return {
         code: "helper",
         label: "로컬 도우미 필요",
-        hint: "아래 「도우미 실행」으로 안내·다시 확인하세요",
+        hint: "「도우미 실행」파일로 켠 뒤 자동 재연결을 기다리거나 다시 확인하세요",
         actions: ["helper_start", "helper", "retry"]
       };
     }
-    if (/login|cookie|로그인|not logged|인증|Instagram 인증/i.test(s)) {
+    if (/login|cookie|로그인|not logged|인증|Instagram 인증|Sign in|age.?restrict/i.test(s)) {
       return {
         code: "login",
-        label: "로그인 필요",
+        label: "로그인·인증 필요",
         hint: "사이트에 로그인한 뒤 「다시 받기」를 누르세요",
         actions: ["login", "retry"]
       };
     }
-    if (/403|401|접근 거부|Segment HTTP|CDN이 접근|조각 접근/i.test(s)) {
+    if (/403|401|접근 거부|Segment HTTP|CDN이 접근|조각 접근|Forbidden|Access denied/i.test(s)) {
       return {
         code: "forbidden",
         label: "접근 거부 (403)",
@@ -928,7 +928,15 @@ const UVD = (() => {
         actions: ["play_retry", "open_page", "retry"]
       };
     }
-    if (/DRM|SAMPLE-AES|Widevine|보호된 영상/i.test(s)) {
+    if (/429|rate.?limit|너무 많은 요청|quota/i.test(s)) {
+      return {
+        code: "rate_limit",
+        label: "요청 제한",
+        hint: "잠시 후 다시 시도해 주세요",
+        actions: ["retry"]
+      };
+    }
+    if (/DRM|SAMPLE-AES|Widevine|보호된 영상|encrypted media/i.test(s)) {
       return {
         code: "drm",
         label: "보호된 영상",
@@ -936,7 +944,7 @@ const UVD = (() => {
         actions: []
       };
     }
-    if (/시간 초과|timeout/i.test(s)) {
+    if (/시간 초과|timeout|ETIMEDOUT|aborted|AbortError/i.test(s)) {
       return {
         code: "timeout",
         label: "시간 초과",
@@ -944,7 +952,15 @@ const UVD = (() => {
         actions: ["retry"]
       };
     }
-    if (/Unsupported URL|지원하지 않는|게시물 링크가 아니|감지된 영상이 없/i.test(s)) {
+    if (/network|ERR_NETWORK|Failed to fetch|ENOTFOUND|DNS|오프라인|internet/i.test(s)) {
+      return {
+        code: "network",
+        label: "네트워크 오류",
+        hint: "연결을 확인한 뒤 다시 시도하세요",
+        actions: ["retry"]
+      };
+    }
+    if (/Unsupported URL|지원하지 않는|게시물 링크가 아니|감지된 영상이 없|No video formats/i.test(s)) {
       return {
         code: "bad_url",
         label: "주소·감지 문제",
@@ -952,12 +968,20 @@ const UVD = (() => {
         actions: ["play_retry", "open_page", "retry"]
       };
     }
-    if (/너무 작|세그먼트 부족|유효한 세그먼트/i.test(s)) {
+    if (/너무 작|세그먼트 부족|유효한 세그먼트|빈 파일|불완전/i.test(s)) {
       return {
         code: "incomplete",
         label: "불완전한 다운로드",
-        hint: "재생 후 다시 시도해 주세요",
+        hint: "재생 후 다시 시도해 주세요 (파일이 비었거나 너무 작음)",
         actions: ["play_retry", "open_page", "retry"]
+      };
+    }
+    if (/디스크|ENOSPC|quota exceeded|저장 공간|No space/i.test(s)) {
+      return {
+        code: "disk",
+        label: "저장 공간 부족",
+        hint: "디스크 여유 공간을 확보한 뒤 다시 받으세요",
+        actions: ["retry"]
       };
     }
     if (/PAUSED|일시정지/i.test(s)) {
