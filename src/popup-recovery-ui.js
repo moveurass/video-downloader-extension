@@ -30,7 +30,7 @@
     }
     if (actions.includes("resume") && job?.id) {
       buttons.push(
-        `<button type="button" class="btn" data-act="resume" data-job="${escapeAttr(job.id)}">다시 시작</button>`
+        `<button type="button" class="btn" data-act="resume" data-job="${escapeAttr(job.id)}">이어받기</button>`
       );
     }
     return buttons.length ? `<div class="dl-job-actions">${buttons.join("")}</div>` : "";

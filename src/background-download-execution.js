@@ -239,7 +239,21 @@
 
       let workTabId = tabId;
       let openedTab = false;
-      let best = null;
+      let best =
+        forceOpts.resume &&
+        forceOpts.mediaUrl &&
+        /^https?:/i.test(forceOpts.mediaUrl)
+          ? {
+              url: forceOpts.mediaUrl,
+              type: /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(forceOpts.mediaUrl)
+                ? "stream"
+                : "video",
+              isHls: /\.m3u8(?:[?#]|$)/i.test(forceOpts.mediaUrl),
+              pageUrl,
+              title: forceOpts.title || "",
+              filename
+            }
+          : null;
       const scan = async (targetTabId) => {
         if (targetTabId == null || targetTabId < 0) return null;
         try {
@@ -256,7 +270,7 @@
         return (await deps.getMediaForTabAsync(targetTabId, { pageUrl }))?.[0] || null;
       };
 
-      if (tabId != null && tabId >= 0) {
+      if (!best?.url && tabId != null && tabId >= 0) {
         try {
           const tab = await deps.chrome.tabs.get(tabId);
           if (tab?.url && sameVideoPage(tab.url, pageUrl)) {
@@ -286,7 +300,9 @@
       if (!best?.url && forceOpts.mediaUrl && /^https?:/i.test(forceOpts.mediaUrl)) {
         best = {
           url: forceOpts.mediaUrl,
-          type: /\.m3u8/i.test(forceOpts.mediaUrl) ? "stream" : "video",
+          type: /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(forceOpts.mediaUrl)
+            ? "stream"
+            : "video",
           isHls: /\.m3u8/i.test(forceOpts.mediaUrl),
           pageUrl,
           title: forceOpts.title || "",

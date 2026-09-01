@@ -126,6 +126,8 @@ const downloadJobManager = UVDBackgroundDownloadJobs.createManager({
   downloadPageFromUi: (...args) => downloadPageFromUi(...args),
   startKeepAlive: (...args) => startKeepAlive(...args),
   stopKeepAlive: (...args) => stopKeepAlive(...args),
+  cleanupResumeState: (state) =>
+    state?.partBase ? idbDeleteParts(state.partBase) : Promise.resolve(),
   console
 });
 const {
@@ -324,6 +326,7 @@ const {
   idbDeleteBlob,
   idbPartKey,
   idbPutPart,
+  idbListParts,
   idbDeleteParts,
   downloadPartsViaTab,
   downloadBlobViaTab,
@@ -388,6 +391,7 @@ const { runHlsDownload } = UVDBackgroundHlsRuntime.createRunner({
   openBlobDb,
   idbPutPart,
   idbPartKey,
+  idbListParts,
   idbDeleteParts,
   downloadPartsViaTab,
   downloadBlob

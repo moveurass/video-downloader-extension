@@ -846,6 +846,8 @@ def run_download(job_id: str, payload: dict) -> None:
             "-o",
             outtmpl,
             "--no-overwrites",
+            "--continue",
+            "--part",
             "--ignore-config",
             "--no-mtime",
             "--retries",
@@ -867,7 +869,7 @@ def run_download(job_id: str, payload: dict) -> None:
                     "--downloader",
                     "aria2c",
                     "--downloader-args",
-                    "aria2c:-x 16 -s 16 -k 1M -j 16 --file-allocation=none --min-split-size=1M",
+                    "aria2c:-c true -x 16 -s 16 -k 1M -j 16 --file-allocation=none --min-split-size=1M",
                 ]
             )
         # Playlist: only when explicitly requested (batch paste of playlist URLs)
