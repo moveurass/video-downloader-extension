@@ -17,7 +17,9 @@
       saveCompanionThumbnail,
       downloadPageFromUi,
       startKeepAlive,
-      stopKeepAlive
+      stopKeepAlive,
+      cleanupResumeState,
+      waitForChromeDownload
     } = deps;
     const now = deps.now || Date.now;
     const schedule = deps.setTimeout || setTimeout;
@@ -60,6 +62,18 @@
         speedBps: job.speedBps || 0,
         speedLabel: job.speedBps ? UVD.formatSpeed(job.speedBps) : "",
         estimatedSize: job.estimatedSize || 0,
+        resumeState: job.resumeState
+          ? {
+              kind: job.resumeState.kind,
+              downloadId: job.resumeState.downloadId ?? null,
+              url: job.resumeState.url || "",
+              quality: job.resumeState.quality || "",
+              partBase: job.resumeState.partBase || "",
+              parts: job.resumeState.parts || {},
+              bytesReceived: job.resumeState.bytesReceived || 0,
+              totalBytes: job.resumeState.totalBytes || 0
+            }
+          : null,
         result: job.result
           ? {
               ok: job.result.ok,
@@ -75,6 +89,38 @@
         updatedAt: job.updatedAt
       };
     }
+
+    async function restorePausedJobs() {
+      const storage =
+        chrome.storage?.session?.get
+          ? chrome.storage.session
+          : chrome.storage?.local?.get
+            ? chrome.storage.local
+            : null;
+      if (!storage) return;
+      try {
+        const data = await storage.get("uvdActiveDownloads");
+        const saved = Array.isArray(data?.uvdActiveDownloads)
+          ? data.uvdActiveDownloads
+          : [];
+        for (const item of saved) {
+          if (!item?.id || item.status !== "paused") continue;
+          activeDownloads.set(item.id, {
+            ...item,
+            status: "paused",
+            phase: "paused",
+            pauseRequested: true,
+            cancelRequested: false,
+            resumeState: item.resumeState || null,
+            _restoredFromStorage: true
+          });
+        }
+      } catch {
+        // Session recovery is best-effort.
+      }
+    }
+
+    const ready = restorePausedJobs();
 
     function throwIfJobStopped(jobId) {
       if (!jobId) return;
@@ -98,7 +144,7 @@
       if (job.status === "cancelled" || job.status === "done") return;
       job.status = "paused";
       job.phase = "paused";
-      job.message = "일시정지됨 · 다시 시작 가능";
+      job.message = "일시정지됨 · 이어받기 가능";
       job.pauseRequested = true;
       job.cancelRequested = false;
       job.error = null;
@@ -169,6 +215,7 @@
     }
 
     async function cancelDownloadJob(jobId) {
+      await ready;
       const job = activeDownloads.get(jobId);
       if (!job) return { ok: false, error: "작업 없음" };
       if (job.status === "done" || job.status === "cancelled") {
@@ -190,18 +237,29 @@
           // Helper may already have stopped.
         }
       }
-      if (job.result?.downloadId != null) {
+      const chromeDownloadId =
+        job.resumeState?.kind === "direct"
+          ? job.resumeState.downloadId
+          : job.result?.downloadId;
+      if (chromeDownloadId != null) {
         try {
-          chrome.downloads.cancel(job.result.downloadId);
+          await chrome.downloads.cancel(chromeDownloadId);
         } catch {
           // Chrome download may already be terminal.
         }
       }
+      if (job.resumeState?.kind === "hls") {
+        await Promise.resolve(cleanupResumeState?.(job.resumeState)).catch(
+          () => {}
+        );
+      }
+      delete job.resumeState;
       finishCancelledJob(jobId);
       return { ok: true, status: "cancelled" };
     }
 
     async function pauseDownloadJob(jobId) {
+      await ready;
       const job = activeDownloads.get(jobId);
       if (!job) return { ok: false, error: "작업 없음" };
       if (job.status !== "running") {
@@ -211,6 +269,31 @@
       job.cancelRequested = false;
       job.message = "일시정지 중…";
       job.updatedAt = now();
+      const directDownloadId =
+        job.resumeState?.kind === "direct"
+          ? job.resumeState.downloadId
+          : null;
+      if (directDownloadId != null) {
+        try {
+          await chrome.downloads.pause(directDownloadId);
+        } catch (error) {
+          job.pauseRequested = false;
+          job.message = String(
+            error?.message || "이 서버는 직접 다운로드 일시정지를 지원하지 않습니다"
+          );
+          job.updatedAt = now();
+          persistJobs();
+          broadcastJob(job);
+          return { ok: false, error: job.message };
+        }
+        finalizePausedJob(jobId);
+        return {
+          ok: true,
+          status: "paused",
+          resumeKind: "http-range",
+          bytesReceived: job.resumeState?.bytesReceived || 0
+        };
+      }
       try {
         jobAbortControllers.get(jobId)?.abort();
       } catch {
@@ -237,10 +320,75 @@
     }
 
     async function resumeDownloadJob(jobId) {
+      await ready;
       const job = activeDownloads.get(jobId);
       if (!job) return { ok: false, error: "작업 없음" };
       if (job.status !== "paused") {
         return { ok: false, error: "일시정지된 항목만 다시 시작할 수 있습니다" };
+      }
+      const directDownloadId =
+        job.resumeState?.kind === "direct"
+          ? job.resumeState.downloadId
+          : null;
+      if (directDownloadId != null) {
+        try {
+          await chrome.downloads.resume(directDownloadId);
+        } catch (error) {
+          return {
+            ok: false,
+            error: String(
+              error?.message ||
+                "서버가 HTTP Range 이어받기를 지원하지 않아 다시 시작할 수 없습니다"
+            )
+          };
+        }
+        job.status = "running";
+        job.phase = "download";
+        job.message = "이어받는 중…";
+        job.pauseRequested = false;
+        job.cancelRequested = false;
+        job.error = null;
+        job._nextProgressAttempt = true;
+        job.updatedAt = now();
+        persistJobs();
+        broadcastJob(job);
+        updateDownloadBadge();
+        if (job._restoredFromStorage && waitForChromeDownload) {
+          delete job._restoredFromStorage;
+          const keep = startKeepAlive();
+          Promise.resolve(waitForChromeDownload(directDownloadId))
+            .then((result) => {
+              const current = activeDownloads.get(jobId);
+              if (current?.pauseRequested) {
+                finalizePausedJob(jobId);
+                return;
+              }
+              finishDownloadJob(
+                jobId,
+                {
+                  ok: true,
+                  downloadId: directDownloadId,
+                  filename: job.filename,
+                  path: result?.path || "",
+                  size: result?.bytesReceived || job.resumeState?.totalBytes || 0,
+                  method: "chrome-downloads"
+                },
+                null
+              );
+            })
+            .catch((error) => {
+              const current = activeDownloads.get(jobId);
+              if (current?.pauseRequested) finalizePausedJob(jobId);
+              else finishDownloadJob(jobId, null, error);
+            })
+            .finally(() => stopKeepAlive(keep));
+        }
+        return {
+          ok: true,
+          status: "running",
+          resumeKind: "http-range",
+          bytesReceived: job.resumeState?.bytesReceived || 0
+        };
       }
       const pageUrl = job.pageUrl || "";
       if (!pageUrl || !/^https?:/i.test(pageUrl)) {
@@ -248,8 +396,10 @@
       }
       job.status = "running";
       job.phase = "start";
-      job.percent = 0;
-      job.message = "다시 시작…";
+      job.message =
+        job.resumeState?.kind === "hls"
+          ? "저장된 조각부터 이어받는 중…"
+          : "부분 파일부터 이어받는 중…";
       job.pauseRequested = false;
       job.cancelRequested = false;
       job.error = null;
@@ -265,7 +415,8 @@
         downloadPageFromUi(job.tabId, pageUrl, job.quality || "best", jobId, {
           mediaMode: job.mediaMode,
           mediaUrl: job.mediaUrl || "",
-          title: job.title || ""
+          title: job.title || "",
+          resume: true
         })
       )
         .then((result) => {
@@ -869,6 +1020,7 @@
     bindNotificationListener();
 
     return {
+      ready,
       activeDownloads,
       tabJobMap,
       jobAbortControllers,

@@ -30,7 +30,7 @@
     }
     if (actions.includes("resume") && job?.id) {
       buttons.push(
-        `<button type="button" class="btn" data-act="resume" data-job="${escapeAttr(job.id)}">다시 시작</button>`
+        `<button type="button" class="btn" data-act="resume" data-job="${escapeAttr(job.id)}">이어받기</button>`
       );
     }
     return buttons.length ? `<div class="dl-job-actions">${buttons.join("")}</div>` : "";
@@ -175,7 +175,7 @@
                 ...job,
                 id: jobId,
                 status: "paused",
-                message: "일시정지됨 · 다시 시작 가능",
+                message: "일시정지됨 · 이어받기 가능",
                 phase: "paused"
               }, { toast: false, forceStructure: true, local: true });
             }
@@ -194,11 +194,11 @@
             button.disabled = true;
             const response = await deps.sendMessage({ type: "RESUME_DOWNLOAD", jobId });
             if (response?.ok === false) {
-              deps.toast(response.error || "다시 시작 실패", "error");
+              deps.toast(response.error || "이어받기 실패", "error");
               button.disabled = false;
               return;
             }
-            deps.toast("다시 시작합니다", "ok");
+            deps.toast("이어받습니다", "ok");
             deps.ensureQueuePoll();
             await deps.refreshJobsFromBackground();
             return;

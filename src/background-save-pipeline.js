@@ -430,6 +430,45 @@
       });
     }
 
+    /** List stored part indexes and sizes for a resumable transfer. */
+    async function idbListParts(baseKey) {
+      const db = await openBlobDb();
+      try {
+        return await new Promise((resolve, reject) => {
+          const parts = [];
+          const tx = db.transaction(IDB_STORE, "readonly");
+          const range = IDBKeyRange.bound(
+            `${baseKey}:p:`,
+            `${baseKey}:p:\uffff`
+          );
+          const req = tx.objectStore(IDB_STORE).openCursor(range);
+          req.onsuccess = () => {
+            const cursor = req.result;
+            if (!cursor) return;
+            const match = String(cursor.key).match(/:p:(\d+)$/);
+            if (match) {
+              parts.push({
+                index: Number(match[1]),
+                size: Number(cursor.value?.size || 0)
+              });
+            }
+            cursor.continue();
+          };
+          tx.oncomplete = () => resolve(parts);
+          tx.onerror = () =>
+            reject(tx.error || new Error("IndexedDB 조각 조회 실패"));
+          tx.onabort = () =>
+            reject(tx.error || new Error("IndexedDB 조각 조회 중단"));
+        });
+      } finally {
+        try {
+          db.close();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+
     /** Delete every stored part for a base key (cleanup after save / on error). */
     async function idbDeleteParts(baseKey) {
       try {
@@ -665,6 +704,7 @@
       idbDeleteBlob,
       idbPartKey,
       idbPutPart,
+      idbListParts,
       idbDeleteParts,
       downloadPartsViaTab,
       downloadBlobViaTab,

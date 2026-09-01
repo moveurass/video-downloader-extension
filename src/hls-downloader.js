@@ -773,6 +773,8 @@ const HLS = (() => {
     // overlaps disk writes with network instead of one giant write at the end.
     const streamOut =
       typeof options.onSegmentData === "function" ? options.onSegmentData : null;
+    const resumeParts =
+      options.resumeParts instanceof Map ? options.resumeParts : new Map();
     let streamedCount = 0;
     let streamedBytes = 0;
 
@@ -790,20 +792,33 @@ const HLS = (() => {
     if (parsed.mapUri) {
       onProgress({ phase: "init", current: 0, total: 1, message: "초기화 중…" });
       try {
-        const initBuf = await fetchBuffer(parsed.mapUri, requestInit);
-        if (streamOut) {
-          await streamOut(0, initBuf);
-          if (initBuf?.byteLength) {
-            streamedCount += 1;
-            streamedBytes += initBuf.byteLength;
-          }
-        } else {
-          parts.push(initBuf);
-        }
-        if (initBuf?.byteLength) {
-          bytesReceived += initBuf.byteLength;
-          sampleBytes += initBuf.byteLength;
+        const cachedInit = resumeParts.get(0);
+        const reuseInit =
+          streamOut &&
+          cachedInit?.size > 0 &&
+          cachedInit.sourceUrl === parsed.mapUri;
+        if (reuseInit) {
+          streamedCount += 1;
+          streamedBytes += cachedInit.size;
+          bytesReceived += cachedInit.size;
+          sampleBytes += cachedInit.size;
           sampleCount += 1;
+        } else {
+          const initBuf = await fetchBuffer(parsed.mapUri, requestInit);
+          if (streamOut) {
+            await streamOut(0, initBuf, { sourceUrl: parsed.mapUri });
+            if (initBuf?.byteLength) {
+              streamedCount += 1;
+              streamedBytes += initBuf.byteLength;
+            }
+          } else {
+            parts.push(initBuf);
+          }
+          if (initBuf?.byteLength) {
+            bytesReceived += initBuf.byteLength;
+            sampleBytes += initBuf.byteLength;
+            sampleCount += 1;
+          }
         }
       } catch (e) {
         throw new Error(
@@ -882,6 +897,15 @@ const HLS = (() => {
       concurrency,
       async (seg, index) => {
         shouldStop();
+        const partIndex = index + 1;
+        const cached = resumeParts.get(partIndex);
+        if (
+          streamOut &&
+          cached?.size > 0 &&
+          cached.sourceUrl === seg.url
+        ) {
+          return { byteLength: cached.size, resumed: true };
+        }
         let lastErr;
         // Up to 4 attempts with backoff; first 403s trigger slower mode
         for (let attempt = 0; attempt < 4; attempt++) {
@@ -902,7 +926,7 @@ const HLS = (() => {
             }
             if (streamOut) {
               // Part 0 is reserved for the init segment (mapUri)
-              await streamOut(index + 1, data);
+              await streamOut(partIndex, data, { sourceUrl: seg.url });
               return { byteLength: data.byteLength };
             }
             return data;

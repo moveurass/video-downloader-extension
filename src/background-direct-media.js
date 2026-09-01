@@ -180,7 +180,7 @@
       };
     }
 
-    async function downloadMedia(url, filename) {
+    async function downloadMedia(url, filename, jid = null) {
       if (!url) throw new Error("받을 주소가 없습니다");
       if (url.startsWith("blob:")) throw new Error("이 형식은 바로 받을 수 없습니다");
       if (/\.m3u8(\?|$|#)/i.test(url) || /\.mpd(\?|$|#)/i.test(url)) {
@@ -193,12 +193,49 @@
       } catch {
         id = await startChromeDownload(url, name);
       }
-      const done = await waitDownloadComplete(id, 60000);
+      const job = jid ? activeDownloads.get(jid) : null;
+      if (job) {
+        job.resumeState = {
+          kind: "direct",
+          downloadId: id,
+          url
+        };
+      }
+      const done = await waitDownloadComplete(id, 40 * 60 * 1000, {
+        onProgress: ({ bytesReceived = 0, totalBytes = 0 }) => {
+          if (job) {
+            job.resumeState = {
+              kind: "direct",
+              downloadId: id,
+              url,
+              bytesReceived,
+              totalBytes
+            };
+          }
+          if (totalBytes > 0) {
+            const percent = Math.min(
+              98,
+              Math.max(15, Math.round((bytesReceived / totalBytes) * 98))
+            );
+            emitDownloadProgress(
+              job?.tabId ?? -1,
+              percent,
+              `받는 중… ${Math.round(bytesReceived / (1024 * 1024))}/${Math.round(
+                totalBytes / (1024 * 1024)
+              )}MB`,
+              "download",
+              jid
+            );
+          }
+        }
+      });
+      if (job?.resumeState?.downloadId === id) delete job.resumeState;
       return {
         downloadId: id,
         filename: name,
         path: done.path,
-        state: done.state
+        state: done.state,
+        size: done.bytesReceived || 0
       };
     }
 

@@ -126,9 +126,14 @@ const downloadJobManager = UVDBackgroundDownloadJobs.createManager({
   downloadPageFromUi: (...args) => downloadPageFromUi(...args),
   startKeepAlive: (...args) => startKeepAlive(...args),
   stopKeepAlive: (...args) => stopKeepAlive(...args),
+  cleanupResumeState: (state) =>
+    state?.partBase ? idbDeleteParts(state.partBase) : Promise.resolve(),
+  waitForChromeDownload: (downloadId) =>
+    waitDownloadComplete(downloadId, 40 * 60 * 1000),
   console
 });
 const {
+  ready: downloadJobsReady,
   activeDownloads,
   tabJobMap,
   jobAbortControllers,
@@ -324,6 +329,7 @@ const {
   idbDeleteBlob,
   idbPartKey,
   idbPutPart,
+  idbListParts,
   idbDeleteParts,
   downloadPartsViaTab,
   downloadBlobViaTab,
@@ -388,6 +394,7 @@ const { runHlsDownload } = UVDBackgroundHlsRuntime.createRunner({
   openBlobDb,
   idbPutPart,
   idbPartKey,
+  idbListParts,
   idbDeleteParts,
   downloadPartsViaTab,
   downloadBlob
@@ -423,7 +430,10 @@ const handleDownloadMessage = UVDDownloadMessages.createHandler({
   cancel: cancelDownloadJob,
   pause: pauseDownloadJob,
   resume: resumeDownloadJob,
-  list: listActiveDownloads,
+  list: async () => {
+    await downloadJobsReady;
+    return listActiveDownloads();
+  },
   progress: (tabId) =>
     hlsProgress.get(-1) ||
     (tabId != null ? hlsProgress.get(tabId) : null)

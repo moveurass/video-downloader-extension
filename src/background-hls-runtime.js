@@ -26,6 +26,7 @@
       openBlobDb,
       idbPutPart,
       idbPartKey,
+      idbListParts,
       idbDeleteParts,
       downloadPartsViaTab,
       downloadBlob
@@ -171,12 +172,53 @@
       // arrive — avoids holding the whole file in SW memory and removes the
       // single giant post-download write. Falls back to the in-memory blob
       // path when IDB is unavailable.
-      const partBase = `hls_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const resumeJob = jid ? activeDownloads.get(jid) : null;
+      const resumeQuality = preferQuality || "best";
+      const previousResume = resumeJob?.resumeState;
+      const canReusePrevious =
+        previousResume?.kind === "hls" &&
+        previousResume.url === url &&
+        previousResume.quality === resumeQuality;
+      if (previousResume?.partBase && !canReusePrevious) {
+        await idbDeleteParts(previousResume.partBase);
+      }
+      const partBase =
+        (canReusePrevious && previousResume.partBase) ||
+        (jid
+          ? `hls_${String(jid).replace(/[^a-z0-9_-]/gi, "_")}`
+          : `hls_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
       let partDb = null;
+      let resumeParts = new Map();
       try {
         partDb = await openBlobDb();
+        if (canReusePrevious) {
+          const storedParts = await idbListParts(partBase);
+          for (const stored of storedParts) {
+            const metadata = previousResume.parts?.[stored.index];
+            if (
+              stored.size > 0 &&
+              metadata?.sourceUrl &&
+              Number(metadata.size) === stored.size
+            ) {
+              resumeParts.set(stored.index, {
+                size: stored.size,
+                sourceUrl: metadata.sourceUrl
+              });
+            }
+          }
+        }
+        if (resumeJob) {
+          resumeJob.resumeState = {
+            kind: "hls",
+            url,
+            quality: resumeQuality,
+            partBase,
+            parts: canReusePrevious ? { ...(previousResume.parts || {}) } : {}
+          };
+        }
       } catch {
         partDb = null;
+        resumeParts = new Map();
       }
 
       let result;
@@ -195,9 +237,16 @@
           },
           allowPartial: true,
           speedProfile: settingsForSpeed?.downloadSpeed || "fast",
+          resumeParts,
           onSegmentData: partDb
-            ? async (idx, data) => {
+            ? async (idx, data, metadata = {}) => {
                 await idbPutPart(partDb, idbPartKey(partBase, idx), data);
+                if (resumeJob?.resumeState?.partBase === partBase) {
+                  resumeJob.resumeState.parts[idx] = {
+                    size: Number(data?.byteLength || data?.size || 0),
+                    sourceUrl: metadata.sourceUrl || ""
+                  };
+                }
               }
             : undefined,
           onProgress: (p) => {
@@ -207,7 +256,16 @@
           }
         });
       } catch (e) {
-        idbDeleteParts(partBase);
+        const paused =
+          e?.code === "PAUSED" ||
+          resumeJob?.pauseRequested ||
+          resumeJob?.status === "paused";
+        if (!paused) {
+          await idbDeleteParts(partBase);
+          if (resumeJob?.resumeState?.partBase === partBase) {
+            delete resumeJob.resumeState;
+          }
+        }
         throw e;
       } finally {
         try {
@@ -296,6 +354,9 @@
             onProgress: saveProgress
           })
         : await downloadBlob(result.blob, name, { onProgress: saveProgress });
+      if (resumeJob?.resumeState?.partBase === partBase) {
+        delete resumeJob.resumeState;
+      }
       setProg({ phase: "done", percent: 100, message: "저장 완료" });
       setTimeout(() => hlsProgress.delete(key), 3000);
 

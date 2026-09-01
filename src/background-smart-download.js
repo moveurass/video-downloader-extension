@@ -308,8 +308,8 @@
 
       try {
         const saved = await withTimeout(
-          withTabReferer(tabId, () => downloadMedia(workUrl, filename)),
-          90000,
+          withTabReferer(tabId, () => downloadMedia(workUrl, filename, jid)),
+          40 * 60 * 1000,
           "다운로드 시간 초과"
         );
         emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);

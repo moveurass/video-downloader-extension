@@ -27,11 +27,34 @@
           return runAsync(() => deps.pause(id), sendResponse);
         case "RESUME_DOWNLOAD":
           return runAsync(() => deps.resume(id), sendResponse);
-        case "GET_ACTIVE_DOWNLOADS":
-          sendResponse({ ok: true, jobs: deps.list() });
+        case "GET_ACTIVE_DOWNLOADS": {
+          const jobs = deps.list();
+          if (jobs && typeof jobs.then === "function") {
+            return runAsync(
+              async () => ({ ok: true, jobs: await jobs }),
+              sendResponse
+            );
+          }
+          sendResponse({ ok: true, jobs });
           return { handled: true, keepChannel: false };
+        }
         case "GET_DOWNLOAD_PROGRESS": {
           const jobs = deps.list();
+          if (jobs && typeof jobs.then === "function") {
+            return runAsync(async () => {
+              const resolved = await jobs;
+              const job =
+                resolved.find((item) => item.status === "running") ||
+                resolved[0] ||
+                null;
+              return {
+                ok: true,
+                jobs: resolved,
+                job,
+                progress: deps.progress(message.tabId) || null
+              };
+            }, sendResponse);
+          }
           const job =
             jobs.find((item) => item.status === "running") || jobs[0] || null;
           sendResponse({
