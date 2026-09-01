@@ -283,7 +283,12 @@ async function main() {
     "https://x.com/user/status/1",
     "Readable.mp4",
     "1080p",
-    "job-1"
+    "job-1",
+    {
+      mediaMode: "video_subs",
+      audioTrackId: "251",
+      subtitleLanguages: ["ko", "ja"]
+    }
   );
   equal(helperTimeout, 40 * 60 * 1000);
   equal(helperPayload.site, "x");
@@ -292,6 +297,8 @@ async function main() {
   equal(helperPayload.filename, "Readable.mp4");
   equal(helperPayload.quality, "1080p");
   equal(helperPayload.writeSubs, true);
+  equal(helperPayload.audioTrackId, "251");
+  deepEqual(helperPayload.subtitleLanguages, ["ko", "ja"]);
   equal(helperPayload.yesPlaylist, true);
   equal(job.helperJobId, "helper-1");
   deepEqual(progress.at(-3).slice(1, 4), [98, "파일 합치는 중… (시간이 걸릴 수 있어요)", "download"]);

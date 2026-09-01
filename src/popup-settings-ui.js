@@ -114,6 +114,7 @@
         const sub = $("#setSubfolder");
         const tpl = $("#setTemplate");
         const mode = $("#setMediaMode");
+        const maxHistory = $("#setMaxHistory");
         const notify = $("#setNotify");
         const clip = $("#setClipboard");
         const warnDup = $("#setWarnDup");
@@ -124,6 +125,9 @@
           tpl.value = "legacy";
         }
         if (mode) mode.value = uvdSettings.mediaMode || "video";
+        if (maxHistory) {
+          maxHistory.value = String(uvdSettings.maxHistory || 50);
+        }
         if (notify) notify.checked = uvdSettings.notifyOnComplete !== false;
         if (clip) clip.checked = !!uvdSettings.clipboardWatch;
         if (warnDup) warnDup.checked = uvdSettings.warnDuplicates !== false;
@@ -232,6 +236,8 @@
             $("#setSubfolder")?.value?.trim() || "VideoDownloader",
           filenameTemplate: template,
           mediaMode: $("#setMediaMode")?.value || "video",
+          maxHistory:
+            parseInt($("#setMaxHistory")?.value || "50", 10) || 50,
           notifyOnComplete: $("#setNotify")?.checked !== false,
           clipboardWatch: !!$("#setClipboard")?.checked,
           warnDuplicates: $("#setWarnDup")?.checked !== false,

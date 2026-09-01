@@ -72,7 +72,11 @@
           pageUrl: pageUrl || item?.pageUrl || url,
           mediaUrl: url || "",
           filename: fname,
-          quality: msg.preferQuality || "best"
+          quality: msg.preferQuality || "best",
+          audioTrackId: msg.audioTrackId || "",
+          subtitleLanguages: Array.isArray(msg.subtitleLanguages)
+            ? msg.subtitleLanguages
+            : []
         },
         async (jobId) => {
           let workTab = tid;
@@ -103,7 +107,11 @@
               {
                 pageUrl,
                 preferYtDlp,
-                jobId
+                jobId,
+                audioTrackId: msg.audioTrackId || "",
+                subtitleLanguages: Array.isArray(msg.subtitleLanguages)
+                  ? msg.subtitleLanguages
+                  : []
               }
             );
             if (r?.method === "yt-dlp" || r?.ytdlp) {

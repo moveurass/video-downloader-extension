@@ -9,13 +9,11 @@
     "tabs",
     "scripting",
     "webRequest",
-    "activeTab",
     "alarms",
     "contextMenus",
     "cookies",
     "notifications",
-    "declarativeNetRequest",
-    "declarativeNetRequestWithHostAccess"
+    "declarativeNetRequest"
   ],
   "host_permissions": [
     "<all_urls>"

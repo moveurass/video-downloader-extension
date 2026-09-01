@@ -31,6 +31,8 @@
         metaRowsHtml,
         estimateBarHtml,
         qualityPickerHtml,
+        trackPickerHtml = () => "",
+        bindTrackPicker = () => {},
         isOnlyBareBest,
         formatQualityChipLabel,
         loadAvailableQualities,
@@ -147,6 +149,7 @@
     </div>
     ${estimateBarHtml(item, getQualitiesLoading())}
     ${qualityPickerHtml()}
+    ${trackPickerHtml()}
     <div class="card-actions card-actions-row">
       <button type="button" class="btn primary btn-dl">${escapeHtml(btnLabel)}</button>
       <button type="button" class="btn btn-watch" title="나중에 받기">나중</button>
@@ -226,6 +229,7 @@
             render();
           });
         });
+        bindTrackPicker(card);
 
         card.querySelector(".btn-dl").addEventListener("click", async (event) => {
           if (!canStartAnotherDownload()) {

@@ -18,6 +18,10 @@
         writeSubs: mediaMode === "video_subs",
         writeThumbnail: saveThumb && mediaMode !== "audio",
         mediaMode,
+        audioTrackId: force.audioTrackId || "",
+        subtitleLanguages: Array.isArray(force.subtitleLanguages)
+          ? force.subtitleLanguages
+          : [],
         codecPref: s.codecPref || "best",
         speedProfile: s.downloadSpeed || force.speedProfile || "fast",
         yesPlaylist: deps.UVD.isPlaylistOnlyUrl

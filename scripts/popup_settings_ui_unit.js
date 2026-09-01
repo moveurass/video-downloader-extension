@@ -40,6 +40,7 @@ function makeHarness(overrides = {}) {
       subfolder: "Saved",
       filenameTemplate: "legacy",
       mediaMode: "audio",
+      maxHistory: 25,
       notifyOnComplete: false,
       clipboardWatch: true,
       warnDuplicates: false,
@@ -72,6 +73,7 @@ function makeHarness(overrides = {}) {
     "#setSubfolder": { value: "" },
     "#setTemplate": { value: "" },
     "#setMediaMode": select(["video", "audio", "video_subs"]),
+    "#setMaxHistory": select(["10", "25", "50", "100"]),
     "#setNotify": {},
     "#setClipboard": {},
     "#setWarnDup": {},
@@ -243,6 +245,7 @@ async function main() {
     const harness = makeHarness();
     harness.elements["#setSubfolder"].value = "  New Folder  ";
     harness.elements["#setMediaMode"].value = "video_subs";
+    harness.elements["#setMaxHistory"].value = "25";
     harness.elements["#setNotify"].checked = true;
     harness.elements["#setClipboard"].checked = false;
     harness.elements["#setWarnDup"].checked = true;
@@ -273,6 +276,7 @@ async function main() {
       subfolder: "New Folder",
       filenameTemplate: "legacy",
       mediaMode: "video_subs",
+      maxHistory: 25,
       notifyOnComplete: true,
       clipboardWatch: false,
       warnDuplicates: true,
@@ -340,6 +344,7 @@ async function main() {
       subfolder: "VideoDownloader",
       filenameTemplate: "legacy",
       mediaMode: "video",
+      maxHistory: 50,
       notifyOnComplete: true,
       clipboardWatch: false,
       warnDuplicates: true,

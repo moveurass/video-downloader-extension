@@ -1064,6 +1064,38 @@ h1 {
   margin: 4px 0 2px;
 }
 
+.track-picker {
+  display: grid;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface2);
+}
+
+.track-field {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.track-options {
+  display: grid;
+  gap: 4px;
+  max-height: 112px;
+  overflow: auto;
+}
+
+.track-option {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text);
+}
+
 .q-chip-action {
   border-style: dashed;
   color: var(--accent, #3b82f6);

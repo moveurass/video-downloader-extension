@@ -233,7 +233,13 @@
           filename || undefined,
           quality,
           jid,
-          { mediaMode }
+          {
+            mediaMode,
+            audioTrackId: forceOpts.audioTrackId || "",
+            subtitleLanguages: Array.isArray(forceOpts.subtitleLanguages)
+              ? forceOpts.subtitleLanguages
+              : []
+          }
         );
       }
 
@@ -371,7 +377,15 @@
           quality,
           mediaMode === "audio" ? "audio" : best.type || "video",
           boundItem,
-          { pageUrl, jobId: jid, forceMediaMode: mediaMode }
+          {
+            pageUrl,
+            jobId: jid,
+            forceMediaMode: mediaMode,
+            audioTrackId: forceOpts.audioTrackId || "",
+            subtitleLanguages: Array.isArray(forceOpts.subtitleLanguages)
+              ? forceOpts.subtitleLanguages
+              : []
+          }
         );
       } finally {
         if (openedTab && workTabId != null) {

@@ -56,6 +56,54 @@ jobs_lock = threading.Lock()
 process_map: dict[str, subprocess.Popen] = {}
 COOKIE_DIR = Path(os.environ.get("UVD_COOKIE_DIR", HOME / ".cache" / "uvd-helper"))
 COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+PAIR_FILE = COOKIE_DIR / "pairing.json"
+pairing_lock = threading.Lock()
+
+
+def load_auto_pairing() -> dict[str, str]:
+    if AUTH_TOKEN:
+        return {}
+    try:
+        data = json.loads(PAIR_FILE.read_text(encoding="utf-8"))
+        origin = str(data.get("origin") or "")
+        token = str(data.get("token") or "")
+        if re.fullmatch(r"chrome-extension://[a-p]{32}", origin) and len(token) >= 32:
+            return {"origin": origin, "token": token}
+    except Exception:
+        pass
+    return {}
+
+
+auto_pairing = load_auto_pairing()
+
+
+def pair_extension(origin: str, token: str) -> tuple[bool, str]:
+    """Pin the first extension origin and its locally generated token."""
+    global auto_pairing
+    if AUTH_TOKEN:
+        return False, "manual token configured"
+    if not re.fullmatch(r"chrome-extension://[a-p]{32}", origin or ""):
+        return False, "invalid extension origin"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or ""):
+        return False, "invalid pairing token"
+    with pairing_lock:
+        if auto_pairing:
+            if auto_pairing.get("origin") != origin:
+                return False, "helper already paired"
+            if auto_pairing.get("token") != token:
+                return False, "pairing token mismatch"
+            return True, ""
+        auto_pairing = {"origin": origin, "token": token}
+        try:
+            PAIR_FILE.write_text(
+                json.dumps(auto_pairing, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            os.chmod(PAIR_FILE, 0o600)
+        except Exception as error:
+            auto_pairing = {}
+            return False, f"could not save pairing: {error}"
+    return True, ""
 
 
 def request_cancel_job(job_id: str) -> bool:
@@ -492,13 +540,19 @@ def origin_allowed(origin: str) -> bool:
         return True
     if ALLOWED_ORIGIN_EXACT:
         return origin == ALLOWED_ORIGIN_EXACT
+    if auto_pairing.get("origin"):
+        return origin == auto_pairing["origin"]
     return origin.startswith("chrome-extension://")
 
 
 def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
     if not origin_allowed((handler.headers.get("Origin") or "").strip()):
         return False
-    if AUTH_TOKEN and (handler.headers.get("X-UVD-Token") or "").strip() != AUTH_TOKEN:
+    expected_token = AUTH_TOKEN or auto_pairing.get("token") or ""
+    if (
+        expected_token
+        and (handler.headers.get("X-UVD-Token") or "").strip() != expected_token
+    ):
         return False
     return True
 
@@ -529,6 +583,86 @@ def send_json(handler: BaseHTTPRequestHandler, code: int, payload: dict) -> None
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
+
+
+def collect_track_choices(info: dict) -> tuple[list[dict], list[dict]]:
+    """Return stable, user-selectable yt-dlp audio and subtitle tracks."""
+    entries = info.get("entries") or [info]
+    audio_by_id: dict[str, dict] = {}
+    subtitle_by_id: dict[str, dict] = {}
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for fmt in entry.get("formats") or []:
+            if not isinstance(fmt, dict):
+                continue
+            format_id = str(fmt.get("format_id") or "").strip()
+            acodec = str(fmt.get("acodec") or "none")
+            vcodec = str(fmt.get("vcodec") or "none")
+            if (
+                format_id
+                and acodec != "none"
+                and vcodec == "none"
+                and re.fullmatch(r"[A-Za-z0-9._-]{1,100}", format_id)
+            ):
+                language = str(fmt.get("language") or "und")
+                note = str(
+                    fmt.get("format_note")
+                    or fmt.get("format")
+                    or acodec.split(".")[0]
+                )
+                channels = fmt.get("audio_channels")
+                label = f"{language} · {note}"
+                if channels:
+                    label += f" · {channels}ch"
+                audio_by_id.setdefault(
+                    format_id,
+                    {
+                        "id": format_id,
+                        "label": label[:120],
+                        "language": language,
+                        "codec": acodec,
+                        "channels": channels,
+                    },
+                )
+
+        for automatic, key in (
+            (False, "subtitles"),
+            (True, "automatic_captions"),
+        ):
+            for language, tracks in (entry.get(key) or {}).items():
+                language = str(language or "").strip()
+                if not language or language in subtitle_by_id:
+                    continue
+                first = (tracks or [{}])[0] if isinstance(tracks, list) else {}
+                name = str((first or {}).get("name") or language)
+                ext = str((first or {}).get("ext") or "")
+                suffix = "자동" if automatic else "자막"
+                label = f"{name} · {suffix}"
+                if ext:
+                    label += f" · {ext}"
+                subtitle_by_id[language] = {
+                    "id": language,
+                    "label": label[:120],
+                    "language": language,
+                    "automatic": automatic,
+                    "ext": ext,
+                }
+
+    def language_rank(track: dict) -> tuple[int, str]:
+        language = str(track.get("language") or "").lower()
+        if language.startswith("ko"):
+            return (0, language)
+        if language.startswith("en"):
+            return (1, language)
+        if language == "und":
+            return (3, language)
+        return (2, language)
+
+    audio_tracks = sorted(audio_by_id.values(), key=language_rank)[:40]
+    subtitle_tracks = sorted(subtitle_by_id.values(), key=language_rank)[:60]
+    return audio_tracks, subtitle_tracks
 
 
 def run_download(job_id: str, payload: dict) -> None:
@@ -796,6 +930,18 @@ def run_download(job_id: str, payload: dict) -> None:
         else:
             merge_fmt = "mp4"
 
+    audio_only = bool(
+        payload.get("audioOnly") or payload.get("mediaMode") == "audio"
+    )
+    selected_audio_track = str(payload.get("audioTrackId") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", selected_audio_track):
+        selected_audio_track = ""
+    if selected_audio_track and not audio_only:
+        height_cap = ""
+        if quality.endswith("p") and quality[:-1].isdigit():
+            height_cap = f"[height<=?{quality[:-1]}]"
+        fmt = f"bv*{height_cap}+{selected_audio_track}"
+
     # Concurrent DASH/HLS fragments — higher = faster when CDN allows.
     # YouTube handles high parallelism well; other CDNs get a solid middle ground.
     # (Was 16 / 4 — raised for throughput without dropping quality.)
@@ -815,10 +961,15 @@ def run_download(job_id: str, payload: dict) -> None:
 
     referer = page_url or payload.get("referer") or ""
 
-    audio_only = bool(payload.get("audioOnly") or payload.get("mediaMode") == "audio")
+    selected_subtitle_languages = [
+        str(language).strip()
+        for language in (payload.get("subtitleLanguages") or [])
+        if re.fullmatch(r"[A-Za-z0-9._-]{1,40}", str(language).strip())
+    ][:20]
     write_subs = bool(
         payload.get("writeSubs")
         or payload.get("mediaMode") in ("video_subs", "video+subs", "subs")
+        or selected_subtitle_languages
     )
     write_thumbnail = bool(payload.get("writeThumbnail")) and not audio_only
     yes_playlist = bool(payload.get("yesPlaylist") or payload.get("playlist"))
@@ -883,7 +1034,7 @@ def run_download(job_id: str, payload: dict) -> None:
             c.extend(
                 [
                     "-f",
-                    "ba/b",
+                    selected_audio_track or "ba/b",
                     "-x",
                     "--audio-format",
                     "mp3",
@@ -901,7 +1052,9 @@ def run_download(job_id: str, payload: dict) -> None:
                     "--write-subs",
                     "--write-auto-subs",
                     "--sub-langs",
-                    "ko.*,en.*,ko,en",
+                    ",".join(selected_subtitle_languages)
+                    if selected_subtitle_languages
+                    else "ko.*,en.*,ko,en",
                     "--convert-subs",
                     "srt",
                     "--embed-subs",
@@ -997,6 +1150,8 @@ def run_download(job_id: str, payload: dict) -> None:
             ("bv*+ba/b", "mkv", []),
             ("best", "mp4", []),
         ]
+    if selected_audio_track:
+        attempts = [(fmt, merge_fmt, [])]
     # de-dupe by (format, extra-key)
     seen_key = set()
     uniq_attempts = []
@@ -1333,6 +1488,13 @@ class Handler(BaseHTTPRequestHandler):
                     "ytdlpVersion": ytdlp_version(bin_path) if bin_path else None,
                     "outDir": str(OUT_DIR),
                     "port": PORT,
+                    "pairingMode": (
+                        "manual"
+                        if AUTH_TOKEN
+                        else "paired"
+                        if auto_pairing
+                        else "available"
+                    ),
                 },
             )
             return
@@ -1365,6 +1527,16 @@ class Handler(BaseHTTPRequestHandler):
         send_json(self, 404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
+        if self.path == "/pair" or self.path.startswith("/pair?"):
+            origin = (self.headers.get("Origin") or "").strip()
+            payload = read_json(self)
+            ok, error = pair_extension(origin, str(payload.get("token") or ""))
+            send_json(
+                self,
+                200 if ok else 409,
+                {"ok": ok, "error": error or None, "pairingMode": "paired" if ok else "manual" if AUTH_TOKEN else "unavailable"},
+            )
+            return
         if not request_authorized(self):
             send_json(self, 403, {"ok": False, "error": "forbidden origin"})
             return
@@ -1668,6 +1840,7 @@ class Handler(BaseHTTPRequestHandler):
                 or info.get("thumbnail")
                 or ""
             )
+            audio_tracks, subtitle_tracks = collect_track_choices(info)
 
             send_json(
                 self,
@@ -1681,6 +1854,8 @@ class Handler(BaseHTTPRequestHandler):
                     "thumbnail": thumb or "",
                     "heights": sorted(heights, reverse=True),
                     "qualities": qualities,
+                    "audioTracks": audio_tracks,
+                    "subtitleTracks": subtitle_tracks,
                 },
             )
             return

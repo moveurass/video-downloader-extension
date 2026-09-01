@@ -186,7 +186,13 @@ async function main() {
     duration: 90,
     estimatedSize: 10485760,
     title: "Resolved title",
-    thumbnail: "https://img.example/thumb.jpg"
+    thumbnail: "https://img.example/thumb.jpg",
+    audioTracks: [
+      { id: "251", label: "en · opus", language: "en" }
+    ],
+    subtitleTracks: [
+      { id: "ko", label: "한국어 · 자막", language: "ko" }
+    ]
   });
   await c.loadAvailableQualities(h.getAllItems()[0]);
   check(h.runtimeMessages.at(-1), {
@@ -206,6 +212,37 @@ async function main() {
   );
   check(c.getSelectedQuality(), "best", "probe selection default");
   check(c.getQualitiesLoading(), false, "probe clears loading");
+  check(c.getAvailableAudioTracks()[0].id, "251", "audio tracks retained");
+  check(c.getAvailableSubtitleTracks()[0].id, "ko", "subtitle tracks retained");
+  check(c.trackPickerHtml().includes('value="251"'), true, "audio picker rendered");
+  check(
+    c.trackPickerHtml().includes('data-subtitle-track="ko"'),
+    true,
+    "subtitle picker rendered"
+  );
+  let audioChange;
+  let subtitleChange;
+  const audioSelect = {
+    value: "251",
+    addEventListener: (_name, listener) => {
+      audioChange = listener;
+    }
+  };
+  const subtitleInput = {
+    checked: true,
+    getAttribute: () => "ko",
+    addEventListener: (_name, listener) => {
+      subtitleChange = listener;
+    }
+  };
+  c.bindTrackPicker({
+    querySelector: () => audioSelect,
+    querySelectorAll: () => [subtitleInput]
+  });
+  audioChange();
+  subtitleChange();
+  check(c.getSelectedAudioTrack(), "251", "audio selection retained");
+  check(c.getSelectedSubtitleTracks(), ["ko"], "subtitle selection retained");
   check(
     {
       title: h.getAllItems()[0].title,

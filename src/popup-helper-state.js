@@ -84,7 +84,7 @@
         if (helperText && !force) helperText.textContent = "도우미 확인 중…";
         try {
           const h = await deps.sendMessage({ type: "YTDLP_HEALTH", force });
-          const nowOk = !!(h?.ok && h?.ytdlp);
+          const nowOk = !!(h?.ok && h?.ytdlp && !h?.authRequired);
           if (h?.outDir) helperOutDirCache = String(h.outDir);
           updateHelperOutDirUi(helperOutDirCache);
           // Reconnected while popup open
@@ -112,8 +112,9 @@
           } else {
             helperBar.classList.add("warn");
             if (helperText) {
-              helperText.textContent =
-                "도우미 꺼짐 — 실행 파일 저장 후 더블클릭 (자동 재확인 중)";
+              helperText.textContent = h?.authRequired
+                ? h.pairingError || "도우미 페어링을 다시 설정해 주세요"
+                : "도우미 꺼짐 — 실행 파일 저장 후 더블클릭 (자동 재확인 중)";
             }
             fixBtn?.classList.remove("hidden");
             startBtn?.classList.remove("hidden");

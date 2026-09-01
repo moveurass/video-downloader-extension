@@ -45,6 +45,8 @@
         getCurrentTabId,
         getCurrentTabUrl,
         getSelectedQuality,
+        getSelectedAudioTrack,
+        getSelectedSubtitleTracks,
         getHelperOk,
         getUvdSettings
       } = deps;
@@ -143,6 +145,8 @@
             preferQuality: selectedQuality || "best",
             mediaType: item.type,
             preferYtDlp: useHelper,
+            audioTrackId: getSelectedAudioTrack?.() || undefined,
+            subtitleLanguages: getSelectedSubtitleTracks?.() || [],
             title,
             autoHls: !useHelper
           });
@@ -463,6 +467,8 @@
               preferQuality: preferQ,
               mediaType: isHls || isDash ? "stream" : "video",
               preferYtDlp: false,
+              audioTrackId: getSelectedAudioTrack?.() || undefined,
+              subtitleLanguages: getSelectedSubtitleTracks?.() || [],
               openPageIfNeeded: true,
               title: realTitle || displayLabel
             });
