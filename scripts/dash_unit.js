@@ -71,6 +71,8 @@ async function main() {
     filename: "episode.mp4",
     title: "episode.mp4",
     quality: "1080p",
+    audioTrackId: undefined,
+    subtitleLanguages: [],
     cookieHeader: "session=ok",
     codecPref: "h264",
     speedProfile: "safe"

@@ -308,7 +308,9 @@ async function main() {
     pageUrl: "https://example.com/watch",
     mediaUrl: "https://cdn.example.com/master.m3u8",
     filename: "고정 이름.mp4",
-    quality: "1080p"
+    quality: "1080p",
+    audioTrackId: "",
+    subtitleLanguages: []
   });
   assert.equal(directReply, directResponse);
   directItem.title = "나중 제목";
@@ -339,7 +341,9 @@ async function main() {
     {
       pageUrl: "https://example.com/watch",
       preferYtDlp: true,
-      jobId: "job-direct"
+      jobId: "job-direct",
+      audioTrackId: "",
+      subtitleLanguages: []
     }
   ]]);
   assert.deepEqual(delays, [400]);

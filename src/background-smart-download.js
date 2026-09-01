@@ -50,7 +50,14 @@
           pageUrl,
           filename,
           preferQuality,
-          jid
+          jid,
+          {
+            mediaMode: options.forceMediaMode,
+            audioTrackId: options.audioTrackId || "",
+            subtitleLanguages: Array.isArray(options.subtitleLanguages)
+              ? options.subtitleLanguages
+              : []
+          }
         );
         emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
         return result;
@@ -72,7 +79,14 @@
             pageUrl || url,
             filename,
             preferQuality,
-            jid
+            jid,
+            {
+              mediaMode: options.forceMediaMode,
+              audioTrackId: options.audioTrackId || "",
+              subtitleLanguages: Array.isArray(options.subtitleLanguages)
+                ? options.subtitleLanguages
+                : []
+            }
           );
         } catch (e) {
           // For YT/TT do not fall through to broken browser paths unless helper said optional

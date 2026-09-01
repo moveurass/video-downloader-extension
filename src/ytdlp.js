@@ -36,6 +36,40 @@ const YtDlp = (() => {
     return cachedToken ? { "X-UVD-Token": cachedToken } : {};
   }
 
+  function generatePairToken() {
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  async function pairIfAvailable(healthData) {
+    await authHeaders();
+    if (cachedToken || healthData?.pairingMode !== "available") {
+      return healthData;
+    }
+    const token = generatePairToken();
+    try {
+      const response = await fetch(`${BASE}/pair`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        return { ...healthData, pairingError: data.error || "pairing failed" };
+      }
+      await chrome.storage.local.set({ helperToken: token });
+      cachedToken = token;
+      tokenLoaded = true;
+      return { ...healthData, pairingMode: "paired", pairedNow: true };
+    } catch (error) {
+      return {
+        ...healthData,
+        pairingError: String(error?.message || error || "pairing failed")
+      };
+    }
+  }
+
   async function health(force = false) {
     const now = Date.now();
     if (!force && cachedHealth && now - cachedAt < 4000) return cachedHealth;
@@ -45,7 +79,16 @@ const YtDlp = (() => {
       const res = await fetch(`${BASE}/health`, { signal: ctrl.signal });
       clearTimeout(t);
       if (!res.ok) throw new Error("bad status");
-      cachedHealth = await res.json();
+      cachedHealth = await pairIfAvailable(await res.json());
+      if (cachedHealth?.pairingMode === "paired" && !cachedToken) {
+        cachedHealth = {
+          ...cachedHealth,
+          authRequired: true,
+          pairingError:
+            cachedHealth.pairingError ||
+            "도우미가 다른 확장 설치와 연결되어 있습니다"
+        };
+      }
       cachedAt = now;
       return cachedHealth;
     } catch {
@@ -57,7 +100,7 @@ const YtDlp = (() => {
 
   async function available() {
     const h = await health();
-    return !!(h && h.ok && h.ytdlp);
+    return !!(h && h.ok && h.ytdlp && !h.authRequired);
   }
 
   async function startDownload(payload) {

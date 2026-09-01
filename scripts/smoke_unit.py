@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "helper"))
 from name_utils import clean_name  # noqa: E402
+import yt_dlp_server as helper_server  # noqa: E402
 
 OK = 0
 FAIL = 0
@@ -32,6 +34,48 @@ def main() -> int:
     check("clean_name path", clean_name("VideoDownloader/foo.mp4") == "foo")
     check("clean_name empty-ish", clean_name(".mp4") == "video")
     check("clean_name korean", clean_name("시리즈 제목.mp4") == "시리즈 제목")
+
+    audio_tracks, subtitle_tracks = helper_server.collect_track_choices(
+        {
+            "formats": [
+                {
+                    "format_id": "251",
+                    "acodec": "opus",
+                    "vcodec": "none",
+                    "language": "en",
+                    "audio_channels": 2,
+                }
+            ],
+            "subtitles": {"ko": [{"ext": "vtt", "name": "한국어"}]},
+            "automatic_captions": {"ja": [{"ext": "vtt", "name": "日本語"}]},
+        }
+    )
+    check("helper audio track discovery", audio_tracks[0]["id"] == "251")
+    check(
+        "helper subtitle track discovery",
+        [track["id"] for track in subtitle_tracks] == ["ko", "ja"],
+    )
+
+    original_pair_file = helper_server.PAIR_FILE
+    original_pairing = helper_server.auto_pairing
+    original_auth_token = helper_server.AUTH_TOKEN
+    with tempfile.TemporaryDirectory() as tmp:
+        helper_server.PAIR_FILE = Path(tmp) / "pairing.json"
+        helper_server.auto_pairing = {}
+        helper_server.AUTH_TOKEN = ""
+        paired, pair_error = helper_server.pair_extension(
+            "chrome-extension://" + "a" * 32, "b" * 64
+        )
+        check(
+            "helper automatic pairing",
+            paired
+            and not pair_error
+            and helper_server.PAIR_FILE.is_file()
+            and (helper_server.PAIR_FILE.stat().st_mode & 0o777) == 0o600,
+        )
+    helper_server.PAIR_FILE = original_pair_file
+    helper_server.auto_pairing = original_pairing
+    helper_server.AUTH_TOKEN = original_auth_token
 
     print("== helper health ==")
     try:

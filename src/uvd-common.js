@@ -399,8 +399,11 @@ const UVD = (() => {
       autoTags,
       classifyError
     });
-    // Library: keep more successful items (up to 200)
-    const cap = Math.max(settings.maxHistory || 50, 200);
+    // Honor the configured history limit, including older unsanitized settings.
+    const cap = Math.min(
+      100,
+      Math.max(10, Number(settings.maxHistory) || DEFAULT_SETTINGS.maxHistory)
+    );
     const next = HistoryModel.prepend(list, item, cap);
     await chrome.storage.local.set({ [HISTORY_KEY]: next });
     try {

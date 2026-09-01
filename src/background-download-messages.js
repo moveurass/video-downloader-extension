@@ -42,7 +42,11 @@
             pageUrl,
             filename: filename || "",
             mediaMode: settings.mediaMode,
-            quality: message.preferQuality || "best"
+            quality: message.preferQuality || "best",
+            audioTrackId: message.audioTrackId || "",
+            subtitleLanguages: Array.isArray(message.subtitleLanguages)
+              ? message.subtitleLanguages
+              : []
           },
           async (jobId) => {
             const result = await deps.downloadPageFromUi(
@@ -54,7 +58,11 @@
                 mediaMode: settings.mediaMode,
                 mediaUrl: message.mediaUrl || "",
                 title: message.title || title,
-                filename: filename || ""
+                filename: filename || "",
+                audioTrackId: message.audioTrackId || "",
+                subtitleLanguages: Array.isArray(message.subtitleLanguages)
+                  ? message.subtitleLanguages
+                  : []
               }
             );
             if (message.type === "DOWNLOAD_PAGE" && result?.ok === false) {

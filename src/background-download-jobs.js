@@ -60,6 +60,10 @@
         errorActions: errMeta?.actions || [],
         mediaMode: job.mediaMode || "video",
         quality: job.quality || "",
+        audioTrackId: job.audioTrackId || "",
+        subtitleLanguages: Array.isArray(job.subtitleLanguages)
+          ? job.subtitleLanguages
+          : [],
         helperJobId: job.helperJobId || null,
         speedBps: job.speedBps || 0,
         speedLabel: job.speedBps ? UVD.formatSpeed(job.speedBps) : "",
@@ -467,6 +471,10 @@
           mediaMode: job.mediaMode,
           mediaUrl: job.mediaUrl || "",
           title: job.title || "",
+          audioTrackId: job.audioTrackId || "",
+          subtitleLanguages: Array.isArray(job.subtitleLanguages)
+            ? job.subtitleLanguages
+            : [],
           resume: true
         })
       )
@@ -549,6 +557,8 @@
       filename,
       mediaMode,
       quality,
+      audioTrackId,
+      subtitleLanguages,
       thumbnail,
       seriesId,
       seriesKey,
@@ -591,6 +601,10 @@
         filename: filename || "",
         mediaMode: mediaMode || "video",
         quality: quality || "",
+        audioTrackId: audioTrackId || "",
+        subtitleLanguages: Array.isArray(subtitleLanguages)
+          ? subtitleLanguages
+          : [],
         thumbnail: thumb || "",
         seriesId: seriesId || "",
         seriesKey: seriesKey || "",

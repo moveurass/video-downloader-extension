@@ -55,6 +55,10 @@
 
       let selectedQuality = "best";
       let availableQualities = INITIAL_QUALITY_CHOICES.map((item) => ({ ...item }));
+      let availableAudioTracks = [];
+      let availableSubtitleTracks = [];
+      let selectedAudioTrack = "";
+      let selectedSubtitleTracks = new Set();
       let qualitiesLoading = false;
 
       const getSelectedQuality = () => selectedQuality;
@@ -65,6 +69,10 @@
       const setAvailableQualities = (value) => {
         availableQualities = value;
       };
+      const getSelectedAudioTrack = () => selectedAudioTrack;
+      const getSelectedSubtitleTracks = () => [...selectedSubtitleTracks];
+      const getAvailableAudioTracks = () => availableAudioTracks;
+      const getAvailableSubtitleTracks = () => availableSubtitleTracks;
       const getQualitiesLoading = () => qualitiesLoading;
       const setQualitiesLoading = (value) => {
         qualitiesLoading = value;
@@ -130,6 +138,66 @@
         bareBestOnly
           ? `<p class="quality-hint quality-hint-warn">화질을 특정하지 못했습니다. 페이지에서 <strong>재생</strong>한 뒤 「다시 확인」을 누르세요.</p>`
           : ""
+      }
+
+      function trackPickerHtml() {
+        if (!availableAudioTracks.length && !availableSubtitleTracks.length) {
+          return "";
+        }
+        const audioHtml = availableAudioTracks.length
+          ? `<label class="track-field">
+              <span class="quality-label">오디오 트랙</span>
+              <select class="field-input track-audio-select" aria-label="오디오 트랙 선택">
+                <option value="">자동 (최적)</option>
+                ${availableAudioTracks
+                  .map(
+                    (track) =>
+                      `<option value="${escapeAttr(track.id)}"${
+                        selectedAudioTrack === track.id ? " selected" : ""
+                      }>${escapeHtml(track.label || track.id)}</option>`
+                  )
+                  .join("")}
+              </select>
+            </label>`
+          : "";
+        const subtitleHtml = availableSubtitleTracks.length
+          ? `<fieldset class="track-field track-subtitles">
+              <legend class="quality-label">자막 트랙</legend>
+              <div class="track-options">
+                ${availableSubtitleTracks
+                  .slice(0, 20)
+                  .map(
+                    (track) =>
+                      `<label class="track-option"><input type="checkbox" data-subtitle-track="${escapeAttr(
+                        track.id
+                      )}"${
+                        selectedSubtitleTracks.has(track.id) ? " checked" : ""
+                      } /> <span>${escapeHtml(track.label || track.id)}</span></label>`
+                  )
+                  .join("")}
+              </div>
+            </fieldset>`
+          : "";
+        return `<div class="track-picker">${audioHtml}${subtitleHtml}</div>`;
+      }
+
+      function bindTrackPicker(container) {
+        const audio = container?.querySelector?.(".track-audio-select");
+        if (audio) {
+          audio.addEventListener("change", () => {
+            selectedAudioTrack = audio.value || "";
+          });
+        }
+        container
+          ?.querySelectorAll?.("[data-subtitle-track]")
+          .forEach((input) => {
+            input.addEventListener("change", () => {
+              const id = input.getAttribute("data-subtitle-track") || "";
+              if (!id) return;
+              if (input.checked) selectedSubtitleTracks.add(id);
+              else selectedSubtitleTracks.delete(id);
+            });
+          });
       }
       <div class="quality-chips" role="group" aria-label="화질 선택">
         ${opts
@@ -235,6 +303,8 @@
       async function loadAvailableQualities(item) {
         qualitiesLoading = true;
         availableQualities = fallback.map((entry) => ({ ...entry }));
+        availableAudioTracks = [];
+        availableSubtitleTracks = [];
         const currentTabUrl = getCurrentTabUrl();
         const pageUrl = currentTabUrl || item?.pageUrl || item?.url || "";
         const mediaUrl = item?.url || pageUrl;
@@ -319,6 +389,27 @@
               item?.isSiteDownload || isDownloadableSiteVideo(pageUrl)
             )
           });
+          if (response?.ok) {
+            availableAudioTracks = Array.isArray(response.audioTracks)
+              ? response.audioTracks.filter((track) => track?.id)
+              : [];
+            availableSubtitleTracks = Array.isArray(response.subtitleTracks)
+              ? response.subtitleTracks.filter((track) => track?.id)
+              : [];
+            if (
+              !availableAudioTracks.some(
+                (track) => track.id === selectedAudioTrack
+              )
+            ) {
+              selectedAudioTrack = "";
+            }
+            const subtitleIds = new Set(
+              availableSubtitleTracks.map((track) => track.id)
+            );
+            selectedSubtitleTracks = new Set(
+              [...selectedSubtitleTracks].filter((id) => subtitleIds.has(id))
+            );
+          }
           if (response?.ok && response.qualities?.length) {
             availableQualities = ensureChoices(response.qualities);
           } else if (seedFromItem.length) {
@@ -466,12 +557,18 @@
         setSelectedQuality,
         getAvailableQualities,
         setAvailableQualities,
+        getAvailableAudioTracks,
+        getAvailableSubtitleTracks,
+        getSelectedAudioTrack,
+        getSelectedSubtitleTracks,
         getQualitiesLoading,
         setQualitiesLoading,
         estimateForSelectedQuality,
         estimateBarHtml,
         metaRowsHtml,
         qualityPickerHtml,
+        trackPickerHtml,
+        bindTrackPicker,
         formatQualityChipLabel,
         qualityIdFromHeight,
         qualityFromMediaUrl,

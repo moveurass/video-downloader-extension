@@ -129,7 +129,8 @@
       pageUrl,
       filename,
       quality,
-      jid
+      jid,
+      trackOptions = {}
     ) {
       if (!(await YtDlp.available())) {
         throw new Error(
@@ -148,6 +149,10 @@
           filename: nameHint || undefined,
           title: nameHint || undefined,
           quality: quality || "best",
+          audioTrackId: trackOptions.audioTrackId || undefined,
+          subtitleLanguages: Array.isArray(trackOptions.subtitleLanguages)
+            ? trackOptions.subtitleLanguages
+            : [],
           cookieHeader: cookieHeader || undefined,
           codecPref: settings?.codecPref || "best",
           speedProfile: settings?.downloadSpeed || "fast"

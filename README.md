@@ -66,9 +66,21 @@ open helper/start.command
 ### 보안
 
 - 헬퍼는 `Origin` 헤더가 붙은 요청 중 **확장 프로그램(`chrome-extension://`) 출처만** 허용합니다. 일반 웹페이지가 헬퍼에 명령을 내리는 것을 차단합니다. (`curl` 등 Origin 없는 로컬 도구는 허용)
+- 기본 설치에서는 첫 확장 연결 시 로컬에서 임의 토큰을 생성해 자동 페어링하고, 헬퍼는 해당 확장 ID와 토큰만 허용합니다. 헬퍼가 꺼져 있으면 연결 확인만 건너뛰며 설정은 손상되지 않습니다.
 - 특정 확장 하나만 허용하려면: `UVD_ALLOWED_ORIGIN=chrome-extension://<확장ID> python3 helper/yt_dlp_server.py`
 - 토큰 인증(선택): 헬퍼를 `UVD_TOKEN=<비밀값>`으로 실행하고, 확장 저장소 키 `helperToken`에 같은 값을 넣으면 모든 요청에 토큰이 요구됩니다.
 - 확장이 전달한 세션 쿠키 파일은 작업 종료 시 즉시 삭제되며, 헬퍼 시작 시 잔여 파일도 정리됩니다.
+
+### 권한
+
+- `downloads`, `storage`: 파일 저장, 기록, 설정, 이어받기 체크포인트에 필요합니다.
+- `tabs`, `scripting`: 현재 영상 탭 조회와 페이지 컨텍스트 HLS 폴백 주입에 필요합니다.
+- `webRequest`, `<all_urls>`: 범용 사이트에서 재생 목록/미디어 요청을 감지해야 하므로 유지합니다.
+- `cookies`: 사용자가 로그인한 사이트의 다운로드를 헬퍼에 위임할 때 필요합니다.
+- `declarativeNetRequest`: CDN 요청에 원래 페이지의 Referer를 임시로 붙이는 데 필요합니다.
+- `alarms`, `contextMenus`, `notifications`: 예약 다운로드, 우클릭 메뉴, 완료 알림에 각각 필요합니다.
+
+`activeTab`과 `declarativeNetRequestWithHostAccess`는 기존의 `<all_urls>` 호스트 권한 및 `declarativeNetRequest`와 중복되어 제거했습니다.
 
 ### 3) 확장에서 확인
 

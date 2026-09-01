@@ -261,6 +261,8 @@
           duration: data.duration || 0,
           estimatedSize: data.estimatedSize || 0,
           thumbnail: data.thumbnail || "",
+          audioTracks: data.audioTracks || [],
+          subtitleTracks: data.subtitleTracks || [],
           source: "yt-dlp"
         };
       }
