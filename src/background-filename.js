@@ -26,6 +26,7 @@
       title,
       quality,
       pageUrl,
+      mediaUrl,
       mediaType,
       mediaMode,
       seriesKey,
@@ -51,7 +52,8 @@
             seriesKey: seriesKey || Naming.extractProductCode?.(title) || "",
             playlistTitle: playlistTitle || "",
             index: seriesIndex || 0,
-            total: seriesTotal || 0
+            total: seriesTotal || 0,
+            url: mediaUrl || ""
           });
           if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
             return safeDownloadName(full, mime);
@@ -63,7 +65,8 @@
           pageTitle: bound || title || "",
           quality: quality || "",
           type: mode === "audio" ? "audio" : "video",
-          pageUrl: pageUrl || ""
+          pageUrl: pageUrl || "",
+          url: mediaUrl || ""
         });
         if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
           return safeDownloadName(full, mime);
@@ -139,6 +142,7 @@
       quality = "",
       mediaMode = "video",
       pageUrl = "",
+      mediaUrl = "",
       seriesKey = "",
       playlistTitle = "",
       seriesIndex = 0,
@@ -168,7 +172,8 @@
           quality: quality || "",
           type: mediaMode === "audio" ? "audio" : "video",
           pageUrl: pageUrl || "",
-          existing: boundHint
+          existing: boundHint,
+          url: mediaUrl || ""
         });
         if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
           return safeDownloadName(full, mime);
@@ -192,7 +197,9 @@
               "",
             playlistTitle: playlistTitle || "",
             index: seriesIndex || 0,
-            total: seriesTotal || 0
+            total: seriesTotal || 0,
+            existing: filenameHint || "",
+            url: mediaUrl || ""
           });
           if (full) return safeDownloadName(full, mime);
         }
@@ -201,7 +208,8 @@
           pageTitle: bound,
           quality,
           type: mediaMode === "audio" ? "audio" : "video",
-          pageUrl: pageUrl || ""
+          pageUrl: pageUrl || "",
+          url: mediaUrl || ""
         });
         if (full) return safeDownloadName(full, mime);
       }
@@ -216,7 +224,8 @@
             title: code,
             quality,
             type: mediaMode === "audio" ? "audio" : "video",
-            pageUrl: pageUrl || ""
+            pageUrl: pageUrl || "",
+            url: mediaUrl || ""
           }),
           mime
         );
@@ -241,7 +250,10 @@
       }
       // Replace trailing quality if present, else append
       const stripped = base.replace(/[_\s-]*\d{3,4}p\b/i, "").trim() || base;
-      return safeDownloadName(`${stripped}_${q}.mp4`, mime);
+      const extension =
+        String(lockedName).match(/\.(mp4|webm|mkv|mov|m4v|mp3|m4a|aac)$/i)?.[0] ||
+        (mediaMode === "audio" ? ".mp3" : ".mp4");
+      return safeDownloadName(`${stripped}_${q}${extension}`, mime);
     }
 
     /** Only pass a forced name to yt-dlp when it's a real human title */
@@ -262,7 +274,11 @@
     }
 
     function filenameFromUrl(url) {
-      return Naming.buildFilename({ url, title: "영상" });
+      return Naming.buildFilename({
+        url,
+        title: Naming.titleFromUrl?.(url) || "",
+        pageTitle: ""
+      });
     }
 
     return {

@@ -144,7 +144,8 @@
         isHls: item.isHls || item.type === "stream",
         isFmp4: true,
         host: item.host || meta?.host || "",
-        existing: item.filename || ""
+        existing: item.filename || "",
+        pageUrl: item.pageUrl || meta?.lastUrl || ""
       });
     }
 
@@ -244,7 +245,8 @@
         isFmp4: true,
         host,
         existing: existingOk,
-        pageUrl: pageRef
+        pageUrl: pageRef,
+        url: item.url || ""
       });
       const displayName = Naming.displayTitle({
         title,

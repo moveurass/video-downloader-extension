@@ -277,6 +277,41 @@ const Naming = (() => {
     }
   }
 
+  function extFromFilename(filename, fallback = "mp4") {
+    const match = String(filename || "").match(/\.([a-z0-9]{2,5})$/i);
+    if (!match) return fallback;
+    const ext = match[1].toLowerCase();
+    if (ext === "m3u8" || ext === "mpd" || ext === "ts" || ext === "m4s") {
+      return fallback;
+    }
+    return [
+      "mp4", "webm", "mkv", "mov", "m4v", "mp3", "m4a", "aac", "wav",
+      "ogg", "ogv"
+    ].includes(ext)
+      ? ext
+      : fallback;
+  }
+
+  /**
+   * Last-resort identity for a naked media URL. Page/video titles always win;
+   * this only prevents indistinguishable generic names when no title exists.
+   */
+  function titleFromUrl(url) {
+    const pathBase = cleanPageTitle(baseFromUrl(url));
+    if (pathBase && !isUglyBase(pathBase)) return pathBase;
+    try {
+      const parsed = new URL(url);
+      for (const key of ["title", "name", "filename", "v", "video", "id"]) {
+        const value = cleanPageTitle(parsed.searchParams.get(key) || "");
+        if (value && !isUglyBase(value)) return value;
+      }
+      const host = parsed.hostname.replace(/^www\./i, "").split(".")[0];
+      return sanitize(host ? `${host} video` : "Downloaded video", 72);
+    } catch {
+      return "Downloaded video";
+    }
+  }
+
   /**
    * Pick the most descriptive title among candidates.
    * Prefer longer human titles over short codes/hosts.
@@ -308,11 +343,17 @@ const Naming = (() => {
       existing = "",
       index = 0,
       pageUrl = "",
-      url = ""
+      url = "",
+      extension = ""
     } = opts;
 
     const isAudio = type === "audio";
-    const ext = isAudio ? "mp3" : "mp4";
+    const ext = isAudio
+      ? "mp3"
+      : extFromFilename(
+          extension ? `file.${String(extension).replace(/^\./, "")}` : existing,
+          extFromUrl(url, "mp4")
+        );
 
     // Bind title to the page/url being saved so we never use another video's name
     const pageRef = pageUrl || url || "";
@@ -419,10 +460,18 @@ const Naming = (() => {
       seriesKey = "",
       playlistTitle = "",
       index = 0, // 1-based preferred; 0 = omit number
-      total = 0
+      total = 0,
+      existing = "",
+      url = "",
+      extension = ""
     } = opts;
     const isAudio = type === "audio";
-    const ext = isAudio ? "mp3" : "mp4";
+    const ext = isAudio
+      ? "mp3"
+      : extFromFilename(
+          extension ? `file.${String(extension).replace(/^\./, "")}` : existing,
+          extFromUrl(url, "mp4")
+        );
 
     let base =
       pickBestTitle(title, pageTitle) || (isAudio ? "오디오" : "영상");
@@ -583,6 +632,8 @@ const Naming = (() => {
     bindTitleToPage,
     isUglyBase,
     extFromUrl,
+    extFromFilename,
+    titleFromUrl,
     buildFilename,
     buildSeriesFilename,
     displayTitle,

@@ -10,6 +10,29 @@
   /** Active download abort — content STOP_DOWNLOAD calls abort() */
   let activeAbort = null;
 
+  function pageTitleFilename(ext = "mp4") {
+    let title = String(document.title || "")
+      .replace(/^\(\d{1,4}\)\s*/, "")
+      .replace(/\s*[-–—|]\s*(YouTube|TikTok|Instagram|Facebook|X|Twitter|Vimeo).*$/i, "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!title || /^(video|media|download|untitled|영상|동영상)$/i.test(title)) {
+      try {
+        title = decodeURIComponent(location.pathname.split("/").filter(Boolean).pop() || "");
+      } catch {
+        title = "";
+      }
+    }
+    title = title
+      .replace(/\.(mp4|webm|mkv|mov|m4v|m3u8|mpd|ts)$/i, "")
+      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 80);
+    return `${title || "Downloaded video"}.${ext}`;
+  }
+
   function withTimeout(promise, ms, message) {
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -78,13 +101,16 @@
       );
     }
 
-    const mime = "video/mp4";
-    let name = (filename || `영상_${Date.now()}.mp4`)
+    const mime = blob.type || "video/mp4";
+    const mimeExt = /webm/i.test(mime) ? "webm" : /audio\/mpeg/i.test(mime) ? "mp3" : "mp4";
+    let name = (filename || pageTitleFilename(mimeExt))
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
       .replace(/\.ts$/i, ".mp4")
+      .replace(/\.m3u8$/i, ".mp4")
+      .replace(/\.mpd$/i, ".mp4")
       .trim();
-    if (!/\.mp4$/i.test(name)) {
-      name = name.replace(/\.[a-z0-9]{2,5}$/i, "") + ".mp4";
+    if (!/\.(mp4|webm|mkv|mov|m4v|mp3|m4a|aac)$/i.test(name)) {
+      name = name.replace(/\.[a-z0-9]{2,5}$/i, "") + `.${mimeExt}`;
     }
 
     onProgress?.({ phase: "save", percent: 92, message: "파일 저장 중…" });
@@ -212,7 +238,7 @@
       throw new Error("버퍼 데이터가 부족합니다. 영상을 조금 재생한 뒤 다시 시도하세요");
     }
     const ext = cap.ext || (cap.mime?.includes("mp4") ? "mp4" : "ts");
-    let name = filename || `video_${Date.now()}.${ext}`;
+    let name = filename || pageTitleFilename(ext);
     if (!/\.(mp4|ts|webm)$/i.test(name)) {
       name = name.replace(/\.[^.]+$/, "") + "." + ext;
     }
@@ -306,7 +332,7 @@
     }
 
     // Always .mp4 for users
-    let name = filename || result.filename || `영상_${Date.now()}.mp4`;
+    let name = filename || result.filename || pageTitleFilename("mp4");
     name = name.replace(/\.ts$/i, ".mp4").replace(/\.m3u8$/i, ".mp4");
     if (!/\.mp4$/i.test(name)) {
       name = name.replace(/\.[^.]+$/, "") + ".mp4";
@@ -330,7 +356,7 @@
       if (blob.size >= MIN_VIDEO_BYTES) {
         return saveBlobThroughBackground(
           blob,
-          filename || `video_${Date.now()}.mp4`,
+          filename || pageTitleFilename(blob.type?.includes("webm") ? "webm" : "mp4"),
           onProgress
         );
       }

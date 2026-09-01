@@ -2,6 +2,30 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
+
+
+MEDIA_SUFFIXES = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".m4a", ".mp3", ".aac"}
+
+
+def is_generic_name(raw: str) -> bool:
+    """Whether a supplied name is an ID/placeholder rather than a video title."""
+    stem = Path(str(raw or "").replace("\\", "/")).stem.strip()
+    return bool(
+        not stem
+        or re.fullmatch(
+            r"(?:video|media|download|file|untitled|영상|동영상|"
+            r"(?:youtube|tiktok|instagram|facebook|bilibili|x)[_-]?"
+            r"[A-Za-z0-9_-]*)",
+            stem,
+            flags=re.I,
+        )
+        or (
+            len(stem) == 11
+            and bool(re.fullmatch(r"[A-Za-z0-9_-]+", stem))
+            and not bool(re.search(r"[A-Za-z]{2,}-\d{2,}", stem))
+        )
+    )
 
 
 def clean_name(raw: str) -> str:
@@ -47,3 +71,17 @@ def clean_name(raw: str) -> str:
     if not name or len(name) < 2 or name in {".", ".."}:
         return "video"
     return name
+
+
+def unique_output_path(directory: Path, filename: str) -> Path:
+    """Choose a readable final path, adding a suffix only on a real collision."""
+    directory = Path(directory)
+    source = Path(filename)
+    suffix = source.suffix.lower() if source.suffix.lower() in MEDIA_SUFFIXES else ".mp4"
+    stem = clean_name(source.stem)
+    candidate = directory / f"{stem}{suffix}"
+    number = 2
+    while candidate.exists():
+        candidate = directory / f"{stem} ({number}){suffix}"
+        number += 1
+    return candidate

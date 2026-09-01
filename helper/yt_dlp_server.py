@@ -30,9 +30,9 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 try:
-    from .name_utils import clean_name
+    from .name_utils import clean_name, is_generic_name, unique_output_path
 except ImportError:
-    from name_utils import clean_name
+    from name_utils import clean_name, is_generic_name, unique_output_path
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("UVD_PORT", "8787"))
@@ -428,7 +428,9 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
     page_url = (payload.get("pageUrl") or payload.get("url") or "").strip()
     media_hint = (payload.get("mediaUrl") or "").strip()
     cookie_header = (payload.get("cookieHeader") or "").strip()
-    title_hint = (payload.get("filename") or payload.get("title") or "tiktok").strip()
+    title_hint = (payload.get("filename") or payload.get("title") or "").strip()
+    if is_generic_name(title_hint):
+        title_hint = ""
 
     play_url = ""
     title = title_hint
@@ -438,13 +440,13 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
         play_url = media_hint
         method = "client-cdn"
 
-    if not play_url and is_tiktok_page(page_url):
+    if (not play_url or not title) and is_tiktok_page(page_url):
         with jobs_lock:
             jobs[job_id]["message"] = "TikTok 링크 해석 중… (공개 API)"
             jobs[job_id]["percent"] = 8
         resolved = resolve_tiktok_via_public_apis(page_url)
         if resolved and resolved.get("play_url"):
-            play_url = resolved["play_url"]
+            play_url = play_url or resolved["play_url"]
             title = resolved.get("title") or title
             method = resolved.get("method") or "public-api"
 
@@ -452,19 +454,8 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
         return False
 
     # Build output path
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", title)
-    safe = re.sub(r"^\(\d{1,4}\)\s*", "", safe)
-    safe = " ".join(safe.split()).strip(" ._-" )[:80] or "tiktok"
-    dest = OUT_DIR / f"{safe}.mp4"
-    # uniquify
-    if dest.exists():
-        i = 2
-        while True:
-            cand = OUT_DIR / f"{safe} ({i}).mp4"
-            if not cand.exists():
-                dest = cand
-                break
-            i += 1
+    safe = clean_name(title or "TikTok video")
+    dest = unique_output_path(OUT_DIR, f"{safe}.mp4")
 
     with jobs_lock:
         jobs[job_id]["message"] = f"TikTok 받는 중… ({method})"
@@ -671,6 +662,8 @@ def run_download(job_id: str, payload: dict) -> None:
     page_url = (payload.get("pageUrl") or payload.get("referer") or "").strip()
     quality = (payload.get("quality") or "best").strip()
     title_hint = (payload.get("filename") or payload.get("title") or "").strip()
+    if is_generic_name(title_hint):
+        title_hint = ""
     # directFile: url IS the media file — download it as-is (referer only as
     # header), never re-target to the page for extractor detection.
     direct_file = bool(payload.get("directFile"))
@@ -747,16 +740,22 @@ def run_download(job_id: str, payload: dict) -> None:
         else:
             target = url
 
+    # Download into a per-job hidden directory, then publish one uniquely named
+    # completed file. This lets extractor titles remain the source of truth and
+    # avoids yt-dlp silently reusing an existing same-title file.
+    work_dir = OUT_DIR / ".uvd-tmp" / job_id
+    work_dir.mkdir(parents=True, exist_ok=True)
+
     # output template — clean human names (no "(2) " notification prefix, no "_best")
     if title_hint:
         safe = clean_name(title_hint)
         # Readable old-style names: keep spaces + unicode (no restrict-filenames)
-        outtmpl = str(OUT_DIR / f"{safe}.%(ext)s")
+        outtmpl = str(work_dir / f"{safe}.%(ext)s")
     else:
         # Real video title from extractor — keep spaces/unicode so names stay readable
         # (e.g. "SSIS-001 이복 여동생 이야기.mp4")
         # Use .s (chars) not .B (bytes) so Korean titles are not cut mid-glyph.
-        outtmpl = str(OUT_DIR / "%(title).100s.%(ext)s")
+        outtmpl = str(work_dir / "%(title).100s.%(ext)s")
 
     site = (payload.get("site") or "").lower()
     host = ""
@@ -1384,6 +1383,18 @@ def run_download(job_id: str, payload: dict) -> None:
                         final_path = str(dest)
             except Exception as e:
                 print(f"[uvd-helper] rename cleanup: {e}", file=sys.stderr)
+
+            # Publish the completed media under its human title. The hidden
+            # per-job path prevents an existing title from being overwritten
+            # or mistaken for this job's result.
+            try:
+                source = Path(final_path)
+                destination = unique_output_path(OUT_DIR, source.name)
+                if source.resolve() != destination.resolve():
+                    shutil.move(str(source), str(destination))
+                    final_path = str(destination)
+            except Exception as e:
+                print(f"[uvd-helper] publish output: {e}", file=sys.stderr)
             final_size = Path(final_path).stat().st_size
 
         with jobs_lock:
@@ -1462,6 +1473,11 @@ def run_download(job_id: str, payload: dict) -> None:
         try:
             path_file.unlink(missing_ok=True)
         except Exception:
+            pass
+        try:
+            work_dir.rmdir()
+            (OUT_DIR / ".uvd-tmp").rmdir()
+        except OSError:
             pass
 
 

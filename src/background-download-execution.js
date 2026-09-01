@@ -201,6 +201,7 @@
           quality,
           mediaMode,
           pageUrl,
+          mediaUrl: forceOpts.mediaUrl || "",
           seriesKey: jobSnapshot?.seriesKey || "",
           playlistTitle: jobSnapshot?.seriesTitle || "",
           seriesIndex: jobSnapshot?.seriesIndex || 0
@@ -210,7 +211,13 @@
             const tab = await deps.chrome.tabs.get(tabId);
             if (tab?.url && sameVideoPage(tab.url, pageUrl)) {
               const title = deps.Naming.cleanPageTitle(tab.title || "") || "";
-              filename = deps.lockSaveName({ title, quality, mediaMode, pageUrl });
+              filename = deps.lockSaveName({
+                title,
+                quality,
+                mediaMode,
+                pageUrl,
+                mediaUrl: forceOpts.mediaUrl || ""
+              });
             }
           } catch {
             // Keep the request-bound name.
@@ -348,7 +355,8 @@
           pageTitle,
           quality,
           mediaMode,
-          pageUrl
+          pageUrl,
+          mediaUrl: best.url || forceOpts.mediaUrl || ""
         }) || filename;
       }
       if (jid && filename) {

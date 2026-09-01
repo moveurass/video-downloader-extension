@@ -72,6 +72,15 @@ async function main() {
     }),
     "My Playlist 03. Episode title_720p.mp4"
   );
+  equal(
+    manager.lockSaveName({
+      title: "Episode title",
+      playlistTitle: "My Playlist",
+      seriesIndex: 3,
+      mediaUrl: "https://cdn.test/episode.webm"
+    }),
+    "My Playlist 03. Episode title.webm"
+  );
 
   equal(
     manager.applyQualityToLockedName(
@@ -92,7 +101,26 @@ async function main() {
     manager.ytdlpFilenameHint("video.mp4", "A human title"),
     "A human title.mp4"
   );
-  equal(manager.filenameFromUrl("https://example.test/media/file.m3u8"), "영상.mp4");
+  equal(
+    manager.filenameFromUrl("https://example.test/media/My%20Clip.webm"),
+    "My Clip.webm"
+  );
+  equal(
+    manager.filenameFromUrl("https://example.test/media/master.m3u8"),
+    "example video.mp4"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "Readable direct title",
+      pageUrl: "https://example.test/watch/1",
+      mediaUrl: "https://cdn.test/files/opaque.webm"
+    }),
+    "Readable direct title.webm"
+  );
+  equal(
+    manager.applyQualityToLockedName("Readable title.webm", "720p"),
+    "Readable title_720p.webm"
+  );
 
   equal(
     await manager.relDownloadPath("Readable title.mp4"),

@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "helper"))
-from name_utils import clean_name  # noqa: E402
+from name_utils import clean_name, is_generic_name, unique_output_path  # noqa: E402
 import yt_dlp_server as helper_server  # noqa: E402
 
 OK = 0
@@ -34,6 +34,19 @@ def main() -> int:
     check("clean_name path", clean_name("VideoDownloader/foo.mp4") == "foo")
     check("clean_name empty-ish", clean_name(".mp4") == "video")
     check("clean_name korean", clean_name("시리즈 제목.mp4") == "시리즈 제목")
+    check("generic helper hint rejected", is_generic_name("YouTube_dQw4w9WgXcQ.mp4"))
+    check("human helper title accepted", not is_generic_name("A human video title.mp4"))
+    with tempfile.TemporaryDirectory() as tmp:
+        output_dir = Path(tmp)
+        check(
+            "first title has no collision suffix",
+            unique_output_path(output_dir, "My Video.mp4").name == "My Video.mp4",
+        )
+        (output_dir / "My Video.mp4").touch()
+        check(
+            "duplicate title gets unique suffix",
+            unique_output_path(output_dir, "My Video.mp4").name == "My Video (2).mp4",
+        )
 
     audio_tracks, subtitle_tracks = helper_server.collect_track_choices(
         {

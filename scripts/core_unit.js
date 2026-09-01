@@ -137,6 +137,20 @@ assert.equal(DownloadEngine.hlsPhasePercent({ phase: "done" }), 100);
 assert.equal(DownloadEngine.parseSpeedFromMessage("받는 중 1.5MiB/s"), 1.5 * 1024 * 1024);
 assert.equal(DownloadEngine.safeDownloadName("title.mp4.mp4"), "title.mp4");
 assert.equal(DownloadEngine.safeDownloadName("clip.ts"), "clip.mp4");
+assert.equal(
+  Naming.buildFilename({
+    title: "Readable page title",
+    url: "https://cdn.example/media/source.webm"
+  }),
+  "Readable page title.webm"
+);
+assert.equal(
+  Naming.buildFilename({
+    title: "Readable page title",
+    url: "https://cdn.example/media/master.m3u8"
+  }),
+  "Readable page title.mp4"
+);
 assert.equal(PopupMedia.formatDuration(65), "1:05");
 assert.equal(PopupMedia.isHlsItem({ url: "https://cdn.example/master.m3u8" }), true);
 assert.equal(

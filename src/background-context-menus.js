@@ -43,7 +43,10 @@
           deps.addMedia(tabId, {
             url: info.srcUrl,
             type: info.mediaType === "audio" ? "audio" : "video",
-            source: "context-menu"
+            source: "context-menu",
+            title: tab.title || "",
+            pageTitle: tab.title || "",
+            pageUrl: tab.url || ""
           });
           const item = deps.getTabMap(tabId).get(info.srcUrl);
           const fname = deps.resolveFilename(tabId, item || {}, info.srcUrl);
@@ -72,9 +75,9 @@
           await deps.runTrackedDownloadAsync(
             {
               tabId,
-              title: info.linkUrl,
+              title: "",
               pageUrl: info.linkUrl,
-              filename: "video.mp4"
+              filename: ""
             },
             () => deps.downloadPageFromUi(tabId, info.linkUrl, "best")
           );
@@ -89,7 +92,7 @@
             throw new Error("선택한 텍스트에 링크가 없습니다");
           }
           await deps.runTrackedDownloadAsync(
-            { tabId, title: link, pageUrl: link, filename: "video.mp4" },
+            { tabId, title: "", pageUrl: link, filename: "" },
             () => deps.downloadPageFromUi(tabId, link, "best")
           );
           return;
@@ -98,12 +101,17 @@
         if (info.menuItemId === "uvd-download-best") {
           // Social page → dedicated download; else scan media list
           if (tab?.url && deps.needsYtDlpHelper(tab.url, tab.url)) {
+            const filename = deps.lockSaveName({
+              title: tab.title || "",
+              pageTitle: tab.title || "",
+              pageUrl: tab.url
+            });
             await deps.runTrackedDownloadAsync(
               {
                 tabId,
                 title: tab.title || tab.url,
                 pageUrl: tab.url,
-                filename: "video.mp4"
+                filename
               },
               () => deps.downloadPageFromUi(tabId, tab.url, "best")
             );
@@ -119,18 +127,27 @@
             await deps.getMediaForTabAsync(tabId, { pageUrl: tab?.url })
           )[0];
           if (!best) throw new Error("감지된 영상이 없습니다");
+          const filename =
+            deps.resolveFilename(tabId, best, best.url) ||
+            deps.lockSaveName({
+              filenameHint: best.filename || "",
+              title: best.title || best.pageTitle || tab.title || "",
+              pageTitle: best.pageTitle || tab.title || "",
+              pageUrl: tab.url,
+              mediaUrl: best.url
+            });
           await deps.runTrackedDownloadAsync(
             {
               tabId,
               title: best.title || best.filename,
               pageUrl: tab.url,
-              filename: best.filename || "video.mp4"
+              filename
             },
             () =>
               deps.downloadSmart(
                 tabId,
                 best.url,
-                best.filename,
+                filename,
                 "best",
                 best.type,
                 best,

@@ -300,7 +300,8 @@ async function main() {
     pageTitle: "정리:요청 제목",
     quality: "1080p",
     mediaMode: "video",
-    pageUrl: "https://example.com/watch"
+    pageUrl: "https://example.com/watch",
+    mediaUrl: "https://cdn.example.com/master.m3u8"
   });
   assert.deepEqual(directMeta, {
     tabId: 7,
