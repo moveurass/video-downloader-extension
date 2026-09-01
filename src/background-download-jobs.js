@@ -33,6 +33,8 @@
     let jobSeq = 0;
     let currentJobContext = null;
     let notificationListenerBound = false;
+    let durableWrite = Promise.resolve();
+    const DURABLE_PAUSED_KEY = "uvdPausedDownloads";
 
     function publicJob(job) {
       if (!job) return null;
@@ -91,20 +93,47 @@
     }
 
     async function restorePausedJobs() {
-      const storage =
-        chrome.storage?.session?.get
-          ? chrome.storage.session
-          : chrome.storage?.local?.get
-            ? chrome.storage.local
-            : null;
-      if (!storage) return;
       try {
-        const data = await storage.get("uvdActiveDownloads");
-        const saved = Array.isArray(data?.uvdActiveDownloads)
-          ? data.uvdActiveDownloads
+        const [localData, sessionData] = await Promise.all([
+          chrome.storage?.local?.get
+            ? chrome.storage.local.get(DURABLE_PAUSED_KEY)
+            : Promise.resolve({}),
+          chrome.storage?.session?.get
+            ? chrome.storage.session.get("uvdActiveDownloads")
+            : Promise.resolve({})
+        ]);
+        const durable = Array.isArray(localData?.[DURABLE_PAUSED_KEY])
+          ? localData[DURABLE_PAUSED_KEY]
           : [];
-        for (const item of saved) {
+        const session = Array.isArray(sessionData?.uvdActiveDownloads)
+          ? sessionData.uvdActiveDownloads
+          : [];
+        const savedById = new Map();
+        for (const item of session) {
+          if (item?.id && item.status === "paused") savedById.set(item.id, item);
+        }
+        // Durable rows win because they survive a full browser restart and are
+        // written only after a pause has completed.
+        for (const item of durable) {
+          if (item?.id && item.status === "paused") savedById.set(item.id, item);
+        }
+        for (const item of savedById.values()) {
           if (!item?.id || item.status !== "paused") continue;
+          if (
+            item.resumeState?.kind === "direct" &&
+            item.resumeState.downloadId != null &&
+            chrome.downloads?.search
+          ) {
+            const [download] = await chrome.downloads
+              .search({ id: item.resumeState.downloadId })
+              .catch(() => []);
+            if (
+              !download ||
+              (download.state !== "in_progress" && !download.canResume)
+            ) {
+              continue;
+            }
+          }
           activeDownloads.set(item.id, {
             ...item,
             status: "paused",
@@ -115,12 +144,26 @@
             _restoredFromStorage: true
           });
         }
+        await syncDurablePausedJobs();
       } catch {
         // Session recovery is best-effort.
       }
     }
 
     const ready = restorePausedJobs();
+
+    function syncDurablePausedJobs() {
+      if (!chrome.storage?.local?.set) return Promise.resolve();
+      durableWrite = durableWrite
+        .catch(() => {})
+        .then(() => {
+          const paused = [...activeDownloads.values()]
+            .filter((job) => job.status === "paused")
+            .map(publicJob);
+          return chrome.storage.local.set({ [DURABLE_PAUSED_KEY]: paused });
+        });
+      return durableWrite;
+    }
 
     function throwIfJobStopped(jobId) {
       if (!jobId) return;
@@ -156,6 +199,7 @@
       }
       jobAbortControllers.delete(jobId);
       persistJobs();
+      syncDurablePausedJobs().catch(() => {});
       broadcastJob(job);
       updateDownloadBadge();
     }
@@ -181,6 +225,7 @@
         tabJobMap.delete(job.tabId);
       }
       persistJobs();
+      syncDurablePausedJobs().catch(() => {});
       broadcastJob(job);
       updateDownloadBadge();
       try {
@@ -255,6 +300,7 @@
       }
       delete job.resumeState;
       finishCancelledJob(jobId);
+      await syncDurablePausedJobs();
       return { ok: true, status: "cancelled" };
     }
 
@@ -287,6 +333,7 @@
           return { ok: false, error: job.message };
         }
         finalizePausedJob(jobId);
+        await syncDurablePausedJobs();
         return {
           ok: true,
           status: "paused",
@@ -316,6 +363,7 @@
         // Tab may already be gone.
       }
       finalizePausedJob(jobId);
+      await syncDurablePausedJobs();
       return { ok: true, status: "paused" };
     }
 
@@ -353,6 +401,7 @@
         persistJobs();
         broadcastJob(job);
         updateDownloadBadge();
+        await syncDurablePausedJobs();
         if (job._restoredFromStorage && waitForChromeDownload) {
           delete job._restoredFromStorage;
           const keep = startKeepAlive();
@@ -410,6 +459,7 @@
       persistJobs();
       broadcastJob(job);
       updateDownloadBadge();
+      await syncDurablePausedJobs();
       const keep = startKeepAlive();
       withJobContext(jobId, () =>
         downloadPageFromUi(job.tabId, pageUrl, job.quality || "best", jobId, {
@@ -738,6 +788,7 @@
         tabJobMap.delete(job.tabId);
       }
       persistJobs();
+      syncDurablePausedJobs().catch(() => {});
       broadcastJob(job);
       updateDownloadBadge();
       try {

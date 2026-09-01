@@ -206,6 +206,14 @@
               });
             }
           }
+          if (
+            Object.keys(previousResume.parts || {}).length > 0 &&
+            resumeParts.size === 0
+          ) {
+            throw new Error(
+              "저장된 HLS 이어받기 조각을 찾을 수 없습니다. 작업을 취소하고 다시 시작해 주세요"
+            );
+          }
         }
         if (resumeJob) {
           resumeJob.resumeState = {
@@ -216,7 +224,18 @@
             parts: canReusePrevious ? { ...(previousResume.parts || {}) } : {}
           };
         }
-      } catch {
+      } catch (error) {
+        if (
+          canReusePrevious &&
+          Object.keys(previousResume.parts || {}).length > 0
+        ) {
+          try {
+            partDb?.close();
+          } catch {
+            /* ignore */
+          }
+          throw error;
+        }
         partDb = null;
         resumeParts = new Map();
       }
