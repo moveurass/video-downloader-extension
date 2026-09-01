@@ -69,6 +69,7 @@
         quality: preferQuality || itemHint?.quality || jobSnap?.quality || "",
         mediaMode: "video",
         pageUrl: pageUrl || itemHint?.pageUrl || jobSnap?.pageUrl || "",
+        mediaUrl: url,
         seriesKey: jobSnap?.seriesKey || itemHint?.seriesKey || "",
         playlistTitle: jobSnap?.seriesTitle || itemHint?.playlistTitle || "",
         seriesIndex: jobSnap?.seriesIndex || itemHint?.seriesIndex || 0
@@ -309,7 +310,8 @@
           title: itemHint?.title || itemHint?.pageTitle || "",
           pageTitle: itemHint?.pageTitle || "",
           quality: result.quality || preferQuality || "",
-          pageUrl: pageUrl || itemHint?.pageUrl || ""
+          pageUrl: pageUrl || itemHint?.pageUrl || "",
+          mediaUrl: url
         });
       } else {
         name = applyQualityToLockedName(

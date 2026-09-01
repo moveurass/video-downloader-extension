@@ -28,7 +28,8 @@
         pageTitle: boundTitle,
         quality: msg.preferQuality || item?.quality || "",
         mediaMode: "video",
-        pageUrl: pageUrl || item?.pageUrl || url
+        pageUrl: pageUrl || item?.pageUrl || url,
+        mediaUrl: url
       });
       const mediaType =
         msg.mediaType ||

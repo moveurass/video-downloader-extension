@@ -244,7 +244,8 @@
         isFmp4: true,
         host,
         existing: existingOk,
-        pageUrl: pageRef
+        pageUrl: pageRef,
+        url: item.url || ""
       });
       const displayName = Naming.displayTitle({
         title,

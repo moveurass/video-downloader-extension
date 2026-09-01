@@ -262,6 +262,7 @@ const contextMenuController = UVDBackgroundContextMenus.createController({
   addMedia,
   getTabMap,
   resolveFilename,
+  lockSaveName: filenameLockSaveName,
   needsYtDlpHelper,
   getMediaForTabAsync,
   runTrackedDownloadAsync: (...args) => runTrackedDownloadAsync(...args),

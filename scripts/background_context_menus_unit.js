@@ -71,6 +71,9 @@ function makeHarness() {
       calls.push(["resolveFilename", ...args]);
       return "resolved.mp4";
     },
+    lockSaveName() {
+      return "locked.mp4";
+    },
     needsYtDlpHelper(url, pageUrl) {
       calls.push(["needsYtDlpHelper", url, pageUrl]);
       return url.includes("helper.test");
@@ -163,7 +166,10 @@ async function main() {
     {
       url: "https://cdn.test/audio.mp3",
       type: "audio",
-      source: "context-menu"
+      source: "context-menu",
+      title: "",
+      pageTitle: "",
+      pageUrl: "https://page.test/watch"
     }
   ]);
   equal(calls[1][0], "resolveFilename");
@@ -187,6 +193,9 @@ async function main() {
       url: "https://cdn.test/audio.mp3",
       type: "audio",
       source: "context-menu",
+      title: "",
+      pageTitle: "",
+      pageUrl: "https://page.test/watch",
       filename: "resolved.mp4"
     },
     { pageUrl: "https://page.test/watch" }
@@ -202,9 +211,9 @@ async function main() {
       "runTrackedDownloadAsync",
       {
         tabId: 8,
-        title: "https://link.test/video",
+        title: "",
         pageUrl: "https://link.test/video",
-        filename: "video.mp4"
+        filename: ""
       }
     ],
     ["downloadPageFromUi", 8, "https://link.test/video", "best"]
@@ -255,7 +264,7 @@ async function main() {
     "downloadSmart",
     11,
     "https://cdn.test/best.m3u8",
-    "best.mp4",
+    "resolved.mp4",
     "best",
     "video",
     {

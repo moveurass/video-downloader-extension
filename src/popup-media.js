@@ -221,7 +221,8 @@
         quality,
         type: isAudio ? "audio" : "video",
         pageUrl,
-        existing: item?.filename || ""
+        existing: item?.filename || "",
+        url: item?.url || ""
       });
     }
     let base = UVD.applyFilenameTemplate("legacy", {
