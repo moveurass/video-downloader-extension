@@ -200,6 +200,7 @@ async function testHlsRuntimePreservesPauseCheckpoint() {
 async function testNativeDirectPauseResume() {
   const paused = [];
   const resumed = [];
+  const durableWrites = [];
   let restarted = 0;
   const chrome = {
     runtime: {
@@ -207,10 +208,11 @@ async function testNativeDirectPauseResume() {
       getURL: (path) => `chrome-extension://unit/${path}`
     },
     storage: {
-      session: {
-        set: async () => {},
+      session: { set: async () => {}, get: async () => ({}) },
+      local: {
+        set: async (value) => durableWrites.push(value),
         get: async () => ({
-          uvdActiveDownloads: [
+          uvdPausedDownloads: [
             {
               id: "restored-hls",
               status: "paused",
@@ -262,7 +264,10 @@ async function testNativeDirectPauseResume() {
       pause: async (id) => paused.push(id),
       resume: async (id) => resumed.push(id),
       cancel: async () => {},
-      search: async () => [],
+      search: async ({ id }) =>
+        id === 88
+          ? [{ id, state: "interrupted", canResume: true, paused: true }]
+          : [],
       show() {},
       showDefaultFolder() {}
     },
@@ -316,6 +321,12 @@ async function testNativeDirectPauseResume() {
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(manager.activeDownloads.get("restored-direct").status, "done");
   assert.deepEqual(resumed, [88]);
+  assert.equal(
+    durableWrites.at(-1).uvdPausedDownloads.some(
+      (job) => job.id === "restored-direct"
+    ),
+    false
+  );
   const jobId = manager.createDownloadJob({
     tabId: 7,
     title: "Direct",
@@ -336,6 +347,15 @@ async function testNativeDirectPauseResume() {
   assert.equal(pauseResult.resumeKind, "http-range");
   assert.equal(job.status, "paused");
   assert.equal(job.percent, 2);
+  assert.equal(
+    durableWrites.at(-1).uvdPausedDownloads.some(
+      (saved) =>
+        saved.id === jobId &&
+        saved.resumeState?.downloadId === 42 &&
+        saved.resumeState?.bytesReceived === 5_000_000
+    ),
+    true
+  );
 
   const resumeResult = await manager.resumeDownloadJob(jobId);
   assert.deepEqual(resumed, [88, 42]);
@@ -343,6 +363,12 @@ async function testNativeDirectPauseResume() {
   assert.equal(job.status, "running");
   assert.equal(job.message, "이어받는 중…");
   assert.equal(restarted, 0, "native direct resume does not restart orchestration");
+  assert.equal(
+    durableWrites.at(-1).uvdPausedDownloads.some(
+      (saved) => saved.id === jobId
+    ),
+    false
+  );
 }
 
 async function testDirectTransportRegistersCheckpoint() {

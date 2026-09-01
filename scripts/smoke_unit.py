@@ -123,6 +123,22 @@ def main() -> int:
         "DASH quality probing uses helper",
         "isRealDash(url, \"stream\") || needsYtDlpHelper" in background_source,
     )
+    jobs_source = (ROOT / "src/background-download-jobs.js").read_text(
+        encoding="utf-8"
+    )
+    check(
+        "paused jobs persist across browser restarts",
+        'const DURABLE_PAUSED_KEY = "uvdPausedDownloads"' in jobs_source
+        and "chrome.storage.local.set" in jobs_source,
+    )
+    housekeeping_source = (ROOT / "src/background-housekeeping.js").read_text(
+        encoding="utf-8"
+    )
+    check(
+        "startup cleanup preserves durable HLS checkpoints",
+        "uvdPausedDownloads" in housekeeping_source
+        and "preserved.has(partBase)" in housekeeping_source,
+    )
 
     print("== syntax ==")
     for f in (

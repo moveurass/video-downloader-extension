@@ -17,6 +17,11 @@ async function main() {
   const installed = event();
   const startup = event();
   const deletes = [];
+  const keys = [
+    "hls_keep:p:000001",
+    "hls_stale:p:000001",
+    "hls_keep:p:000002"
+  ];
   let closed = 0;
   const range = { lower: "hls_", upper: "hls_\uffff" };
   const transaction = {
@@ -24,16 +29,55 @@ async function main() {
     objectStore(name) {
       assert.equal(name, "parts");
       return {
-        delete(value) {
-          deletes.push(value);
-          queueMicrotask(() => transaction.oncomplete());
+        openCursor(value) {
+          assert.equal(value, range);
+          let index = 0;
+          const request = { result: null, error: null };
+          const advance = () => {
+            if (index >= keys.length) {
+              request.result = null;
+              request.onsuccess();
+              queueMicrotask(() => transaction.oncomplete());
+              return;
+            }
+            const key = keys[index];
+            request.result = {
+              key,
+              delete() {
+                deletes.push(key);
+              },
+              continue() {
+                index += 1;
+                queueMicrotask(advance);
+              }
+            };
+            request.onsuccess();
+          };
+          queueMicrotask(advance);
+          return request;
         }
       };
     }
   };
   const controller = createController({
     chrome: {
-      runtime: { onInstalled: installed, onStartup: startup }
+      runtime: { onInstalled: installed, onStartup: startup },
+      storage: {
+        local: {
+          get: async () => ({
+            uvdPausedDownloads: [
+              {
+                status: "paused",
+                resumeState: { kind: "hls", partBase: "hls_keep" }
+              },
+              {
+                status: "done",
+                resumeState: { kind: "hls", partBase: "hls_stale" }
+              }
+            ]
+          })
+        }
+      }
     },
     IDBKeyRange: {
       bound(lower, upper) {
@@ -60,7 +104,7 @@ async function main() {
   assert.equal(installed.listeners.length, 1);
   assert.equal(startup.listeners.length, 1);
   await installed.listeners[0]();
-  assert.deepEqual(deletes, [range]);
+  assert.deepEqual(deletes, ["hls_stale:p:000001"]);
   assert.equal(closed, 1);
 
   const failed = createController({
