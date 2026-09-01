@@ -443,7 +443,8 @@ const handleQualityMessage = UVDQualityMessages.createHandler({
   getTabMap,
   qualityLabel,
   withTabReferer: (tabId, operation) => withTabReferer(tabId, operation),
-  needsHelper: needsYtDlpHelper,
+  needsHelper: (url, pageUrl) =>
+    isRealDash(url, "stream") || needsYtDlpHelper(url, pageUrl),
   cache: formatsCache,
   cacheTtl: FORMATS_CACHE_TTL,
   getCookieHeader: siteHelperRunner.getCookieHeader,

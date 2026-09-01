@@ -113,6 +113,16 @@ def main() -> int:
         'manifest = bool(payload.get("manifest"))' in helper_source
         and "if (direct_file or manifest) and url:" in helper_source,
     )
+    content_source = (ROOT / "src/content.js").read_text(encoding="utf-8")
+    check(
+        "content script discovers MPD manifests",
+        "(?:m3u8|mpd|mp4)" in content_source
+        and "[data-src*='.mpd']" in content_source,
+    )
+    check(
+        "DASH quality probing uses helper",
+        "isRealDash(url, \"stream\") || needsYtDlpHelper" in background_source,
+    )
 
     print("== syntax ==")
     for f in (
