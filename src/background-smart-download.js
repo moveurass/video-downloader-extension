@@ -20,6 +20,7 @@
       downloadViaYtDlp,
       needsYtDlpHelper,
       isRealHls,
+      isRealDash,
       bestNonBlobAlternative,
       pageDownloadAllFrames,
       withTimeout,
@@ -28,6 +29,7 @@
       friendlyFetchError,
       probeContentLength,
       downloadDirectViaHelper,
+      downloadDashViaHelper,
       downloadMedia
     } = deps;
 
@@ -39,6 +41,20 @@
         options.pageUrl || itemHint?.pageUrl || (await resolvePageUrl(tabId, ""));
 
       emitDownloadProgress(tabId, 3, "시작…", "start", jid);
+
+      if (isRealDash(url, mediaType)) {
+        emitDownloadProgress(tabId, 4, "DASH 트랙 준비 중…", "playlist", jid);
+        const result = await downloadDashViaHelper(
+          tabId,
+          url,
+          pageUrl,
+          filename,
+          preferQuality,
+          jid
+        );
+        emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+        return result;
+      }
 
       // YouTube / TikTok → local yt-dlp helper (primary)
       const forceHelper = UVDDownloadRouting.shouldUseHelper({

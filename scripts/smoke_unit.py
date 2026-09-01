@@ -107,6 +107,12 @@ def main() -> int:
         (ROOT / "src/popup.js").read_text(encoding="utf-8").strip()
         == "UVDPopupInit.start();",
     )
+    helper_source = (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+    check(
+        "helper DASH manifest keeps media URL",
+        'manifest = bool(payload.get("manifest"))' in helper_source
+        and "if (direct_file or manifest) and url:" in helper_source,
+    )
 
     print("== syntax ==")
     for f in (

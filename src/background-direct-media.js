@@ -118,6 +118,68 @@
       };
     }
 
+    /**
+     * DASH manifests normally expose separate video and audio representations.
+     * Delegate selection, fragment fetching, and muxing to yt-dlp/ffmpeg while
+     * preserving the watch-page Referer and cookies.
+     */
+    async function downloadDashViaHelper(
+      tabId,
+      url,
+      pageUrl,
+      filename,
+      quality,
+      jid
+    ) {
+      if (!(await YtDlp.available())) {
+        throw new Error(
+          "DASH/MPD 영상은 로컬 도우미가 필요합니다. helper/start.command 를 실행해 주세요"
+        );
+      }
+      const cookieHeader = await getCookieHeaderForUrl(pageUrl || url);
+      const settings = await UVD.getSettings().catch(() => ({}));
+      const nameHint = ytdlpFilenameHint(filename);
+      const result = await YtDlp.downloadAndWait(
+        {
+          url,
+          pageUrl: pageUrl || undefined,
+          referer: pageUrl || undefined,
+          manifest: true,
+          filename: nameHint || undefined,
+          title: nameHint || undefined,
+          quality: quality || "best",
+          cookieHeader: cookieHeader || undefined,
+          codecPref: settings?.codecPref || "best",
+          speedProfile: settings?.downloadSpeed || "fast"
+        },
+        (p) => {
+          throwIfJobStopped(jid);
+          if (p.helperJobId && jid) {
+            const job = activeDownloads.get(jid);
+            if (job) job.helperJobId = p.helperJobId;
+          }
+          emitDownloadProgress(
+            tabId,
+            Math.min(98, Math.max(3, Number(p.percent) || 3)),
+            p.message || "DASH 트랙 받는 중…",
+            p.status || "download",
+            jid
+          );
+        },
+        40 * 60 * 1000
+      );
+      return {
+        ok: true,
+        method: "yt-dlp-dash",
+        downloadId: null,
+        ytdlp: true,
+        path: result.path || result.outDir || "",
+        outDir: result.outDir || "",
+        filename: result.filename || nameHint || filename,
+        size: result.size || 0
+      };
+    }
+
     async function downloadMedia(url, filename) {
       if (!url) throw new Error("받을 주소가 없습니다");
       if (url.startsWith("blob:")) throw new Error("이 형식은 바로 받을 수 없습니다");
@@ -229,6 +291,7 @@
     return {
       probeContentLength,
       downloadDirectViaHelper,
+      downloadDashViaHelper,
       downloadMedia,
       withTabReferer,
       resolvePageUrl

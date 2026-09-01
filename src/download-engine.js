@@ -32,6 +32,16 @@
       (mediaType === "stream" || /playlist|format=m3u8/i.test(url));
   }
 
+  function isDashUrl(url) {
+    return /\.mpd(\?|$|#)/i.test(url || "") || /(?:^|[?&])format=mpd(?:[&#]|$)/i.test(url || "");
+  }
+
+  function isRealDash(url, mediaType) {
+    if (!url) return false;
+    if (isDashUrl(url)) return true;
+    return mediaType === "stream" && /(?:dash|mpd)/i.test(url);
+  }
+
   function sniffIsVideo(bytes) {
     if (!bytes || bytes.length < 12) return false;
     if (bytes[0] === 0x42 && bytes[1] === 0x4d) return false;
@@ -72,6 +82,7 @@
   function isLikelyMedia(url, mime = "", size = 0, deps = {}) {
     if (!url || /^(chrome|data:|blob:)/i.test(url)) return false;
     if (/\.m3u8(\?|$|#)/i.test(url) || /mpegurl|m3u8/i.test(mime)) return true;
+    if (isDashUrl(url) || /dash\+xml/i.test(mime)) return true;
     if (/googlevideo\.com\/videoplayback/i.test(url) && !/[&?]oad=/i.test(url)) return true;
     if (
       /tiktokcdn|musical\.ly|byteicdn|ibyteimg|tiktokv\.com|byteoversea|tiktok\.com\/aweme/i.test(url) &&
@@ -249,6 +260,8 @@
     extFromUrl,
     isHlsUrl,
     isRealHls,
+    isDashUrl,
+    isRealDash,
     sniffIsVideo,
     classifyMedia,
     isLikelyMedia,

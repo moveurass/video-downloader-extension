@@ -33,7 +33,11 @@
       const mediaType =
         msg.mediaType ||
         item?.type ||
-        (deps.isHlsUrl(url) || msg.type === "DOWNLOAD_HLS" ? "stream" : "video");
+        (deps.isHlsUrl(url) ||
+        /\.mpd(\?|$|#)/i.test(url || "") ||
+        msg.type === "DOWNLOAD_HLS"
+          ? "stream"
+          : "video");
 
       const preferYtDlp =
         msg.preferYtDlp === true ||
@@ -50,7 +54,10 @@
         ...(item || {}),
         url,
         type: mediaType,
-        isHls: deps.isHlsUrl(url) || mediaType === "stream",
+        isHls:
+          deps.isHlsUrl(url) ||
+          /\.mpd(\?|$|#)/i.test(url || "") ||
+          mediaType === "stream",
         pageUrl: pageUrl || item?.pageUrl || url,
         title: boundTitle || item?.title,
         pageTitle: boundTitle || item?.pageTitle,

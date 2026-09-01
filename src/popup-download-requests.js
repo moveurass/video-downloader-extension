@@ -449,18 +449,19 @@
             });
           } else if (
             mediaUrl ||
-            (isDirectMedia && /\.(m3u8|mp4|webm|mkv)/i.test(mediaUrl || link))
+            (isDirectMedia && /\.(m3u8|mpd|mp4|webm|mkv)/i.test(mediaUrl || link))
           ) {
             const stream = mediaUrl || link;
             const isHls = /\.m3u8(\?|$|#)/i.test(stream);
+            const isDash = /\.mpd(\?|$|#)/i.test(stream);
             res = await sendMessage({
-              type: isHls ? "DOWNLOAD_HLS" : "DOWNLOAD",
+              type: isHls || isDash ? "DOWNLOAD_HLS" : "DOWNLOAD",
               url: stream,
               pageUrl: pageUrlHint,
               filename: filename || undefined,
               tabId: currentTabId,
               preferQuality: preferQ,
-              mediaType: isHls ? "stream" : "video",
+              mediaType: isHls || isDash ? "stream" : "video",
               preferYtDlp: false,
               openPageIfNeeded: true,
               title: realTitle || displayLabel
