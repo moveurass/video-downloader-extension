@@ -113,7 +113,7 @@ open helper/start.command
 | YouTube / TikTok 등 | **도우미 권장** |
 | 123av·missav 계열 | 페이지 재생 후 캡처 + 품번 시리즈 검증 |
 | SAMPLE-AES / Widevine DRM | **불가** |
-| DASH (mpd) | URL 수집만 (병합 미지원) |
+| DASH (mpd) | 로컬 도우미(yt-dlp + ffmpeg)로 영상·오디오 트랙 병합 |
 | 품번 시리즈 | 사이트 구조·Cloudflare에 따라 확인 실패 가능 — **추정만으로 목록에 넣지 않음** |
 | `chrome://`, 웹스토어 | 스크립트 제한 |
 

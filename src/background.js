@@ -69,6 +69,7 @@ const {
   extFromUrl,
   isHlsUrl,
   isRealHls,
+  isRealDash,
   sniffIsVideo,
   classifyMedia,
   withTimeout,
@@ -346,6 +347,7 @@ UVDBackgroundHousekeeping.createController({
 const {
   probeContentLength,
   downloadDirectViaHelper,
+  downloadDashViaHelper,
   downloadMedia,
   withTabReferer,
   resolvePageUrl
@@ -402,6 +404,7 @@ const { downloadSmart } = UVDBackgroundSmartDownload.createRouter({
   downloadViaYtDlp: siteHelperRunner.downloadViaYtDlp,
   needsYtDlpHelper,
   isRealHls,
+  isRealDash,
   bestNonBlobAlternative,
   pageDownloadAllFrames: pageDownloadAllFramesFallback,
   withTimeout,
@@ -410,6 +413,7 @@ const { downloadSmart } = UVDBackgroundSmartDownload.createRouter({
   friendlyFetchError,
   probeContentLength,
   downloadDirectViaHelper,
+  downloadDashViaHelper,
   downloadMedia
 });
 
@@ -439,7 +443,8 @@ const handleQualityMessage = UVDQualityMessages.createHandler({
   getTabMap,
   qualityLabel,
   withTabReferer: (tabId, operation) => withTabReferer(tabId, operation),
-  needsHelper: needsYtDlpHelper,
+  needsHelper: (url, pageUrl) =>
+    isRealDash(url, "stream") || needsYtDlpHelper(url, pageUrl),
   cache: formatsCache,
   cacheTtl: FORMATS_CACHE_TTL,
   getCookieHeader: siteHelperRunner.getCookieHeader,

@@ -107,6 +107,22 @@ def main() -> int:
         (ROOT / "src/popup.js").read_text(encoding="utf-8").strip()
         == "UVDPopupInit.start();",
     )
+    helper_source = (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+    check(
+        "helper DASH manifest keeps media URL",
+        'manifest = bool(payload.get("manifest"))' in helper_source
+        and "if (direct_file or manifest) and url:" in helper_source,
+    )
+    content_source = (ROOT / "src/content.js").read_text(encoding="utf-8")
+    check(
+        "content script discovers MPD manifests",
+        "(?:m3u8|mpd|mp4)" in content_source
+        and "[data-src*='.mpd']" in content_source,
+    )
+    check(
+        "DASH quality probing uses helper",
+        "isRealDash(url, \"stream\") || needsYtDlpHelper" in background_source,
+    )
 
     print("== syntax ==")
     for f in (

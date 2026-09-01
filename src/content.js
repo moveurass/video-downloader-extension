@@ -381,7 +381,8 @@
   }
 
   /**
-   * Max-style: sniff m3u8/mp4 URLs from inline scripts & HTML (123av / missav / javplayer).
+   * Sniff stream/direct URLs from inline scripts and HTML
+   * (123av / missav / javplayer-style pages).
    */
   function sniffUrlsFromPageText() {
     const found = new Set();
@@ -389,7 +390,7 @@
       try {
         const abs = absUrl(u);
         if (!abs || abs.startsWith("blob:")) return;
-        if (!/\.m3u8(\?|$|#)|playlist\.m3u8|master\.m3u8|\.mp4(\?|$|#)/i.test(abs)) return;
+        if (!/\.(?:m3u8|mpd|mp4)(\?|$|#)|playlist\.m3u8|master\.m3u8|manifest\.mpd/i.test(abs)) return;
         // skip tiny ad-looking names
         if (/\d+_\d{2,4}x\d{2,4}/i.test(abs)) return;
         found.add(abs);
@@ -404,16 +405,17 @@
       if (t.length < 20 || t.length > 2_000_000) return;
       // absolute urls
       const reAbs =
-        /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>\\]*)?/gi;
+        /https?:\/\/[^\s"'<>\\]+?\.(?:m3u8|mpd|mp4)(?:\?[^\s"'<>\\]*)?/gi;
       let m;
       while ((m = reAbs.exec(t))) add(m[0].replace(/\\u002F/g, "/").replace(/\\\//g, "/"));
       // escaped JSON urls
-      const reEsc = /https?:\\\/\\\/[^"'\\]+?\.(?:m3u8|mp4)/gi;
+      const reEsc = /https?:\\\/\\\/[^"'\\]+?\.(?:m3u8|mpd|mp4)/gi;
       while ((m = reEsc.exec(t))) {
         add(m[0].replace(/\\u002F/g, "/").replace(/\\\//g, "/"));
       }
       // relative playlist paths
-      const reRel = /["']([^"']*?(?:playlist|master|index)[^"']*\.m3u8[^"']*)["']/gi;
+      const reRel =
+        /["']([^"']*?(?:playlist|master|index|manifest)[^"']*\.(?:m3u8|mpd)[^"']*)["']/gi;
       while ((m = reRel.exec(t))) add(m[1]);
       // uuid + playlist pattern (missav/surrit style)
       // e.g. surrit.com/xxxxxxxx-xxxx.../playlist.m3u8 or /uuid/720p/video.m3u8
@@ -421,7 +423,8 @@
         /["'](https?:\/\/[^"']+\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/[^"']*\.m3u8[^"']*)["']/gi;
       while ((m = reUuid.exec(t))) add(m[1]);
       // source: '...' patterns
-      const reSrc = /(?:src|source|file|url|hls|playlist)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']/gi;
+      const reSrc =
+        /(?:src|source|file|url|hls|dash|playlist|manifest)\s*[:=]\s*["']([^"']+\.(?:m3u8|mpd)[^"']*)["']/gi;
       while ((m = reSrc.exec(t))) add(m[1]);
     });
 
@@ -429,7 +432,7 @@
     const html = document.documentElement?.innerHTML || "";
     if (html.length < 3_000_000) {
       const reAbs =
-        /https?:\/\/[^\s"'<>]+?\.(?:m3u8|mp4)(?:\?[^\s"'<>]*)?/gi;
+        /https?:\/\/[^\s"'<>]+?\.(?:m3u8|mpd|mp4)(?:\?[^\s"'<>]*)?/gi;
       let m;
       while ((m = reAbs.exec(html))) {
         if (m[0].length < 500) add(m[0]);
@@ -439,7 +442,7 @@
     // 3) performance resources already loaded
     try {
       performance.getEntriesByType("resource").forEach((e) => {
-        if (/\.m3u8|\.mp4/i.test(e.name)) add(e.name);
+        if (/\.(?:m3u8|mpd|mp4)/i.test(e.name)) add(e.name);
       });
     } catch {
       /* ignore */
@@ -459,12 +462,14 @@
     });
 
     document
-      .querySelectorAll("[data-video-url], [data-src*='.mp4'], [data-src*='.m3u8']")
+      .querySelectorAll(
+        "[data-video-url], [data-src*='.mp4'], [data-src*='.m3u8'], [data-src*='.mpd']"
+      )
       .forEach((el) => {
         const u = el.getAttribute("data-video-url") || el.getAttribute("data-src");
         if (!u) return;
         const url = absUrl(u);
-        const isStream = /\.m3u8/i.test(u);
+        const isStream = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(u);
         let localThumb =
           absUrl(el.getAttribute("data-poster") || el.getAttribute("poster")) ||
           (el.querySelector?.("img") && absUrl(el.querySelector("img").src)) ||
@@ -501,7 +506,7 @@
     // Script sniff — critical for 123av / missav-style players
     const playerDim = bestPlayerDimensions();
     for (const u of sniffUrlsFromPageText()) {
-      const isHls = /\.m3u8/i.test(u);
+      const isStream = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(u);
       const fromUrl = heightFromUrl(u);
       const h = fromUrl || playerDim.height || 0;
       const q = qualityFromHeight(h);
@@ -511,9 +516,9 @@
         pageTitle: title,
         host,
         filename: buildFilename(title, q, "mp4"),
-        type: isHls ? "stream" : "video",
+        type: isStream ? "stream" : "video",
         source: "script-sniff",
-        isHls,
+        isHls: isStream,
         width: h ? playerDim.width || undefined : undefined,
         height: h || undefined,
         quality: q,

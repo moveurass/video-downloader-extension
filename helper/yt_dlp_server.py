@@ -540,6 +540,9 @@ def run_download(job_id: str, payload: dict) -> None:
     # directFile: url IS the media file — download it as-is (referer only as
     # header), never re-target to the page for extractor detection.
     direct_file = bool(payload.get("directFile"))
+    # DASH manifests also use the supplied media URL directly, but unlike a
+    # progressive file yt-dlp must select and merge separate video/audio tracks.
+    manifest = bool(payload.get("manifest")) or ".mpd" in url.lower()
 
     with jobs_lock:
         jobs[job_id].update(
@@ -559,7 +562,7 @@ def run_download(job_id: str, payload: dict) -> None:
         return
 
     # Prefer page URL when both given (site extractors work on watch pages)
-    if direct_file and url:
+    if (direct_file or manifest) and url:
         target = url
     else:
         target = page_url if page_url and page_url.startswith("http") else url
@@ -593,11 +596,19 @@ def run_download(job_id: str, payload: dict) -> None:
     # If user passed a direct m3u8/mp4, use that
     if not direct_file and url and (
         ".m3u8" in url
+        or ".mpd" in url
         or url.endswith((".mp4", ".webm", ".mkv"))
         or "m3u8" in url.lower()
+        or "mpd" in url.lower()
     ):
         # still try page first if looks like a site page was also provided
-        if page_url and "://" in page_url and ".m3u8" not in page_url:
+        if (
+            not manifest
+            and page_url
+            and "://" in page_url
+            and ".m3u8" not in page_url
+            and ".mpd" not in page_url
+        ):
             target = page_url
         else:
             target = url

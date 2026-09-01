@@ -506,9 +506,6 @@ const Naming = (() => {
     // Segments alone
     if (item.type === "segment") return true;
 
-    // DASH not fully supported
-    if (/\.mpd(\?|$|#)/i.test(url)) return true;
-
     // Known ad / tracker hosts
     if (
       /doubleclick|googlesyndication|googlevideo\.com\/videoplayback\?.*&oad|adsystem|adnxs|adservice|exoclick|trafficjunky|tsyndicate|popads|adserver|ad\.|\/ads\/|\/ad[s]?\//i.test(

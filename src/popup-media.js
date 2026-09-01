@@ -125,7 +125,8 @@
   function isHlsItem(item) {
     const url = item?.url || "";
     return /\.m3u8(\?|$|#)/i.test(url) ||
-      (/m3u8/i.test(url) && (item?.isHls || item?.type === "stream"));
+      /\.mpd(\?|$|#)/i.test(url) ||
+      (/(?:m3u8|mpd|dash)/i.test(url) && (item?.isHls || item?.type === "stream"));
   }
 
   function isUglyName(name) {
