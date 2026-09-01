@@ -206,7 +206,57 @@ async function testNativeDirectPauseResume() {
       sendMessage: async () => {},
       getURL: (path) => `chrome-extension://unit/${path}`
     },
-    storage: { session: { set: async () => {} } },
+    storage: {
+      session: {
+        set: async () => {},
+        get: async () => ({
+          uvdActiveDownloads: [
+            {
+              id: "restored-hls",
+              status: "paused",
+              phase: "paused",
+              pageUrl: "https://example.test/watch",
+              mediaUrl: "https://media.test/playlist.m3u8",
+              filename: "Restored.mp4",
+              progressVersion: 1,
+              progressAttempt: 2,
+              progressSeq: 10,
+              resumeState: {
+                kind: "hls",
+                url: "https://media.test/playlist.m3u8",
+                quality: "720p",
+                partBase: "hls_restored-hls",
+                parts: {
+                  1: {
+                    size: 120_000,
+                    sourceUrl: "https://media.test/seg1.ts"
+                  }
+                }
+              }
+            },
+            {
+              id: "restored-direct",
+              status: "paused",
+              phase: "paused",
+              title: "Restored direct",
+              pageUrl: "https://example.test/video.mp4",
+              mediaUrl: "https://cdn.test/video.mp4",
+              filename: "Restored direct.mp4",
+              progressVersion: 1,
+              progressAttempt: 1,
+              progressSeq: 3,
+              resumeState: {
+                kind: "direct",
+                downloadId: 88,
+                url: "https://cdn.test/video.mp4",
+                bytesReceived: 1_000_000,
+                totalBytes: 2_000_000
+              }
+            }
+          ]
+        })
+      }
+    },
     tabs: { sendMessage: async () => {} },
     downloads: {
       pause: async (id) => paused.push(id),
@@ -248,8 +298,24 @@ async function testNativeDirectPauseResume() {
     },
     startKeepAlive: () => true,
     stopKeepAlive: () => {},
+    waitForChromeDownload: async () => ({
+      state: "complete",
+      path: "/Downloads/Restored direct.mp4",
+      bytesReceived: 2_000_000
+    }),
     setTimeout: () => 1
   });
+  await manager.ready;
+  assert.equal(manager.activeDownloads.get("restored-hls").status, "paused");
+  assert.equal(
+    manager.activeDownloads.get("restored-hls").resumeState.parts[1].size,
+    120_000
+  );
+  const restoredResume = await manager.resumeDownloadJob("restored-direct");
+  assert.equal(restoredResume.resumeKind, "http-range");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(manager.activeDownloads.get("restored-direct").status, "done");
+  assert.deepEqual(resumed, [88]);
   const jobId = manager.createDownloadJob({
     tabId: 7,
     title: "Direct",
@@ -272,7 +338,7 @@ async function testNativeDirectPauseResume() {
   assert.equal(job.percent, 2);
 
   const resumeResult = await manager.resumeDownloadJob(jobId);
-  assert.deepEqual(resumed, [42]);
+  assert.deepEqual(resumed, [88, 42]);
   assert.equal(resumeResult.resumeKind, "http-range");
   assert.equal(job.status, "running");
   assert.equal(job.message, "이어받는 중…");

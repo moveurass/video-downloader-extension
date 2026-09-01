@@ -18,7 +18,8 @@
       downloadPageFromUi,
       startKeepAlive,
       stopKeepAlive,
-      cleanupResumeState
+      cleanupResumeState,
+      waitForChromeDownload
     } = deps;
     const now = deps.now || Date.now;
     const schedule = deps.setTimeout || setTimeout;
@@ -61,6 +62,18 @@
         speedBps: job.speedBps || 0,
         speedLabel: job.speedBps ? UVD.formatSpeed(job.speedBps) : "",
         estimatedSize: job.estimatedSize || 0,
+        resumeState: job.resumeState
+          ? {
+              kind: job.resumeState.kind,
+              downloadId: job.resumeState.downloadId ?? null,
+              url: job.resumeState.url || "",
+              quality: job.resumeState.quality || "",
+              partBase: job.resumeState.partBase || "",
+              parts: job.resumeState.parts || {},
+              bytesReceived: job.resumeState.bytesReceived || 0,
+              totalBytes: job.resumeState.totalBytes || 0
+            }
+          : null,
         result: job.result
           ? {
               ok: job.result.ok,
@@ -76,6 +89,38 @@
         updatedAt: job.updatedAt
       };
     }
+
+    async function restorePausedJobs() {
+      const storage =
+        chrome.storage?.session?.get
+          ? chrome.storage.session
+          : chrome.storage?.local?.get
+            ? chrome.storage.local
+            : null;
+      if (!storage) return;
+      try {
+        const data = await storage.get("uvdActiveDownloads");
+        const saved = Array.isArray(data?.uvdActiveDownloads)
+          ? data.uvdActiveDownloads
+          : [];
+        for (const item of saved) {
+          if (!item?.id || item.status !== "paused") continue;
+          activeDownloads.set(item.id, {
+            ...item,
+            status: "paused",
+            phase: "paused",
+            pauseRequested: true,
+            cancelRequested: false,
+            resumeState: item.resumeState || null,
+            _restoredFromStorage: true
+          });
+        }
+      } catch {
+        // Session recovery is best-effort.
+      }
+    }
+
+    const ready = restorePausedJobs();
 
     function throwIfJobStopped(jobId) {
       if (!jobId) return;
@@ -99,7 +144,7 @@
       if (job.status === "cancelled" || job.status === "done") return;
       job.status = "paused";
       job.phase = "paused";
-      job.message = "일시정지됨 · 다시 시작 가능";
+      job.message = "일시정지됨 · 이어받기 가능";
       job.pauseRequested = true;
       job.cancelRequested = false;
       job.error = null;
@@ -170,6 +215,7 @@
     }
 
     async function cancelDownloadJob(jobId) {
+      await ready;
       const job = activeDownloads.get(jobId);
       if (!job) return { ok: false, error: "작업 없음" };
       if (job.status === "done" || job.status === "cancelled") {
@@ -213,6 +259,7 @@
     }
 
     async function pauseDownloadJob(jobId) {
+      await ready;
       const job = activeDownloads.get(jobId);
       if (!job) return { ok: false, error: "작업 없음" };
       if (job.status !== "running") {
@@ -273,6 +320,7 @@
     }
 
     async function resumeDownloadJob(jobId) {
+      await ready;
       const job = activeDownloads.get(jobId);
       if (!job) return { ok: false, error: "작업 없음" };
       if (job.status !== "paused") {
@@ -305,6 +353,36 @@
         persistJobs();
         broadcastJob(job);
         updateDownloadBadge();
+        if (job._restoredFromStorage && waitForChromeDownload) {
+          delete job._restoredFromStorage;
+          const keep = startKeepAlive();
+          Promise.resolve(waitForChromeDownload(directDownloadId))
+            .then((result) => {
+              const current = activeDownloads.get(jobId);
+              if (current?.pauseRequested) {
+                finalizePausedJob(jobId);
+                return;
+              }
+              finishDownloadJob(
+                jobId,
+                {
+                  ok: true,
+                  downloadId: directDownloadId,
+                  filename: job.filename,
+                  path: result?.path || "",
+                  size: result?.bytesReceived || job.resumeState?.totalBytes || 0,
+                  method: "chrome-downloads"
+                },
+                null
+              );
+            })
+            .catch((error) => {
+              const current = activeDownloads.get(jobId);
+              if (current?.pauseRequested) finalizePausedJob(jobId);
+              else finishDownloadJob(jobId, null, error);
+            })
+            .finally(() => stopKeepAlive(keep));
+        }
         return {
           ok: true,
           status: "running",
@@ -942,6 +1020,7 @@
     bindNotificationListener();
 
     return {
+      ready,
       activeDownloads,
       tabJobMap,
       jobAbortControllers,
