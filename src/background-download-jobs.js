@@ -224,6 +224,7 @@
       if (job.tabId != null && tabJobMap.get(job.tabId) === jobId) {
         tabJobMap.delete(job.tabId);
       }
+      delete job.resumeState;
       persistJobs();
       syncDurablePausedJobs().catch(() => {});
       broadcastJob(job);
@@ -787,6 +788,7 @@
       if (job.tabId != null && tabJobMap.get(job.tabId) === jobId) {
         tabJobMap.delete(job.tabId);
       }
+      delete job.resumeState;
       persistJobs();
       syncDurablePausedJobs().catch(() => {});
       broadcastJob(job);
