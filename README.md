@@ -63,6 +63,13 @@ open helper/start.command
 - 기본 저장: `~/Downloads/VideoDownloader/`  
 - 백그라운드/로그인 시 자동 실행: `helper/install_autostart.command`
 
+### 보안
+
+- 헬퍼는 `Origin` 헤더가 붙은 요청 중 **확장 프로그램(`chrome-extension://`) 출처만** 허용합니다. 일반 웹페이지가 헬퍼에 명령을 내리는 것을 차단합니다. (`curl` 등 Origin 없는 로컬 도구는 허용)
+- 특정 확장 하나만 허용하려면: `UVD_ALLOWED_ORIGIN=chrome-extension://<확장ID> python3 helper/yt_dlp_server.py`
+- 토큰 인증(선택): 헬퍼를 `UVD_TOKEN=<비밀값>`으로 실행하고, 확장 저장소 키 `helperToken`에 같은 값을 넣으면 모든 요청에 토큰이 요구됩니다.
+- 확장이 전달한 세션 쿠키 파일은 작업 종료 시 즉시 삭제되며, 헬퍼 시작 시 잔여 파일도 정리됩니다.
+
 ### 3) 확장에서 확인
 
 팝업 상단 **도우미 연결됨**(초록)이면 준비 완료.

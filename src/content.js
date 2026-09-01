@@ -1211,6 +1211,7 @@
       window.__UVD_STOP_DOWNLOAD__ = false;
       window.__UVD_STOP_JOB_ID__ = null;
       const jobId = msg.jobId || null;
+      const progressAttempt = Number(msg.progressAttempt) || 0;
       api
         .smartDownload(
           {
@@ -1232,6 +1233,7 @@
                   ...p,
                   // Bind to tracked download job (stops bar thrash across retries)
                   jobId: jobId || p.jobId || null,
+                  progressAttempt,
                   percent:
                     typeof p.percent === "number" ? p.percent : undefined
                 }

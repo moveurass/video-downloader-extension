@@ -3,6 +3,9 @@
  * Loaded via importScripts in SW and <script> in popup.
  */
 const UVD = (() => {
+  const HistoryModel =
+    globalThis.UVDHistoryModel ||
+    (typeof require === "function" ? require("./history-model.js") : null);
   const DEFAULT_SETTINGS = {
     subfolder: "VideoDownloader",
     // "legacy" = human title + optional _quality (readable old style)
@@ -390,50 +393,15 @@ const UVD = (() => {
   async function appendHistory(entry) {
     const settings = await getSettings();
     const list = await getHistory();
-    const title = entry.title || entry.filename || "영상";
-    const pageUrl = entry.pageUrl || entry.url || "";
-    const site = entry.site || siteFromUrl(pageUrl) || "";
-    const series = extractSeriesInfo(title);
-    const mergedTags = [
-      ...new Set(
-        [
-          ...autoTags(title, site, pageUrl),
-          ...(Array.isArray(entry.tags) ? entry.tags : []),
-          entry.seriesId || "",
-          entry.seriesKey || series?.key || ""
-        ]
-          .filter(Boolean)
-          .map(String)
-      )
-    ].slice(0, 16);
-    const item = {
-      id: entry.id || `h_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      title,
-      filename: entry.filename || "",
-      url: entry.url || pageUrl,
-      pageUrl,
-      path: entry.path || "",
-      downloadId: entry.downloadId ?? null,
-      status: entry.status || "done", // done | error
-      error: entry.error || null,
-      errorCode: entry.errorCode || classifyError(entry.error || "").code,
-      size: entry.size || 0,
-      method: entry.method || "",
-      quality: entry.quality || "",
-      mediaMode: entry.mediaMode || "video",
-      site,
-      thumbnail: entry.thumbnail || "",
-      tags: mergedTags,
-      seriesKey: series?.key || entry.seriesKey || "",
-      seriesPrefix: series?.prefix || entry.seriesPrefix || "",
-      seriesId: entry.seriesId || "",
-      seriesIndex: entry.seriesIndex || 0,
-      note: entry.note || "",
-      at: entry.at || Date.now()
-    };
+    const item = HistoryModel.buildItem(entry, {
+      siteFromUrl,
+      extractSeriesInfo,
+      autoTags,
+      classifyError
+    });
     // Library: keep more successful items (up to 200)
     const cap = Math.max(settings.maxHistory || 50, 200);
-    const next = [item, ...list.filter((x) => x.id !== item.id)].slice(0, cap);
+    const next = HistoryModel.prepend(list, item, cap);
     await chrome.storage.local.set({ [HISTORY_KEY]: next });
     try {
       chrome.runtime
@@ -447,9 +415,7 @@ const UVD = (() => {
 
   async function updateHistoryItem(id, patch) {
     const list = await getHistory();
-    const next = list.map((x) =>
-      x.id === id ? { ...x, ...(patch || {}), id: x.id } : x
-    );
+    const next = HistoryModel.update(list, id, patch);
     await chrome.storage.local.set({ [HISTORY_KEY]: next });
     try {
       chrome.runtime
@@ -1282,4 +1248,7 @@ const UVD = (() => {
 // CommonJS-ish global for both environments
 if (typeof globalThis !== "undefined") {
   globalThis.UVD = UVD;
+}
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = UVD;
 }

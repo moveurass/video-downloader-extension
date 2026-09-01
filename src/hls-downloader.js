@@ -12,6 +12,10 @@ const HLS = (() => {
   const CONCURRENCY_SOFT = 4;
   /** Very large playlists: start a bit lower to avoid opening storms */
   const CONCURRENCY_LARGE = 8;
+  /** Adaptive ramp-up ceiling when the CDN accepts parallel fetches cleanly */
+  const CONCURRENCY_MAX = 20;
+  /** Ramp up by +2 after this many consecutive error-free segments */
+  const RAMP_EVERY = 20;
 
   function resolveUrl(base, ref) {
     try {
@@ -652,8 +656,13 @@ const HLS = (() => {
       }
     }
 
-    // Launch workers up to initial limit; each loop pulls next index
-    const starters = Math.min(Math.max(getLimit(), 1), items.length);
+    // Launch workers up to the maximum possible limit so the pool can ramp UP
+    // mid-download; acquire() gates them to the current dynamic limit.
+    const maxLimit = Math.max(
+      getLimit(),
+      ctl?.getMaxLimit ? ctl.getMaxLimit() | 0 : 0
+    );
+    const starters = Math.min(Math.max(maxLimit, 1), items.length);
     try {
       await Promise.all(Array.from({ length: starters }, () => runWorker()));
     } catch (e) {
@@ -758,6 +767,15 @@ const HLS = (() => {
       return buf;
     }
 
+    // Streaming sink: when provided, each finished segment is handed off
+    // immediately (ordered by part index) and NOT retained in memory here.
+    // Cuts peak RAM from ~file size to ~concurrency × segment size and
+    // overlaps disk writes with network instead of one giant write at the end.
+    const streamOut =
+      typeof options.onSegmentData === "function" ? options.onSegmentData : null;
+    let streamedCount = 0;
+    let streamedBytes = 0;
+
     const parts = [];
     let bytesReceived = 0;
     // Meta estimate: bandwidth(bits/s) * duration → bytes
@@ -773,7 +791,15 @@ const HLS = (() => {
       onProgress({ phase: "init", current: 0, total: 1, message: "초기화 중…" });
       try {
         const initBuf = await fetchBuffer(parsed.mapUri, requestInit);
-        parts.push(initBuf);
+        if (streamOut) {
+          await streamOut(0, initBuf);
+          if (initBuf?.byteLength) {
+            streamedCount += 1;
+            streamedBytes += initBuf.byteLength;
+          }
+        } else {
+          parts.push(initBuf);
+        }
         if (initBuf?.byteLength) {
           bytesReceived += initBuf.byteLength;
           sampleBytes += initBuf.byteLength;
@@ -804,13 +830,32 @@ const HLS = (() => {
       return metaEst || fromSample || 0;
     };
 
+    // Displayed total is sticky: the raw estimate is recomputed per segment and
+    // wobbles a few % each tick, which made "약 800MB" bounce in the UI.
+    let shownTotal = 0;
+    const estTotalDisplay = () => {
+      const t = estTotal();
+      // Asymmetric hysteresis: growing is fine (honest correction upward),
+      // but only shrink on big drops — small downward re-estimates read as
+      // the total "bouncing" in the UI.
+      if (
+        !shownTotal ||
+        t > shownTotal * 1.08 ||
+        t < shownTotal * 0.8 ||
+        bytesReceived > shownTotal
+      ) {
+        shownTotal = Math.max(t, bytesReceived);
+      }
+      return shownTotal;
+    };
+
     onProgress({
       phase: "segments",
       current: 0,
       total: segments.length,
       bytesReceived,
-      bytesTotal: estTotal(),
-      message: formatSizeProgress(bytesReceived, estTotal())
+      bytesTotal: estTotalDisplay(),
+      message: formatSizeProgress(bytesReceived, estTotalDisplay())
     });
 
     // Adaptive concurrency: start fast, drop when CDN 403s pile up
@@ -823,9 +868,12 @@ const HLS = (() => {
           ? Math.max(CONCURRENCY_LARGE, 10)
           : CONCURRENCY;
     let hard403 = 0;
+    /** Error-free completions since the last concurrency change (ramp-up) */
+    let cleanStreak = 0;
     const softFail = options.allowPartial !== false;
     const poolCtl = {
       getLimit: () => concurrency,
+      getMaxLimit: () => (wantFast ? CONCURRENCY_MAX : CONCURRENCY_SOFT),
       shouldStop
     };
 
@@ -851,6 +899,11 @@ const HLS = (() => {
               const key = await getKey(seg.keyUri);
               const iv = parseIv(seg.keyIv, seg.sequence);
               data = await decryptAes128(data, key, iv);
+            }
+            if (streamOut) {
+              // Part 0 is reserved for the init segment (mapUri)
+              await streamOut(index + 1, data);
+              return { byteLength: data.byteLength };
             }
             return data;
           } catch (e) {
@@ -885,7 +938,19 @@ const HLS = (() => {
           sampleBytes += lastResult.byteLength;
           sampleCount += 1;
         }
-        const totalEst = estTotal();
+        // Adaptive ramp-UP: CDNs that never 403 usually tolerate more parallel
+        // fetches. Increase gently; any 403 resets the streak (and the existing
+        // back-off above lowers the limit again).
+        if (wantFast && hard403 === 0 && concurrency < CONCURRENCY_MAX) {
+          cleanStreak += 1;
+          if (cleanStreak >= RAMP_EVERY) {
+            cleanStreak = 0;
+            concurrency = Math.min(CONCURRENCY_MAX, concurrency + 2);
+          }
+        } else if (hard403 > 0) {
+          cleanStreak = 0;
+        }
+        const totalEst = estTotalDisplay();
         let message = formatSizeProgress(bytesReceived, totalEst);
         if (hard403 > 5) {
           message += " · 제한 대응";
@@ -903,12 +968,26 @@ const HLS = (() => {
     );
 
     // Drop empty / failed
-    for (const b of buffers) {
-      if (b && b.byteLength > 0) parts.push(b);
+    let okCount = 0;
+    let totalSize = 0;
+    if (streamOut) {
+      for (const b of buffers) {
+        if (b && b.byteLength > 0) {
+          streamedCount += 1;
+          streamedBytes += b.byteLength;
+        }
+      }
+      okCount = streamedCount;
+      totalSize = streamedBytes;
+    } else {
+      for (const b of buffers) {
+        if (b && b.byteLength > 0) parts.push(b);
+      }
+      okCount = parts.length;
+      for (const p of parts) totalSize += p.byteLength;
     }
 
     const expected = segments.length + (parsed.mapUri ? 1 : 0);
-    const okCount = parts.length;
 
     if (okCount < 2) {
       throw new Error(
@@ -927,9 +1006,6 @@ const HLS = (() => {
       );
     }
 
-    let totalSize = 0;
-    for (const p of parts) totalSize += p.byteLength;
-
     // Real videos are almost never under ~200KB after merge
     if (totalSize < 200_000) {
       throw new Error(
@@ -940,49 +1016,34 @@ const HLS = (() => {
     onProgress({
       phase: "merge",
       current: 0,
-      total: parts.length,
-      message: `파일 만드는 중… 0/${parts.length}`
+      total: okCount,
+      message: "파일 만드는 중…"
     });
 
-    const merged = new Uint8Array(totalSize);
-    let offset = 0;
-    // Report merge progress every ~32 parts so large VOD isn't a silent hang at 90%+
-    const mergeReportEvery = Math.max(1, Math.floor(parts.length / 20));
-    for (let i = 0; i < parts.length; i++) {
-      merged.set(parts[i], offset);
-      offset += parts[i].byteLength;
-      if (i === 0 || i === parts.length - 1 || i % mergeReportEvery === 0) {
-        onProgress({
-          phase: "merge",
-          current: i + 1,
-          total: parts.length,
-          message: `파일 만드는 중… ${i + 1}/${parts.length}`
-        });
-      }
-    }
-
-    const isFmp4 = parsed.isFmp4;
     // Always present as MP4 to the user. fMP4 init+m4s is real MP4;
     // MPEG-TS is still saved as .mp4 so players that sniff content can open it
     // (and filenames match user expectation — never .ts).
     const mime = "video/mp4";
     const ext = "mp4";
-    const blob = new Blob([merged], { type: mime });
+    // Blob from the part list directly — no full-size Uint8Array concat.
+    // (Blob references parts lazily; saves one whole-file RAM copy.)
+    const blob = streamOut ? null : new Blob(parts, { type: mime });
     const qLabel = quality !== "unknown" ? `_${quality}` : "";
     const filename = `video${qLabel}_${Date.now()}.${ext}`;
 
     onProgress({
       phase: "merge",
-      current: parts.length,
-      total: parts.length,
+      current: okCount,
+      total: okCount,
       message: "파일 만들기 완료"
     });
 
     return {
       blob,
+      streamed: !!streamOut,
       filename,
       quality,
-      segmentCount: parts.length,
+      segmentCount: okCount,
       duration: parsed.duration || 0,
       size: totalSize,
       isFmp4: true // user-facing: always treat as mp4 container name
@@ -998,3 +1059,10 @@ const HLS = (() => {
     pickVariant
   };
 })();
+
+if (typeof globalThis !== "undefined") {
+  globalThis.HLS = HLS;
+}
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = HLS;
+}

@@ -4,7 +4,8 @@
  */
 (async () => {
   const params = new URLSearchParams(location.search);
-  const key = params.get("key");
+  const partsKey = params.get("parts");
+  const key = params.get("key") || partsKey;
   const nameParam = params.get("name") || `영상_${Date.now()}.mp4`;
 
   function sanitizeName(filename) {
@@ -44,6 +45,33 @@
         r.onsuccess = () => resolve(r.result || null);
         r.onerror = () => reject(r.error);
       });
+    } finally {
+      try {
+        db.close();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /**
+   * Streamed HLS mode: parts were written during download under
+   * "<base>:p:<000idx>". Keys are zero-padded so getAll returns playback
+   * order. Blob(parts) references them lazily — memory stays flat.
+   */
+  async function getPartsBlob(baseKey) {
+    const db = await openDb();
+    try {
+      const parts = await new Promise((resolve, reject) => {
+        const tx = db.transaction("blobs", "readonly");
+        const r = tx
+          .objectStore("blobs")
+          .getAll(IDBKeyRange.bound(`${baseKey}:p:`, `${baseKey}:p:\uffff`));
+        r.onsuccess = () => resolve(r.result || []);
+        r.onerror = () => reject(r.error);
+      });
+      if (!parts.length) return null;
+      return new Blob(parts, { type: "video/mp4" });
     } finally {
       try {
         db.close();
@@ -133,13 +161,18 @@
 
   try {
     if (!key) throw new Error("저장 키 없음");
-    const stored = await getBlob(key);
-    if (!stored) throw new Error("저장 데이터를 찾을 수 없습니다");
-
-    const blob =
-      stored instanceof Blob
-        ? stored
-        : new Blob([stored], { type: "video/mp4" });
+    let blob;
+    if (partsKey) {
+      blob = await getPartsBlob(partsKey);
+      if (!blob) throw new Error("저장 조각을 찾을 수 없습니다");
+    } else {
+      const stored = await getBlob(key);
+      if (!stored) throw new Error("저장 데이터를 찾을 수 없습니다");
+      blob =
+        stored instanceof Blob
+          ? stored
+          : new Blob([stored], { type: "video/mp4" });
+    }
     if (!blob.size || blob.size < 100000) {
       throw new Error(`파일이 너무 작습니다 (${Math.round((blob.size || 0) / 1024)}KB)`);
     }

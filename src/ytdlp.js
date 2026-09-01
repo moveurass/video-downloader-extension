@@ -8,6 +8,34 @@ const YtDlp = (() => {
   let cachedHealth = null;
   let cachedAt = 0;
 
+  // Optional shared secret — set the same value in extension settings
+  // (storage key "helperToken") and helper env UVD_TOKEN.
+  let cachedToken = null;
+  let tokenLoaded = false;
+  try {
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === "local" && changes.helperToken) {
+        cachedToken = (changes.helperToken.newValue || "").trim() || null;
+        tokenLoaded = true;
+      }
+    });
+  } catch {
+    /* ignore */
+  }
+
+  async function authHeaders() {
+    if (!tokenLoaded) {
+      try {
+        const st = await chrome.storage.local.get("helperToken");
+        cachedToken = String(st.helperToken || "").trim() || null;
+      } catch {
+        cachedToken = null;
+      }
+      tokenLoaded = true;
+    }
+    return cachedToken ? { "X-UVD-Token": cachedToken } : {};
+  }
+
   async function health(force = false) {
     const now = Date.now();
     if (!force && cachedHealth && now - cachedAt < 4000) return cachedHealth;
@@ -35,7 +63,7 @@ const YtDlp = (() => {
   async function startDownload(payload) {
     const res = await fetch(`${BASE}/download`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify(payload)
     });
     const data = await res.json().catch(() => ({}));
@@ -52,7 +80,9 @@ const YtDlp = (() => {
   }
 
   async function getJob(jobId) {
-    const res = await fetch(`${BASE}/job/${jobId}`);
+    const res = await fetch(`${BASE}/job/${jobId}`, {
+      headers: await authHeaders()
+    });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || "job not found");
     return data.job;
@@ -64,7 +94,7 @@ const YtDlp = (() => {
     try {
       const res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: "{}"
       });
       const data = await res.json().catch(() => ({}));
@@ -81,7 +111,7 @@ const YtDlp = (() => {
   async function listFormats(url, extra = {}) {
     const res = await fetch(`${BASE}/formats`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify({ url, pageUrl: url, ...extra })
     });
     const data = await res.json().catch(() => ({}));
@@ -98,7 +128,7 @@ const YtDlp = (() => {
   async function listPlaylist(url, extra = {}) {
     const res = await fetch(`${BASE}/playlist`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify({ url, pageUrl: url, ...extra })
     });
     const data = await res.json().catch(() => ({}));

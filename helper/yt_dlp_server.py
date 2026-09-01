@@ -29,11 +29,26 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
+try:
+    from .name_utils import clean_name
+except ImportError:
+    from name_utils import clean_name
+
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("UVD_PORT", "8787"))
 HOME = Path.home()
 OUT_DIR = Path(os.environ.get("UVD_OUT", HOME / "Downloads" / "VideoDownloader"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Access control ──
+# Browsers always attach an Origin header to cross-origin fetch/XHR/form POSTs,
+# so requiring extension origins blocks arbitrary web pages from commanding the
+# helper. Requests without Origin (curl, local scripts) are allowed.
+# Pin one exact origin with UVD_ALLOWED_ORIGIN=chrome-extension://<id>.
+# Optional shared secret: set UVD_TOKEN and configure the same token in the
+# extension settings — then every protected request must send X-UVD-Token.
+ALLOWED_ORIGIN_EXACT = os.environ.get("UVD_ALLOWED_ORIGIN", "").strip()
+AUTH_TOKEN = os.environ.get("UVD_TOKEN", "").strip()
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
@@ -101,6 +116,10 @@ def write_netscape_cookies(cookies: list, path: Path) -> int:
         lines.append(f"{domain}\t{flag}\t{cpath}\t{secure}\t{exp}\t{name}\t{value}")
         n += 1
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
     return n
 
 
@@ -466,10 +485,31 @@ def ytdlp_version(bin_path: str) -> str:
         return "unknown"
 
 
+def origin_allowed(origin: str) -> bool:
+    if not origin:
+        # No Origin = non-browser local client. Browsers cannot omit Origin on
+        # cross-origin fetch/XHR/form POSTs, so this cannot be forged by a page.
+        return True
+    if ALLOWED_ORIGIN_EXACT:
+        return origin == ALLOWED_ORIGIN_EXACT
+    return origin.startswith("chrome-extension://")
+
+
+def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
+    if not origin_allowed((handler.headers.get("Origin") or "").strip()):
+        return False
+    if AUTH_TOKEN and (handler.headers.get("X-UVD-Token") or "").strip() != AUTH_TOKEN:
+        return False
+    return True
+
+
 def cors(handler: BaseHTTPRequestHandler) -> None:
-    handler.send_header("Access-Control-Allow-Origin", "*")
+    origin = (handler.headers.get("Origin") or "").strip()
+    if origin and origin_allowed(origin):
+        handler.send_header("Access-Control-Allow-Origin", origin)
+        handler.send_header("Vary", "Origin")
     handler.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type, X-UVD-Token")
 
 
 def read_json(handler: BaseHTTPRequestHandler) -> dict:
@@ -497,6 +537,9 @@ def run_download(job_id: str, payload: dict) -> None:
     page_url = (payload.get("pageUrl") or payload.get("referer") or "").strip()
     quality = (payload.get("quality") or "best").strip()
     title_hint = (payload.get("filename") or payload.get("title") or "").strip()
+    # directFile: url IS the media file — download it as-is (referer only as
+    # header), never re-target to the page for extractor detection.
+    direct_file = bool(payload.get("directFile"))
 
     with jobs_lock:
         jobs[job_id].update(
@@ -516,7 +559,10 @@ def run_download(job_id: str, payload: dict) -> None:
         return
 
     # Prefer page URL when both given (site extractors work on watch pages)
-    target = page_url if page_url and page_url.startswith("http") else url
+    if direct_file and url:
+        target = url
+    else:
+        target = page_url if page_url and page_url.startswith("http") else url
 
     # ── TikTok first: SnapTik/TikWM-style resolve (no yt-dlp required) ──
     site_early = (payload.get("site") or "").lower()
@@ -545,7 +591,7 @@ def run_download(job_id: str, payload: dict) -> None:
             )
         return
     # If user passed a direct m3u8/mp4, use that
-    if url and (
+    if not direct_file and url and (
         ".m3u8" in url
         or url.endswith((".mp4", ".webm", ".mkv"))
         or "m3u8" in url.lower()
@@ -557,56 +603,6 @@ def run_download(job_id: str, payload: dict) -> None:
             target = url
 
     # output template — clean human names (no "(2) " notification prefix, no "_best")
-    def clean_name(raw: str) -> str:
-        s = (raw or "").strip()
-        # drop any directory parts (defense in depth)
-        s = s.replace("\\", "/").split("/")[-1]
-        # strip extension(s)
-        for _ in range(3):
-            stripped = False
-            for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a", ".mp3"):
-                if s.lower().endswith(ext):
-                    s = s[: -len(ext)]
-                    stripped = True
-                    break
-            if not stripped:
-                break
-        # Chrome uniquify: "name (1)"
-        s = re.sub(r"\s*\(\d{1,3}\)\s*$", "", s)
-        # notification / tab counters: "(2) title"
-        s = re.sub(r"^\(\d{1,4}\)\s*", "", s)
-        s = re.sub(r"^\[\d{1,4}\]\s*", "", s)
-        # 123av-style junk in titles (may be glued: Uncensored-Leaked_720p)
-        s = re.sub(
-            r"[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?",
-            " ",
-            s,
-            flags=re.I,
-        )
-        s = re.sub(r"[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)", " ", s, flags=re.I)
-        s = re.sub(
-            r"[-–—|·•:_\s]*(No\s*Mosaic|Demosaic|Uncut|Raw)(?=[_\s\-–—.]|$)",
-            " ",
-            s,
-            flags=re.I,
-        )
-        # product code uppercase at front
-        m = re.match(r"^\[?\s*([A-Za-z]{2,12})[-_ ]?(\d{2,5})\s*\]?\s*(.*)$", s)
-        if m:
-            s = f"{m.group(1).upper()}-{m.group(2)} {m.group(3)}".strip()
-        # fancy dashes → space
-        s = re.sub(r"[\u2010-\u2015\u2212|·•]+", " ", s)
-        s = re.sub(r"\s+-\s+", " ", s)
-        # useless quality tags we sometimes pass from the extension
-        s = re.sub(r"[_\s-]*(best|all|unknown)$", "", s, flags=re.I)
-        s = re.sub(r"[_\s-]*(best|all)[_\s-]*", " ", s, flags=re.I)
-        s = "".join(c if c not in '<>:"/\\|?*' else " " for c in s)
-        s = " ".join(s.split()).strip(" ._-")[:72]
-        # bare / empty names break yt-dlp -o templates and OS save
-        if not s or len(s) < 2 or s in {".", ".."}:
-            return "video"
-        return s
-
     if title_hint:
         safe = clean_name(title_hint)
         # Readable old-style names: keep spaces + unicode (no restrict-filenames)
@@ -819,10 +815,23 @@ def run_download(job_id: str, payload: dict) -> None:
     # aria2c multi-connection when installed (big win on progressive/large files)
     aria2 = shutil.which("aria2c")
 
+    # yt-dlp writes the FINAL saved path here — exact attribution even with
+    # concurrent jobs, and no Downloads-folder listing needed (macOS TCC can
+    # block globbing for launchd agents while child writes still succeed).
+    path_file = COOKIE_DIR / f"path_{job_id}.txt"
+    try:
+        path_file.unlink(missing_ok=True)
+    except OSError:
+        pass
+
     def build_cmd(format_str: str, merge: str, extra: list[str] | None = None) -> list[str]:
         c = [
             bin_path,
             "--newline",
+            "--no-simulate",
+            "--print-to-file",
+            "after_move:filepath",
+            str(path_file),
             "-o",
             outtmpl,
             "--no-overwrites",
@@ -928,7 +937,11 @@ def run_download(job_id: str, payload: dict) -> None:
         return c
 
     # Site-specific attempt chains
-    if is_instagram:
+    if direct_file:
+        # Single generic-download attempt — format fallbacks are meaningless
+        # for a plain file URL and only waste time when the CDN rejects us.
+        attempts: list[tuple[str, str, list[str]]] = [("b", "mp4", [])]
+    elif is_instagram:
         # Instagram: cookies file first, then cookies-from-browser fallback
         attempts: list[tuple[str, str, list[str]]] = [
             (fmt, "mp4", []),
@@ -1001,6 +1014,7 @@ def run_download(job_id: str, payload: dict) -> None:
                 jobs[job_id]["_dl_stage"] = 0
                 jobs[job_id]["_dest_count"] = 0
                 jobs[job_id]["_raw_dl_pct"] = None
+                jobs[job_id]["_disp_pct"] = 0.0
                 if attempt_i:
                     jobs[job_id]["message"] = f"다른 화질로 재시도 ({attempt_i + 1}/{len(attempts)})…"
                     # Soft reset so bar can move again honestly
@@ -1057,21 +1071,34 @@ def run_download(job_id: str, payload: dict) -> None:
                         if dest_n > 1:
                             jobs[job_id]["_dl_stage"] = dest_n - 1
                             jobs[job_id]["_raw_dl_pct"] = 0
+                            jobs[job_id]["_disp_pct"] = 0.0
                             jobs[job_id]["message"] = f"추가 트랙 받는 중… ({dest_n}번째)"
 
                     if percent is not None:
                         prev_raw = jobs[job_id].get("_raw_dl_pct")
                         stage = int(jobs[job_id].get("_dl_stage", 0) or 0)
-                        # Fallback stage detect: big drop after high % (new format)
+                        # Fallback stage detect: only when the previous track was
+                        # essentially done. yt-dlp's raw % is based on an
+                        # ESTIMATED total (~size) and drops when the estimate
+                        # grows — a loose threshold here misread that as a new
+                        # track and made the bar jump around.
                         if (
                             prev_raw is not None
-                            and float(prev_raw) >= 40
-                            and percent + 25 < float(prev_raw)
+                            and float(prev_raw) >= 96
+                            and percent < 15
                         ):
                             stage = stage + 1
                             jobs[job_id]["_dl_stage"] = stage
+                            jobs[job_id]["_disp_pct"] = 0.0
                             jobs[job_id]["message"] = f"추가 트랙 받는 중… ({stage + 1}단계)"
                         jobs[job_id]["_raw_dl_pct"] = percent
+
+                        # Displayed % is monotonic per stage — raw % wobbles with
+                        # size re-estimates, which looked like the bar bouncing.
+                        disp = max(
+                            float(jobs[job_id].get("_disp_pct") or 0.0), percent
+                        )
+                        jobs[job_id]["_disp_pct"] = disp
 
                         # Map into UI bands — leave headroom so we never sit at 99 early:
                         #   stage 0 (main/video or single file): 3–85%
@@ -1079,21 +1106,21 @@ def run_download(job_id: str, payload: dict) -> None:
                         #   merge/post:                          92–97%
                         #   done:                                100%
                         if stage <= 0:
-                            mapped = 3.0 + (percent / 100.0) * 82.0  # 3..85
+                            mapped = 3.0 + (disp / 100.0) * 82.0  # 3..85
                         else:
-                            mapped = 85.0 + (percent / 100.0) * 7.0  # 85..92
+                            mapped = 85.0 + (disp / 100.0) * 7.0  # 85..92
                         mapped = max(2.0, min(92.0, mapped))
                         prev_p = float(jobs[job_id].get("percent") or 0)
                         # Monotonic within band; stage bumps start at ≥ previous
                         jobs[job_id]["percent"] = max(prev_p, mapped) if stage == 0 else max(
                             max(prev_p, 85.0), mapped
                         )
-                        # Friendly message with real stream %
+                        # Friendly message with the monotonic stream %
                         if stage <= 0:
-                            jobs[job_id]["message"] = f"받는 중… {percent:.0f}%"
+                            jobs[job_id]["message"] = f"받는 중… {disp:.0f}%"
                         else:
                             jobs[job_id]["message"] = (
-                                f"추가 트랙 받는 중… {percent:.0f}% "
+                                f"추가 트랙 받는 중… {disp:.0f}% "
                                 f"(전체 {jobs[job_id]['percent']:.0f}%)"
                             )
                     elif "Merging" in line or "Merger" in line or "Post-process" in line:
@@ -1144,12 +1171,23 @@ def run_download(job_id: str, payload: dict) -> None:
                 )
                 return
 
-        # Resolve output file
+        # Resolve output file — prefer the exact path yt-dlp reported
         final_path = None
         final_size = 0
-        if printed_paths:
+        try:
+            if path_file.is_file():
+                lines = [
+                    ln.strip()
+                    for ln in path_file.read_text(encoding="utf-8").splitlines()
+                    if ln.strip()
+                ]
+                if lines:
+                    final_path = lines[-1]
+        except OSError:
+            final_path = None
+        if not final_path and printed_paths:
             final_path = printed_paths[-1]
-        else:
+        if not final_path:
             # Newest video file written after we started
             candidates = []
             for pat in ("*.mp4", "*.webm", "*.mkv", "*.m4a"):
@@ -1246,6 +1284,17 @@ def run_download(job_id: str, payload: dict) -> None:
                     "finishedAt": time.time(),
                 }
             )
+    finally:
+        # Session cookies must not linger on disk after the job ends
+        if cookies_file:
+            try:
+                Path(cookies_file).unlink(missing_ok=True)
+            except Exception:
+                pass
+        try:
+            path_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1276,6 +1325,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/job/"):
+            if not request_authorized(self):
+                send_json(self, 403, {"ok": False, "error": "forbidden origin"})
+                return
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
             if rest.endswith("/cancel"):
                 job_id = rest[: -len("/cancel")].rstrip("/")
@@ -1300,6 +1352,10 @@ class Handler(BaseHTTPRequestHandler):
         send_json(self, 404, {"ok": False, "error": "not found"})
 
     def do_POST(self) -> None:
+        if not request_authorized(self):
+            send_json(self, 403, {"ok": False, "error": "forbidden origin"})
+            return
+
         # Cancel running yt-dlp job
         if self.path.startswith("/job/") and self.path.rstrip("/").endswith("/cancel"):
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
@@ -1336,7 +1392,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cookies_list = payload.get("cookiesList") or payload.get("cookies")
                 if isinstance(cookies_list, list) and cookies_list:
-                    cpath = COOKIE_DIR / f"formats_cookies_{os.getpid()}.txt"
+                    cpath = COOKIE_DIR / f"formats_cookies_{uuid.uuid4().hex[:12]}.txt"
                     n = write_netscape_cookies(cookies_list, cpath)
                     if n > 0:
                         cookies_file = str(cpath)
@@ -1645,7 +1701,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 cookies_list = payload.get("cookiesList") or payload.get("cookies")
                 if isinstance(cookies_list, list) and cookies_list:
-                    cpath = COOKIE_DIR / f"pl_cookies_{os.getpid()}.txt"
+                    cpath = COOKIE_DIR / f"pl_cookies_{uuid.uuid4().hex[:12]}.txt"
                     n = write_netscape_cookies(cookies_list, cpath)
                     if n > 0:
                         cookies_file = str(cpath)
@@ -1887,10 +1943,25 @@ class Handler(BaseHTTPRequestHandler):
         send_json(self, 404, {"ok": False, "error": "not found"})
 
 
+def cleanup_stale_cookie_files() -> None:
+    """Remove cookie files left over from previous runs (crashes, old versions)."""
+    try:
+        for p in COOKIE_DIR.glob("*.txt"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def main() -> None:
+    cleanup_stale_cookie_files()
     bin_path = find_ytdlp()
     print(f"UVD yt-dlp helper  http://{HOST}:{PORT}")
     print(f"  output: {OUT_DIR}")
+    origin_desc = ALLOWED_ORIGIN_EXACT or "chrome-extension://* (웹페이지 차단)"
+    print(f"  origin: {origin_desc}" + ("  · token 필요" if AUTH_TOKEN else ""))
     if bin_path:
         print(f"  yt-dlp: {bin_path} ({ytdlp_version(bin_path)})")
     else:

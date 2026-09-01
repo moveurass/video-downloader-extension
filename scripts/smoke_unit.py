@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
-import re
 import subprocess
 import sys
+import urllib.error
 import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "helper"))
+from name_utils import clean_name  # noqa: E402
 
 OK = 0
 FAIL = 0
@@ -22,178 +27,11 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f" FAIL {name}" + (f" — {detail}" if detail else ""))
 
 
-def extract_series_info(title: str):
-    t = str(title or "")
-    m = re.search(r"\b([A-Za-z]{2,8})[-_ ]?(\d{2,5})\b", t)
-    if m and not re.match(r"^(http|https|www|mp4|HD|FHD|4K)$", m.group(1), re.I):
-        prefix = m.group(1).upper()
-        num = int(m.group(2))
-        pad = len(m.group(2))
-        if 0 < num < 100000:
-            return {
-                "key": f"{prefix}-{str(num).zfill(pad)}",
-                "prefix": prefix,
-                "num": num,
-                "pad": pad,
-            }
-    return None
-
-
-def clean_name(raw: str) -> str:
-    s = (raw or "").strip()
-    s = s.replace("\\", "/").split("/")[-1]
-    for ext in (".mp4", ".ts", ".webm", ".mkv", ".m4a", ".mp3"):
-        if s.lower().endswith(ext):
-            s = s[: -len(ext)]
-    s = re.sub(r"^\(\d{1,4}\)\s*", "", s)
-    s = "".join(c if c not in '<>:"/\\|?*' else " " for c in s)
-    s = " ".join(s.split()).strip(" ._-")[:80]
-    if not s or len(s) < 2 or s in {".", ".."}:
-        return "video"
-    return s
-
-
-def height_from_string(s: str) -> int:
-    """Mirror hls-downloader heightFromString for regression."""
-    str_ = str(s or "")
-    if not str_:
-        return 0
-    m = re.search(
-        r"(?:^|[^\dA-Za-z])(2160|1440|1080|720|480|360|240)\s*[pP](?:[^\d]|$)",
-        str_,
-    )
-    if m:
-        return int(m.group(1))
-    m = re.search(r"(?:^|[^\dA-Za-z])4\s*[kK](?:[^\dA-Za-z]|$)", str_)
-    if m:
-        return 2160
-    m = re.search(
-        r"[/_-](2160|1440|1080|720|480|360|240)(?:[/_.\-?]|\.m3u8|$)",
-        str_,
-        re.I,
-    )
-    if m:
-        return int(m.group(1))
-    m = re.search(
-        r"[?&](?:quality|res|resolution|h|height|r)=?(2160|1440|1080|720|480|360|240)\b",
-        str_,
-        re.I,
-    )
-    if m:
-        return int(m.group(1))
-    m = re.match(r"^(2160|1440|1080|720|480|360|240)$", str_)
-    if m:
-        return int(m.group(1))
-    return 0
-
-
-def classify_error(msg: str) -> str:
-    """Minimal mirror of UVD.classifyError codes used in UI."""
-    s = str(msg or "")
-    if re.search(r"도우미|8787|yt-dlp not|헬퍼|ECONNREFUSED", s, re.I):
-        return "helper"
-    if re.search(r"403|401|접근 거부|Forbidden", s, re.I):
-        return "forbidden"
-    if re.search(r"DRM|SAMPLE-AES|Widevine", s, re.I):
-        return "drm"
-    if re.search(r"너무 작|빈 파일|불완전|세그먼트 부족", s, re.I):
-        return "incomplete"
-    if re.search(r"429|rate.?limit", s, re.I):
-        return "rate_limit"
-    if re.search(r"시간 초과|timeout", s, re.I):
-        return "timeout"
-    if re.search(r"network|Failed to fetch|ENOTFOUND", s, re.I):
-        return "network"
-    return "other"
-
-
-def ensure_quality_choices_logic(qualities: list) -> list:
-    """
-    Collapse single real height: only one concrete id (not bare best).
-    Mirrors popup ensureQualityChoices intent.
-    """
-    real = [q for q in qualities if q.get("id") and q["id"] != "best"]
-    best = next((q for q in qualities if q.get("id") == "best"), None)
-    if len(real) == 1:
-        return real
-    if not real and best and best.get("height", 0) >= 240:
-        h = int(best["height"])
-        lab = (
-            "4K"
-            if h >= 2160
-            else "1440p"
-            if h >= 1440
-            else "1080p"
-            if h >= 1080
-            else "720p"
-            if h >= 720
-            else "480p"
-            if h >= 480
-            else "360p"
-            if h >= 360
-            else "240p"
-        )
-        return [{"id": lab, "label": lab, "height": h}]
-    if not real and best:
-        return [best]
-    return qualities
-
-
 def main() -> int:
-    print("== pure logic ==")
-    info = extract_series_info("SSIS-001 테스트 제목")
-    check(
-        "extract SSIS-001",
-        info is not None
-        and info["prefix"] == "SSIS"
-        and info["num"] == 1
-        and info["key"] == "SSIS-001",
-    )
-    check("no false series", extract_series_info("Hello world") is None)
+    print("== helper naming module ==")
     check("clean_name path", clean_name("VideoDownloader/foo.mp4") == "foo")
     check("clean_name empty-ish", clean_name(".mp4") == "video")
     check("clean_name korean", clean_name("시리즈 제목.mp4") == "시리즈 제목")
-
-    print("== height inference ==")
-    cases = [
-        ("https://cdn.example/uuid/720p/video.m3u8", 720),
-        ("https://cdn.example/uuid/720/seg0.ts", 720),
-        ("https://x.com/a/1080p.m3u8", 1080),
-        ("https://x.com/video_1080.m3u8", 1080),
-        ("720", 720),
-        ("https://surrit.com/abc/playlist.m3u8", 0),
-        ("SSIS-001 Uncensored Leaked 720p", 720),
-    ]
-    for s, expect in cases:
-        got = height_from_string(s)
-        check(f"height {expect} ← {s[:48]}", got == expect, f"got {got}")
-
-    print("== quality chip collapse ==")
-    one = ensure_quality_choices_logic(
-        [{"id": "best", "label": "최고"}, {"id": "720p", "label": "720p", "height": 720}]
-    )
-    check("single real → only 720p", len(one) == 1 and one[0]["id"] == "720p")
-    bare = ensure_quality_choices_logic([{"id": "best", "label": "최고", "height": 1080}])
-    check(
-        "best+height → 1080p",
-        len(bare) == 1 and bare[0]["id"] == "1080p",
-        str(bare),
-    )
-    multi = ensure_quality_choices_logic(
-        [
-            {"id": "best", "label": "최고"},
-            {"id": "1080p", "height": 1080},
-            {"id": "720p", "height": 720},
-        ]
-    )
-    check("multi keeps list", len(multi) >= 2)
-
-    print("== error classify ==")
-    check("helper", classify_error("도우미 8787 연결 실패") == "helper")
-    check("403", classify_error("Segment HTTP 403") == "forbidden")
-    check("drm", classify_error("SAMPLE-AES not supported") == "drm")
-    check("incomplete", classify_error("파일이 너무 작습니다 (12KB)") == "incomplete")
-    check("rate", classify_error("HTTP 429 rate limit") == "rate_limit")
 
     print("== helper health ==")
     try:
@@ -211,23 +49,367 @@ def main() -> int:
         check("helper yt-dlp", True, "skipped")
         check("helper outDir present", True, "skipped")
 
+    print("== helper security ==")
+    req = urllib.request.Request(
+        "http://127.0.0.1:8787/download",
+        data=b"{}",
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "https://evil.example",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            code = r.status
+        check("web origin blocked", code == 403, f"got HTTP {code}")
+    except urllib.error.HTTPError as e:
+        check("web origin blocked", e.code == 403, f"got HTTP {e.code}")
+    except Exception as e:
+        print(f"  skip origin gate (helper not running): {e}")
+        check("web origin blocked", True, "skipped")
+
+    background_source = (ROOT / "src/background.js").read_text(encoding="utf-8")
+    check(
+        "background filename importScripts",
+        '"background-filename.js"' in background_source.split(");", 1)[0],
+    )
+    check(
+        "background site helper importScripts",
+        '"background-site-helper.js"' in background_source.split(");", 1)[0],
+    )
+    check(
+        "background page fallback importScripts",
+        '"background-page-fallback.js"' in background_source.split(");", 1)[0],
+    )
+    popup_html = (ROOT / "src/popup.html").read_text(encoding="utf-8")
+    popup_init_pos = popup_html.find('<script src="popup-init.js"></script>')
+    popup_entry_pos = popup_html.find('<script src="popup.js"></script>')
+    check(
+        "popup init loaded before entrypoint",
+        0 <= popup_init_pos < popup_entry_pos,
+    )
+    check(
+        "popup entrypoint starts init",
+        (ROOT / "src/popup.js").read_text(encoding="utf-8").strip()
+        == "UVDPopupInit.start();",
+    )
+
     print("== syntax ==")
     for f in (
         "src/background.js",
+        "src/background-filename.js",
+        "src/background-site-helper.js",
+        "src/background-page-fallback.js",
+        "src/popup-init.js",
         "src/popup.js",
+        "src/popup-duplicate-confirmation.js",
+        "src/popup-quality-state.js",
+        "src/popup-helper-state.js",
+        "src/popup-display-utils.js",
         "src/content.js",
+        "src/progress-protocol.js",
+        "src/background-download-jobs.js",
+        "src/download-queue-state.js",
+        "src/download-message-handler.js",
+        "src/background-message-router.js",
+        "src/background-context-menus.js",
+        "src/background-quality-messages.js",
+        "src/background-download-messages.js",
+        "src/background-direct-download-messages.js",
+        "src/background-series-messages.js",
+        "src/background-media-messages.js",
+        "src/background-helper-messages.js",
+        "src/background-chunk-assembly.js",
+        "src/background-download-execution.js",
+        "src/background-scheduled-jobs.js",
+        "src/background-media-state.js",
+        "src/background-smart-download.js",
+        "src/background-save-pipeline.js",
+        "src/background-direct-media.js",
+        "src/background-hls-runtime.js",
+        "src/download-routing.js",
+        "src/download-engine.js",
+        "src/history-model.js",
+        "src/media-quality.js",
+        "src/popup-media.js",
+        "src/popup-media-loader.js",
+        "src/popup-media-renderer.js",
+        "src/popup-download-requests.js",
+        "src/popup-runtime-events.js",
+        "src/popup-settings-ui.js",
+        "src/popup-dom-events.js",
+        "src/popup-clipboard-history.js",
+        "src/popup-queue-ui.js",
+        "src/popup-progress-ui.js",
+        "src/popup-series-ui.js",
+        "src/popup-series-network.js",
+        "src/popup-series-discovery.js",
+        "src/popup-series-banner-ui.js",
+        "src/popup-library-ui.js",
+        "src/popup-watchlist-ui.js",
+        "src/popup-series-watchlist-flow.js",
+        "src/popup-recovery-ui.js",
+        "src/popup-playlist-ui.js",
+        "src/site-detection.js",
         "src/uvd-common.js",
         "src/naming.js",
         "src/hls-downloader.js",
         "src/page-download.js",
     ):
-        r = subprocess.run(["node", "--check", f], capture_output=True, text=True)
+        r = subprocess.run(
+            ["node", "--check", f], capture_output=True, text=True, cwd=ROOT
+        )
         check(f"node --check {f}", r.returncode == 0, (r.stderr or "").strip()[:80])
 
     r = subprocess.run(
-        [sys.executable, "-m", "py_compile", "helper/yt_dlp_server.py"],
+        ["node", "scripts/core_unit.js"], capture_output=True, text=True, cwd=ROOT
+    )
+    check(
+        "actual shared modules",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/background_filename_unit.js"],
         capture_output=True,
         text=True,
+        cwd=ROOT,
+    )
+    check(
+        "background filename manager",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/background_site_helper_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "background site helper runner",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/background_page_fallback_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "background page fallback",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/progress_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "progress protocol ordering",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/message_handler_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "download message routing",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/background_context_menus_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "background context menus",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/background_media_state_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "background media state",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/background_download_jobs_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "background download jobs",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_runtime_events_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup runtime events",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_init_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup init assembly",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_settings_ui_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup settings UI",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_dom_events_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup DOM events",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_clipboard_history_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup clipboard and history",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_series_watchlist_flow_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup series and watchlist flow",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_helper_state_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup helper state",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_display_utils_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup display utilities",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_quality_state_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup quality state",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_progress_ui_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup progress UI",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_duplicate_confirmation_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup duplicate confirmation",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "py_compile",
+            "helper/name_utils.py",
+            "helper/yt_dlp_server.py",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
     )
     check("py_compile helper", r.returncode == 0, (r.stderr or "").strip()[:80])
 

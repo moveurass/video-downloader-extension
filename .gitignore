@@ -1,6 +1,8 @@
 .DS_Store
 *.log
 node_modules/
+__pycache__/
+*.py[cod]
 .chrome-profile/
 *.crx
 *.pem

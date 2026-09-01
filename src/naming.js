@@ -593,3 +593,10 @@ const Naming = (() => {
     mediaScore
   };
 })();
+
+if (typeof globalThis !== "undefined") {
+  globalThis.Naming = Naming;
+}
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = Naming;
+}
