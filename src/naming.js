@@ -460,10 +460,18 @@ const Naming = (() => {
       seriesKey = "",
       playlistTitle = "",
       index = 0, // 1-based preferred; 0 = omit number
-      total = 0
+      total = 0,
+      existing = "",
+      url = "",
+      extension = ""
     } = opts;
     const isAudio = type === "audio";
-    const ext = isAudio ? "mp3" : "mp4";
+    const ext = isAudio
+      ? "mp3"
+      : extFromFilename(
+          extension ? `file.${String(extension).replace(/^\./, "")}` : existing,
+          extFromUrl(url, "mp4")
+        );
 
     let base =
       pickBestTitle(title, pageTitle) || (isAudio ? "오디오" : "영상");

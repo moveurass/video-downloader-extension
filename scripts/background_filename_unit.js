@@ -72,6 +72,15 @@ async function main() {
     }),
     "My Playlist 03. Episode title_720p.mp4"
   );
+  equal(
+    manager.lockSaveName({
+      title: "Episode title",
+      playlistTitle: "My Playlist",
+      seriesIndex: 3,
+      mediaUrl: "https://cdn.test/episode.webm"
+    }),
+    "My Playlist 03. Episode title.webm"
+  );
 
   equal(
     manager.applyQualityToLockedName(

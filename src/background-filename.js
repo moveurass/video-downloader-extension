@@ -52,7 +52,8 @@
             seriesKey: seriesKey || Naming.extractProductCode?.(title) || "",
             playlistTitle: playlistTitle || "",
             index: seriesIndex || 0,
-            total: seriesTotal || 0
+            total: seriesTotal || 0,
+            url: mediaUrl || ""
           });
           if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
             return safeDownloadName(full, mime);
@@ -196,7 +197,9 @@
               "",
             playlistTitle: playlistTitle || "",
             index: seriesIndex || 0,
-            total: seriesTotal || 0
+            total: seriesTotal || 0,
+            existing: filenameHint || "",
+            url: mediaUrl || ""
           });
           if (full) return safeDownloadName(full, mime);
         }
