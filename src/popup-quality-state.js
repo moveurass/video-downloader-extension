@@ -139,6 +139,35 @@
           ? `<p class="quality-hint quality-hint-warn">화질을 특정하지 못했습니다. 페이지에서 <strong>재생</strong>한 뒤 「다시 확인」을 누르세요.</p>`
           : ""
       }
+      <div class="quality-chips" role="group" aria-label="화질 선택">
+        ${opts
+          .map((q) => {
+            const chip = formatQualityChipLabel(q);
+            const tip = [
+              q.id,
+              q.height ? `${q.height}p` : "",
+              q.codec || "",
+              q.estimatedSize
+                ? `약 ${(q.estimatedSize / 1024 / 1024).toFixed(1)}MB`
+                : ""
+            ]
+              .filter(Boolean)
+              .join(" · ");
+            return `<button type="button" class="q-chip${
+              selectedQuality === q.id ? " active" : ""
+            }" data-quality="${escapeAttr(q.id)}" title="${escapeAttr(
+              tip
+            )}">${escapeHtml(chip)}</button>`;
+          })
+          .join("")}
+        ${
+          bareBestOnly
+            ? `<button type="button" class="q-chip q-chip-action" id="btnReprobeQuality" title="플레이어 해상도·스트림 다시 확인">다시 확인</button>`
+            : ""
+        }
+      </div>
+    </div>`;
+      }
 
       function trackPickerHtml() {
         if (!availableAudioTracks.length && !availableSubtitleTracks.length) {
@@ -198,35 +227,6 @@
               else selectedSubtitleTracks.delete(id);
             });
           });
-      }
-      <div class="quality-chips" role="group" aria-label="화질 선택">
-        ${opts
-          .map((q) => {
-            const chip = formatQualityChipLabel(q);
-            const tip = [
-              q.id,
-              q.height ? `${q.height}p` : "",
-              q.codec || "",
-              q.estimatedSize
-                ? `약 ${(q.estimatedSize / 1024 / 1024).toFixed(1)}MB`
-                : ""
-            ]
-              .filter(Boolean)
-              .join(" · ");
-            return `<button type="button" class="q-chip${
-              selectedQuality === q.id ? " active" : ""
-            }" data-quality="${escapeAttr(q.id)}" title="${escapeAttr(
-              tip
-            )}">${escapeHtml(chip)}</button>`;
-          })
-          .join("")}
-        ${
-          bareBestOnly
-            ? `<button type="button" class="q-chip q-chip-action" id="btnReprobeQuality" title="플레이어 해상도·스트림 다시 확인">다시 확인</button>`
-            : ""
-        }
-      </div>
-    </div>`;
       }
 
       function formatQualityChipLabel(q) {
