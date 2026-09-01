@@ -7,6 +7,7 @@ const YtDlp = (() => {
   const BASE = "http://127.0.0.1:8787";
   let cachedHealth = null;
   let cachedAt = 0;
+  let pairingPromise = null;
 
   // Optional shared secret — set the same value in extension settings
   // (storage key "helperToken") and helper env UVD_TOKEN.
@@ -47,26 +48,36 @@ const YtDlp = (() => {
     if (cachedToken || healthData?.pairingMode !== "available") {
       return healthData;
     }
-    const token = generatePairToken();
-    try {
-      const response = await fetch(`${BASE}/pair`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token })
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.ok) {
-        return { ...healthData, pairingError: data.error || "pairing failed" };
+    if (pairingPromise) {
+      const paired = await pairingPromise;
+      return { ...healthData, ...paired };
+    }
+    pairingPromise = (async () => {
+      const token = generatePairToken();
+      try {
+        const response = await fetch(`${BASE}/pair`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          return { pairingError: data.error || "pairing failed" };
+        }
+        await chrome.storage.local.set({ helperToken: token });
+        cachedToken = token;
+        tokenLoaded = true;
+        return { pairingMode: "paired", pairedNow: true };
+      } catch (error) {
+        return {
+          pairingError: String(error?.message || error || "pairing failed")
+        };
       }
-      await chrome.storage.local.set({ helperToken: token });
-      cachedToken = token;
-      tokenLoaded = true;
-      return { ...healthData, pairingMode: "paired", pairedNow: true };
-    } catch (error) {
-      return {
-        ...healthData,
-        pairingError: String(error?.message || error || "pairing failed")
-      };
+    })();
+    try {
+      return { ...healthData, ...(await pairingPromise) };
+    } finally {
+      pairingPromise = null;
     }
   }
 

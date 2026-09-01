@@ -317,12 +317,7 @@
       </label>
       <label class="field">
         <span class="field-label">서재 기록 개수</span>
-        <select id="setMaxHistory" class="field-input">
-          <option value="10">10개</option>
-          <option value="25">25개</option>
-          <option value="50" selected>50개</option>
-          <option value="100">100개</option>
-        </select>
+        <input id="setMaxHistory" class="field-input" type="number" min="10" max="100" step="1" value="50" />
         <span class="field-hint">오래된 기록부터 자동 정리됩니다</span>
       </label>
       <label class="field check-field">
