@@ -82,6 +82,19 @@ def main() -> int:
         "background page fallback importScripts",
         '"background-page-fallback.js"' in background_source.split(");", 1)[0],
     )
+    check(
+        "background runtime modules importScripts",
+        all(
+            f'"{name}"' in background_source.split(");", 1)[0]
+            for name in (
+                "background-media-utils.js",
+                "background-companion-thumbnail.js",
+                "background-housekeeping.js",
+                "background-keyboard-commands.js",
+                "background-runtime-messages.js",
+            )
+        ),
+    )
     popup_html = (ROOT / "src/popup.html").read_text(encoding="utf-8")
     popup_init_pos = popup_html.find('<script src="popup-init.js"></script>')
     popup_entry_pos = popup_html.find('<script src="popup.js"></script>')
@@ -101,6 +114,11 @@ def main() -> int:
         "src/background-filename.js",
         "src/background-site-helper.js",
         "src/background-page-fallback.js",
+        "src/background-media-utils.js",
+        "src/background-companion-thumbnail.js",
+        "src/background-housekeeping.js",
+        "src/background-keyboard-commands.js",
+        "src/background-runtime-messages.js",
         "src/popup-init.js",
         "src/popup.js",
         "src/popup-duplicate-confirmation.js",
@@ -206,6 +224,25 @@ def main() -> int:
         r.returncode == 0,
         (r.stderr or r.stdout or "").strip()[:120],
     )
+
+    for script, label in (
+        ("background_media_utils_unit.js", "background media utilities"),
+        ("background_companion_thumbnail_unit.js", "companion thumbnail saver"),
+        ("background_housekeeping_unit.js", "background housekeeping"),
+        ("background_keyboard_commands_unit.js", "background keyboard commands"),
+        ("background_runtime_messages_unit.js", "background runtime dispatch"),
+    ):
+        r = subprocess.run(
+            ["node", f"scripts/{script}"],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+        )
+        check(
+            label,
+            r.returncode == 0,
+            (r.stderr or r.stdout or "").strip()[:120],
+        )
 
     r = subprocess.run(
         ["node", "scripts/progress_unit.js"],
