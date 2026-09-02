@@ -36,6 +36,16 @@ def main() -> int:
     check("clean_name path", clean_name("VideoDownloader/foo.mp4") == "foo")
     check("clean_name empty-ish", clean_name(".mp4") == "video")
     check("clean_name korean", clean_name("시리즈 제목.mp4") == "시리즈 제목")
+    check("clean_name preserves Top 10 title", clean_name("Top 10 goals.mp4") == "Top 10 goals")
+    check(
+        "clean_name preserves Episode title",
+        clean_name("Episode 12 The Return.mp4") == "Episode 12 The Return",
+    )
+    check(
+        "clean_name preserves iPhone title",
+        clean_name("iPhone 15 review.mp4") == "iPhone 15 review",
+    )
+    check("clean_name normalizes explicit code", clean_name("[ssis-001] title.mp4") == "SSIS-001 title")
     check("generic helper hint rejected", is_generic_name("YouTube_dQw4w9WgXcQ.mp4"))
     check("host id helper hint rejected", is_generic_name("host_829104.mp4"))
     check("hash helper hint rejected", is_generic_name("9f8e7d6c5b4a3210.webm"))
@@ -374,6 +384,12 @@ def main() -> int:
     check(
         "DASH quality probing uses helper",
         "isRealDash(url, \"stream\") || needsYtDlpHelper" in background_source,
+    )
+    page_download_source = (ROOT / "src/page-download.js").read_text(encoding="utf-8")
+    check(
+        "page HLS title precedes internal merge name",
+        "filename || pageTitleFilename(\"mp4\") || result.filename"
+        in page_download_source,
     )
     jobs_source = (ROOT / "src/background-download-jobs.js").read_text(
         encoding="utf-8"

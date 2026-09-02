@@ -6,6 +6,16 @@ from pathlib import Path
 
 
 MEDIA_SUFFIXES = {".mp4", ".webm", ".mkv", ".mov", ".m4v", ".m4a", ".mp3", ".aac"}
+CODE_STOP_WORDS = {
+    "top", "best", "the", "episode", "ep", "part", "vol", "volume", "season",
+    "chapter", "lesson", "day", "week", "month", "year", "page", "post", "item",
+    "video", "clip", "photo", "image", "news", "article", "id", "no", "number",
+    "iphone", "galaxy", "windows", "android", "ios", "mac", "pixel", "model",
+    "version", "release", "update", "test", "demo", "sample", "track", "series",
+    "set", "pack", "rank", "ranking", "new", "full", "hd", "sd", "fhd", "uhd",
+    "watch", "play", "player", "embed", "channel", "short", "trailer", "review",
+    "guide", "tutorial", "download", "source", "chunk", "segment", "manifest",
+}
 
 
 def is_generic_name(raw: str) -> bool:
@@ -74,10 +84,20 @@ def clean_name(raw: str) -> str:
         flags=re.I,
     )
     match = re.match(
-        r"^\[?\s*([A-Za-z]{2,12})[-_ ]?(\d{2,5})\s*\]?\s*(.*)$", name
+        r"^\[?\s*([A-Za-z]{2,12})([-_ ]?)(\d{2,5})\s*\]?\s*(.*)$", name
     )
     if match:
-        name = f"{match.group(1).upper()}-{match.group(2)} {match.group(3)}".strip()
+        prefix, separator, number, rest = match.groups()
+        explicit_code = (
+            prefix.lower() not in CODE_STOP_WORDS
+            and (
+                separator in {"-", "_"}
+                or (not separator and len(prefix) >= 3 and len(number) >= 3)
+                or (separator == " " and prefix.isupper() and len(number) >= 3)
+            )
+        )
+        if explicit_code:
+            name = f"{prefix.upper()}-{number} {rest}".strip()
     name = re.sub(r"[\u2010-\u2015\u2212|·•]+", " ", name)
     name = re.sub(r"\s+-\s+", " ", name)
     name = re.sub(r"[_\s-]*(best|all|unknown)$", "", name, flags=re.I)

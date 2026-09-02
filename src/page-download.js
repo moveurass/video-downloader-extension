@@ -359,7 +359,10 @@
     }
 
     // Always .mp4 for users
-    let name = filename || result.filename || pageTitleFilename("mp4");
+    // The merge result carries only an internal video_<quality>_<timestamp>
+    // name. If the background lock was unavailable, document.title is still a
+    // better user-facing identity and must win before that internal fallback.
+    let name = filename || pageTitleFilename("mp4") || result.filename;
     name = name.replace(/\.ts$/i, ".mp4").replace(/\.m3u8$/i, ".mp4");
     if (!/\.mp4$/i.test(name)) {
       name = name.replace(/\.[^.]+$/, "") + ".mp4";
