@@ -356,11 +356,13 @@
       };
       const label = labelMap[kind] || "영상";
       deps.emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start", jid);
+      // Always ship the domain-scoped list; the helper never turns a bare
+      // cookieHeader into a global header any more.
       const needsCookieList =
         kind === "x" || kind === "facebook" || kind === "bilibili";
       const [cookieHeader, cookiesList] = await Promise.all([
         getCookieHeaderForUrl(targetPage),
-        needsCookieList ? collectCookiesForUrl(targetPage) : Promise.resolve(undefined)
+        collectCookiesForUrl(targetPage)
       ]);
       if (needsCookieList && cookiesList?.length) {
         deps.emitDownloadProgress(

@@ -51,6 +51,9 @@ async function main() {
     },
     activeDownloads: jobs,
     getCookieHeaderForUrl: async () => "session=ok",
+    collectCookiesForUrl: async () => [
+      { name: "session", value: "ok", domain: ".example.com", path: "/" }
+    ],
     ytdlpFilenameHint: (value) => value,
     throwIfJobStopped: () => {},
     emitDownloadProgress: (...args) => progress.push(args)
@@ -74,6 +77,11 @@ async function main() {
     audioTrackId: undefined,
     subtitleLanguages: [],
     cookieHeader: "session=ok",
+    // Domain-scoped list travels with the job so the helper never has to
+    // fall back to a header that yt-dlp would send to every host.
+    cookiesList: [
+      { name: "session", value: "ok", domain: ".example.com", path: "/" }
+    ],
     codecPref: "h264",
     speedProfile: "safe"
   });

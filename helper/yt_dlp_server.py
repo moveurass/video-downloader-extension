@@ -175,6 +175,55 @@ def write_netscape_cookies(cookies: list, path: Path) -> int:
     return n
 
 
+def cookie_header_to_list(cookie_header: str, scope_url: str) -> list[dict]:
+    """
+    Turn a bare "k=v; k2=v2" header into cookie dicts bound to the host of
+    scope_url, so yt-dlp only sends them to that site (and its subdomains)
+    instead of to every host the extractor touches.
+    """
+    header = (cookie_header or "").strip()
+    if not header:
+        return []
+    try:
+        parsed = urlparse(scope_url or "")
+        host = (parsed.hostname or "").lower()
+    except Exception:
+        host = ""
+    if not host or host.replace(".", "").isdigit():
+        return []
+    base = host[4:] if host.startswith("www.") else host
+    secure = (parsed.scheme or "https").lower() == "https"
+    out = []
+    for part in header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        name = name.strip()
+        if not name:
+            continue
+        out.append(
+            {
+                "name": name,
+                "value": value.strip(),
+                "domain": f".{base}",
+                "path": "/",
+                "secure": secure,
+                "httpOnly": False,
+                "expirationDate": 0,
+            }
+        )
+    return out
+
+
+def payload_cookie_list(payload: dict, scope_url: str) -> list:
+    """Prefer the extension's domain-scoped list; fall back to scoping a bare header."""
+    cookies_list = payload.get("cookiesList") or payload.get("cookies")
+    if isinstance(cookies_list, list) and cookies_list:
+        return cookies_list
+    return cookie_header_to_list(payload.get("cookieHeader") or "", scope_url)
+
+
 # ─── TikTok (SnapTik / TikWM style multi-path resolver) ─────
 
 
@@ -851,9 +900,13 @@ def run_download(job_id: str, payload: dict) -> None:
         except Exception:
             pass
 
-    # Write browser cookies (from extension) to Netscape file — required for Instagram
+    # Write browser cookies (from extension) to Netscape file — required for Instagram.
+    # A bare cookieHeader is scoped to the page host here; it is never passed as a
+    # global --add-header, which yt-dlp would send to every CDN/redirect host.
     cookies_file: str | None = None
-    cookies_list = payload.get("cookiesList") or payload.get("cookies")
+    cookies_list = payload_cookie_list(
+        payload, payload.get("pageUrl") or payload.get("referer") or target
+    )
     if isinstance(cookies_list, list) and cookies_list:
         try:
             cpath = COOKIE_DIR / f"cookies_{job_id}.txt"
@@ -1122,25 +1175,17 @@ def run_download(job_id: str, payload: dict) -> None:
                 c.extend(["--add-header", f"Origin:{origin}"])
             except Exception:
                 pass
-        # Prefer Netscape cookie file from extension (works while Chrome is open)
+        # Domain-scoped Netscape cookie file from the extension (works while
+        # Chrome is open). Arbitrary local cookie-jar paths / browser profiles
+        # from the payload are intentionally not accepted.
         if cookies_file and Path(cookies_file).is_file():
             c.extend(["--cookies", cookies_file])
-        else:
-            cookies = payload.get("cookies")
-            if isinstance(cookies, str) and Path(cookies).is_file():
-                c.extend(["--cookies", cookies])
-        # Cookie header alone is weak for Instagram API but helps some CDNs
-        cookie_header = (payload.get("cookieHeader") or "").strip()
-        if cookie_header and not cookies_file:
-            c.extend(["--add-header", f"Cookie:{cookie_header}"])
-        if payload.get("cookiesFromBrowser"):
-            # May fail if Chrome profile is locked — attempts without it still run
-            c.extend(["--cookies-from-browser", str(payload["cookiesFromBrowser"])])
         # Instagram extractor: use webpage + API
         if is_instagram:
             c.extend(["--extractor-args", "instagram:include_ads=false"])
         if extra:
             c.extend(extra)
+        c.append("--")
         c.append(target)
         return c
 
@@ -1634,7 +1679,7 @@ class Handler(BaseHTTPRequestHandler):
             is_tt = "tiktok" in url.lower()
             cookies_file = None
             try:
-                cookies_list = payload.get("cookiesList") or payload.get("cookies")
+                cookies_list = payload_cookie_list(payload, url)
                 if isinstance(cookies_list, list) and cookies_list:
                     cpath = COOKIE_DIR / f"formats_cookies_{uuid.uuid4().hex[:12]}.txt"
                     n = write_netscape_cookies(cookies_list, cpath)
@@ -1651,9 +1696,7 @@ class Handler(BaseHTTPRequestHandler):
                     cmd.extend(["--impersonate", "chrome"])
                 if cookies_file:
                     cmd.extend(["--cookies", cookies_file])
-                cookie_header = (payload.get("cookieHeader") or "").strip()
-                if cookie_header and not cookies_file:
-                    cmd.extend(["--add-header", f"Cookie:{cookie_header}"])
+                cmd.append("--")
                 cmd.append(url)
                 out = subprocess.check_output(
                     cmd,
@@ -1946,7 +1989,7 @@ class Handler(BaseHTTPRequestHandler):
             max_items = max(1, min(500, max_items))
             cookies_file = None
             try:
-                cookies_list = payload.get("cookiesList") or payload.get("cookies")
+                cookies_list = payload_cookie_list(payload, url)
                 if isinstance(cookies_list, list) and cookies_list:
                     cpath = COOKIE_DIR / f"pl_cookies_{uuid.uuid4().hex[:12]}.txt"
                     n = write_netscape_cookies(cookies_list, cpath)
@@ -1963,9 +2006,7 @@ class Handler(BaseHTTPRequestHandler):
                 ]
                 if cookies_file:
                     cmd.extend(["--cookies", cookies_file])
-                cookie_header = (payload.get("cookieHeader") or "").strip()
-                if cookie_header and not cookies_file:
-                    cmd.extend(["--add-header", f"Cookie:{cookie_header}"])
+                cmd.append("--")
                 cmd.append(url)
                 out = subprocess.check_output(
                     cmd,

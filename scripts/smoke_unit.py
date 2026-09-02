@@ -111,6 +111,33 @@ def main() -> int:
     helper_server.auto_pairing = original_pairing
     helper_server.AUTH_TOKEN = original_auth_token
 
+    scoped = helper_server.cookie_header_to_list(
+        "sid=abc; theme=dark", "https://www.example.com/watch/1"
+    )
+    check(
+        "bare cookie header is scoped to the page host",
+        [c["name"] for c in scoped] == ["sid", "theme"]
+        and all(c["domain"] == ".example.com" and c["secure"] for c in scoped),
+        str(scoped)[:80],
+    )
+    check(
+        "cookie list preferred over header",
+        helper_server.payload_cookie_list(
+            {"cookiesList": [{"name": "a", "value": "1", "domain": ".x.test"}], "cookieHeader": "b=2"},
+            "https://y.test/",
+        )[0]["domain"]
+        == ".x.test",
+    )
+    helper_source = (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+    check(
+        "no global Cookie header passed to yt-dlp",
+        "Cookie:{cookie_header}" not in helper_source,
+    )
+    check(
+        "payload cannot point yt-dlp at local cookie jars / browser profiles",
+        "cookiesFromBrowser" not in helper_source
+        and 'payload.get("cookies")\n            if isinstance(cookies, str)' not in helper_source,
+    )
     check(
         "tiktok cookies only for first-party hosts",
         helper_server.tiktok_cookie_host("https://v16-webapp.tiktok.com/x.mp4")

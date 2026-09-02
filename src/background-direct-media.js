@@ -13,6 +13,7 @@
       YtDlp,
       activeDownloads,
       getCookieHeaderForUrl,
+      collectCookiesForUrl,
       ytdlpFilenameHint,
       throwIfJobStopped,
       emitDownloadProgress,
@@ -75,8 +76,19 @@
      * connections — several times faster than chrome.downloads' single
      * connection on throttled CDNs. Helper saves straight to the output folder.
      */
+    async function helperCookies(pageUrl) {
+      const [cookieHeader, cookiesList] = await Promise.all([
+        getCookieHeaderForUrl(pageUrl),
+        collectCookiesForUrl ? collectCookiesForUrl(pageUrl) : Promise.resolve([])
+      ]);
+      return {
+        cookieHeader: cookieHeader || undefined,
+        cookiesList: cookiesList?.length ? cookiesList : undefined
+      };
+    }
+
     async function downloadDirectViaHelper(tabId, url, pageUrl, filename, jid) {
-      const cookieHeader = await getCookieHeaderForUrl(pageUrl || url);
+      const cookies = await helperCookies(pageUrl || url);
       const settings = await UVD.getSettings().catch(() => ({}));
       const nameHint = ytdlpFilenameHint(filename);
       const result = await YtDlp.downloadAndWait(
@@ -86,7 +98,7 @@
           directFile: true,
           filename: nameHint || undefined,
           title: nameHint || undefined,
-          cookieHeader: cookieHeader || undefined,
+          ...cookies,
           speedProfile: settings?.downloadSpeed || "fast"
         },
         (p) => {
@@ -137,7 +149,7 @@
           "DASH/MPD 영상은 로컬 도우미가 필요합니다. helper/start.command 를 실행해 주세요"
         );
       }
-      const cookieHeader = await getCookieHeaderForUrl(pageUrl || url);
+      const cookies = await helperCookies(pageUrl || url);
       const settings = await UVD.getSettings().catch(() => ({}));
       const nameHint = ytdlpFilenameHint(filename);
       const result = await YtDlp.downloadAndWait(
@@ -153,7 +165,7 @@
           subtitleLanguages: Array.isArray(trackOptions.subtitleLanguages)
             ? trackOptions.subtitleLanguages
             : [],
-          cookieHeader: cookieHeader || undefined,
+          ...cookies,
           codecPref: settings?.codecPref || "best",
           speedProfile: settings?.downloadSpeed || "fast"
         },
