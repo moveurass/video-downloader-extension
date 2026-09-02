@@ -445,7 +445,7 @@ const routeBackgroundMessage = UVDBackgroundMessages.createRouter({
   tabs: chrome.tabs,
   updateDownloadBadge,
   clearMedia: mediaStore.clearMedia,
-  version: "1.21.0"
+  version: chrome.runtime.getManifest?.()?.version || "unknown"
 });
 const handleQualityMessage = UVDQualityMessages.createHandler({
   HLS,
@@ -535,7 +535,8 @@ const handleChunkAssembly = UVDBackgroundChunkAssembly.createHandler({
   downloadBlob,
   Blob,
   Uint8Array,
-  ArrayBuffer
+  ArrayBuffer,
+  atob
 });
 
 const { dispatch: dispatchRuntimeMessage } =

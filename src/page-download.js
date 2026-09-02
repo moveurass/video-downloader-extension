@@ -90,10 +90,26 @@
     }
   }
 
+  /** Job the current smartDownload() belongs to — stamped on save messages. */
+  let activeJobId = null;
+
+  function blobSliceToBase64(slice) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = String(reader.result || "");
+        const comma = dataUrl.indexOf(",");
+        resolve(comma >= 0 ? dataUrl.slice(comma + 1) : "");
+      };
+      reader.onerror = () => reject(reader.error || new Error("청크 인코딩 실패"));
+      reader.readAsDataURL(slice);
+    });
+  }
+
   /**
    * Reliable save: send bytes to service worker → chrome.downloads
    */
-  async function saveBlobThroughBackground(blob, filename, onProgress) {
+  async function saveBlobThroughBackground(blob, filename, onProgress, jobId = activeJobId) {
     if (!blob || !blob.size) throw new Error("저장할 데이터가 없습니다");
     if (blob.size < MIN_VIDEO_BYTES) {
       throw new Error(
@@ -115,8 +131,7 @@
 
     onProgress?.({ phase: "save", percent: 92, message: "파일 저장 중…" });
 
-    const buffer = await blob.arrayBuffer();
-    const totalBytes = buffer.byteLength;
+    const totalBytes = blob.size;
     const CHUNK = 4 * 1024 * 1024; // 4MB
     const totalChunks = Math.ceil(totalBytes / CHUNK);
     const id = `vid_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -124,13 +139,17 @@
     for (let i = 0; i < totalChunks; i++) {
       const start = i * CHUNK;
       const end = Math.min(start + CHUNK, totalBytes);
-      const chunk = buffer.slice(start, end);
+      // chrome.runtime.sendMessage is JSON-serialized: an ArrayBuffer arrives
+      // in the service worker as {} (zero bytes). Ship base64 text instead.
+      const chunk = await blobSliceToBase64(blob.slice(start, end));
       const res = await chrome.runtime.sendMessage({
         type: "VIDEO_CHUNK",
         id,
+        jobId: jobId || null,
         index: i,
         totalChunks,
         totalBytes,
+        encoding: "base64",
         chunk,
         filename: name,
         mime
@@ -147,6 +166,7 @@
     const fin = await chrome.runtime.sendMessage({
       type: "VIDEO_CHUNK_FINISH",
       id,
+      jobId: jobId || null,
       filename: name,
       mime
     });
@@ -374,11 +394,12 @@
   }
 
   async function smartDownload(opts, onProgress) {
-    const { url, filename, preferQuality, type, audioTrackId } = opts || {};
+    const { url, filename, preferQuality, type, audioTrackId, jobId } = opts || {};
     if (!url) throw new Error("받을 주소가 없습니다");
 
     // Fresh abort controller per download
     activeAbort = new AbortController();
+    activeJobId = jobId || null;
     window.__UVD_STOP_DOWNLOAD__ = false;
     try {
       throwIfPageStopped();

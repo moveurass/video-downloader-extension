@@ -563,7 +563,110 @@ async function main() {
   );
   assert.deepEqual(response, { ok: false, error: "조립 데이터 없음" });
 
-  console.log("message routers: 65 assertions passed");
+  // Page → service-worker messages are JSON-serialized by Chrome. Simulate
+  // that wire format and prove base64 chunks survive while raw ArrayBuffers
+  // are rejected instead of silently assembling an empty file.
+  const wire = (message) => JSON.parse(JSON.stringify(message));
+  const saved = [];
+  const jsonChunkHandler = createChunkAssemblyHandler({
+    downloadBlob: async (blob, filename) => {
+      saved.push({ size: blob.size, filename, blob });
+      return { downloadId: 91, filename, path: `/tmp/${filename}` };
+    },
+    Blob,
+    Uint8Array,
+    ArrayBuffer,
+    atob: (text) => Buffer.from(text, "base64").toString("binary")
+  });
+  const payload = new Uint8Array(120_000);
+  for (let i = 0; i < payload.length; i++) payload[i] = (i * 7) & 0xff;
+  const half = payload.length / 2;
+  const toBase64 = (bytes) => Buffer.from(bytes).toString("base64");
+
+  response = null;
+  jsonChunkHandler(
+    wire({
+      type: "VIDEO_CHUNK",
+      id: "raw-buffer",
+      index: 0,
+      totalChunks: 1,
+      chunk: payload.buffer
+    }),
+    (value) => { response = value; }
+  );
+  assert.equal(response.ok, false, "raw ArrayBuffer over JSON must be rejected");
+  assert.match(response.error, /base64/);
+
+  for (const [index, slice] of [
+    [0, payload.subarray(0, half)],
+    [1, payload.subarray(half)]
+  ]) {
+    response = null;
+    jsonChunkHandler(
+      wire({
+        type: "VIDEO_CHUNK",
+        id: "b64-assembly",
+        jobId: "dl_job_1",
+        index,
+        totalChunks: 2,
+        totalBytes: payload.length,
+        encoding: "base64",
+        chunk: toBase64(slice),
+        filename: "clip.mp4",
+        mime: "video/mp4"
+      }),
+      (value) => { response = value; }
+    );
+    assert.deepEqual(response, { ok: true });
+  }
+
+  // A second frame answering the same SMART_DOWNLOAD may not start a
+  // competing save for the same job.
+  response = null;
+  jsonChunkHandler(
+    wire({
+      type: "VIDEO_CHUNK",
+      id: "b64-assembly-other-frame",
+      jobId: "dl_job_1",
+      index: 0,
+      totalChunks: 1,
+      encoding: "base64",
+      chunk: toBase64(payload.subarray(0, 16))
+    }),
+    (value) => { response = value; }
+  );
+  assert.equal(response.ok, false);
+  assert.equal(response.duplicate, true);
+
+  const finished = await new Promise((resolve) => {
+    const result = jsonChunkHandler(
+      wire({
+        type: "VIDEO_CHUNK_FINISH",
+        id: "b64-assembly",
+        jobId: "dl_job_1",
+        filename: "clip.mp4",
+        mime: "video/mp4"
+      }),
+      resolve
+    );
+    assert.deepEqual(result, { handled: true, keepChannel: true });
+  });
+  assert.deepEqual(finished, {
+    ok: true,
+    downloadId: 91,
+    filename: "clip.mp4",
+    path: "/tmp/clip.mp4",
+    size: payload.length
+  });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].filename, "clip.mp4");
+  assert.deepEqual(
+    new Uint8Array(await saved[0].blob.arrayBuffer()),
+    payload,
+    "decoded bytes match what the page sent"
+  );
+
+  console.log("message routers: 77 assertions passed");
 }
 
 main().catch((error) => {
