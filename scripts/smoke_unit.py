@@ -37,7 +37,23 @@ def main() -> int:
     check("clean_name empty-ish", clean_name(".mp4") == "video")
     check("clean_name korean", clean_name("시리즈 제목.mp4") == "시리즈 제목")
     check("generic helper hint rejected", is_generic_name("YouTube_dQw4w9WgXcQ.mp4"))
+    check("host id helper hint rejected", is_generic_name("host_829104.mp4"))
+    check("hash helper hint rejected", is_generic_name("9f8e7d6c5b4a3210.webm"))
     check("human helper title accepted", not is_generic_name("A human video title.mp4"))
+    check(
+        "helper title wins over opaque filename",
+        helper_server.supplied_title_hint(
+            {"filename": "host_829104.mp4", "title": "Actual page title"}
+        )
+        == "Actual page title",
+    )
+    check(
+        "helper title wins over readable old filename",
+        helper_server.supplied_title_hint(
+            {"filename": "Old URL basename.mp4", "title": "Actual extractor title"}
+        )
+        == "Actual extractor title",
+    )
     with tempfile.TemporaryDirectory() as tmp:
         output_dir = Path(tmp)
         check(

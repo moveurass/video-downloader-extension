@@ -706,9 +706,18 @@ const UVD = (() => {
     if (/^(영상|동영상|video|media|audio|file|download)$/i.test(s)) return true;
     // Site_id junk: YouTube_xxxx, TikTok_123, X_123, Bilibili_BVxx …
     if (
-      /^(YouTube|TikTok|Instagram|Facebook|Bilibili|X|Twitter|YT|TT|IG|FB)([_-][A-Za-z0-9_-]+)?$/i.test(
+      /^(YouTube|TikTok|Instagram|Facebook|Bilibili|Vimeo|Dailymotion|Twitch|Naver|X|Twitter|YT|TT|IG|FB)([_-][A-Za-z0-9_-]+)?$/i.test(
         s
       )
+    ) {
+      return true;
+    }
+    if (
+      /^(chunk|segment|seg|init|index|master|manifest|stream|source|src|host|cdn|asset)[_-]?[A-Za-z0-9_-]*$/i.test(
+        s
+      ) ||
+      /^[0-9a-f]{16,}$/i.test(s) ||
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
     ) {
       return true;
     }

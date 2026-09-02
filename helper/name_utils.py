@@ -15,10 +15,26 @@ def is_generic_name(raw: str) -> bool:
         not stem
         or re.fullmatch(
             r"(?:video|media|download|file|untitled|영상|동영상|"
-            r"(?:youtube|tiktok|instagram|facebook|bilibili|x)[_-]?"
+            r"(?:youtube|youtu(?:be)?|tiktok|instagram|facebook|bilibili|"
+            r"vimeo|dailymotion|twitch|naver|twitter|x)[_-]?"
             r"[A-Za-z0-9_-]*)",
             stem,
             flags=re.I,
+        )
+        or re.fullmatch(
+            r"(?:chunk|segment|seg|init|index|master|manifest|stream|"
+            r"source|src|host|cdn|asset)[_-]?[A-Za-z0-9_-]*",
+            stem,
+            flags=re.I,
+        )
+        or bool(re.fullmatch(r"[0-9a-f]{16,}", stem, flags=re.I))
+        or bool(
+            re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                r"[0-9a-f]{4}-[0-9a-f]{12}",
+                stem,
+                flags=re.I,
+            )
         )
         or (
             len(stem) == 11

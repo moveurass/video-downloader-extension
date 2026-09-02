@@ -179,7 +179,7 @@
       }
       if (cleaned.length > best.length) best = cleaned;
     }
-    if (!best && pageUrl) best = Naming?.extractProductCode?.(pageUrl) || "";
+    if (!best && pageUrl) best = Naming?.bindTitleToPage?.(pageUrl, "") || "";
     if (!best) best = "영상";
     return best.length > 70 ? `${best.slice(0, 68).trim()}…` : best;
   }
@@ -187,7 +187,6 @@
   function downloadFilename(item, options = {}) {
     const { Naming, UVD } = options;
     const pageUrl = item?.pageUrl || options.currentTabUrl || "";
-    const urlCode = Naming?.extractProductCode?.(pageUrl || item?.title || "") || "";
     let title = "";
     for (const candidate of [item?.title, item?.pageTitle, item?.displayName, item?.filename]) {
       let cleaned = cleanTitleText(candidate, Naming);
@@ -195,16 +194,9 @@
       if (Naming?.bindTitleToPage && pageUrl) {
         cleaned = Naming.bindTitleToPage(pageUrl, cleaned) || cleaned;
       }
-      const candidateCode = Naming?.extractProductCode?.(cleaned) || "";
-      if (urlCode && candidateCode && candidateCode.toUpperCase() !== urlCode.toUpperCase()) {
-        continue;
-      }
       if (cleaned.length > title.length) title = cleaned;
     }
-    if (urlCode && !title) title = urlCode;
-    if (urlCode && title && !title.toUpperCase().includes(urlCode.toUpperCase())) {
-      title = `${urlCode} ${title}`.trim();
-    }
+    if (!title && pageUrl) title = Naming?.bindTitleToPage?.(pageUrl, "") || "";
     const selected = options.selectedQuality || "";
     const quality = selected && !/^(best|all)$/i.test(selected)
       ? selected

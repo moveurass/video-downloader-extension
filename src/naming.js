@@ -104,58 +104,26 @@ const Naming = (() => {
 
   /**
    * Bind a human title to the page being downloaded.
-   * If title belongs to a different product code than pageUrl, discard it.
-   * Always prefix with the page's product code when known.
+   * A usable title is authoritative. URL product codes are only a last-resort
+   * identity on known code hosts when no human title exists.
    */
   function bindTitleToPage(pageUrl, title) {
     let t = cleanPageTitle(title || "") || "";
-    const titleCode = extractProductCode(t) || "";
-    let urlCode = extractProductCode(pageUrl || "") || "";
-    // A code-looking path segment on an ordinary site ("/abcd-123/") must not
-    // replace or prefix a real title that has no code of its own. Trust the
-    // URL code when the host is a known code site, when the title carries a
-    // code (same → confirm, different → title is stale for this page), or when
-    // there is no usable title at all.
-    if (urlCode && !titleCode && t) {
-      let host = "";
-      try {
-        host = new URL(pageUrl).hostname;
-      } catch {
-        host = "";
-      }
-      if (!isKnownCodeSite(host)) urlCode = "";
-    }
-
-    // Title is clearly for another video → keep only the URL code
-    if (urlCode && titleCode && urlCode.toUpperCase() !== titleCode.toUpperCase()) {
-      return urlCode;
-    }
-
-    if (urlCode) {
-      if (!t) return urlCode;
-      // Strip any code from body then re-prefix with page code
-      const rest = t
-        .replace(new RegExp(urlCode.replace("-", "[-_ ]?"), "i"), " ")
-        .replace(new RegExp((titleCode || "NOPE").replace("-", "[-_ ]?"), "i"), " ")
-        .replace(/\s+/g, " ")
-        .trim();
-      // Drop leftover episode counters like "6/100" or "6_100"
-      const body = rest
+    if (t && !isUglyBase(t)) {
+      return t
         .replace(/\b\d{1,3}\s*[/／]\s*\d{1,3}\b/g, " ")
         .replace(/\b\d{1,3}_\d{2,3}\b/g, " ")
         .replace(/\s+/g, " ")
         .trim();
-      return body ? `${urlCode} ${body}` : urlCode;
     }
 
-    // No code in URL — clean title, still drop episode counters
-    if (!t) return "";
-    t = t
-      .replace(/\b\d{1,3}\s*[/／]\s*\d{1,3}\b/g, " ")
-      .replace(/\b\d{1,3}_\d{2,3}\b/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-    return t;
+    let host = "";
+    try {
+      host = new URL(pageUrl).hostname;
+    } catch {
+      host = "";
+    }
+    return isKnownCodeSite(host) ? extractProductCode(pageUrl || "") || "" : "";
   }
 
   /**
@@ -279,7 +247,15 @@ const Naming = (() => {
     if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}/i.test(b)) return true;
 
     if (
-      /^(chunk|segment|seg|init|playlist|index|master|manifest|video|media|stream|audio|track|file|download|source|src|clip|tmp|temp|player|embed)[-_]?\d*$/i.test(
+      /^(chunk|segment|seg|init|playlist|index|master|manifest|video|media|stream|audio|track|file|download|source|src|clip|tmp|temp|player|embed|host|cdn|asset)[-_]?[a-z0-9_-]*$/i.test(
+        b
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      /^(youtube|youtu(?:be)?|tiktok|instagram|facebook|bilibili|vimeo|dailymotion|twitch|naver|twitter|x)[_-][a-z0-9_-]+$/i.test(
         b
       )
     ) {
@@ -427,9 +403,16 @@ const Naming = (() => {
       pickBestTitle(boundTitle, boundPage, boundExisting, title, pageTitle) ||
       "";
 
-    // If page has a product code, force it as identity even when titles empty
+    // Product codes are only a no-title fallback on sites where they are the
+    // authoritative page identity.
     if (!base && pageRef) {
-      base = extractProductCode(pageRef) || "";
+      let hostName = "";
+      try {
+        hostName = new URL(pageRef).hostname;
+      } catch {
+        hostName = "";
+      }
+      base = isKnownCodeSite(hostName) ? extractProductCode(pageRef) || "" : "";
     }
 
     if (!base) {
@@ -516,6 +499,7 @@ const Naming = (() => {
       total = 0,
       existing = "",
       url = "",
+      pageUrl = "",
       extension = ""
     } = opts;
     const isAudio = type === "audio";
@@ -526,12 +510,31 @@ const Naming = (() => {
           extFromUrl(url, "mp4")
         );
 
-    let base =
-      pickBestTitle(title, pageTitle) || (isAudio ? "오디오" : "영상");
+    const humanTitle = pickBestTitle(title, pageTitle);
+    let base = humanTitle || "";
+    const pageRef = pageUrl || "";
+    if (!base && pageRef) {
+      let hostName = "";
+      try {
+        hostName = new URL(pageRef).hostname;
+      } catch {
+        hostName = "";
+      }
+      if (isKnownCodeSite(hostName)) {
+        base = extractProductCode(pageRef) || "";
+      }
+    }
+    if (!base) base = isAudio ? "오디오" : "영상";
     base = cleanPageTitle(base) || base;
     base = base.replace(/^\(\d{1,4}\)\s*/, "").trim() || base;
 
-    const key = String(seriesKey || extractProductCode(base) || "").trim();
+    const titleCode = extractProductCode(base) || "";
+    const requestedKey = String(seriesKey || "").trim();
+    const key =
+      titleCode &&
+      (!requestedKey || requestedKey.toUpperCase() === titleCode.toUpperCase())
+        ? titleCode
+        : "";
     const pl = sanitize(cleanPageTitle(playlistTitle || "") || playlistTitle || "", 36);
     const idx = Number(index) > 0 ? Number(index) : 0;
     const pad = total >= 100 ? 3 : 2;

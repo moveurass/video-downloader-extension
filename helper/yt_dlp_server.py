@@ -645,6 +645,15 @@ def download_url_to_file(
     return written
 
 
+def supplied_title_hint(payload: dict) -> str:
+    """Prefer a real page/video title over a filename or opaque identifier."""
+    for key in ("title", "filename"):
+        candidate = str(payload.get(key) or "").strip()
+        if candidate and not is_generic_name(candidate):
+            return candidate
+    return ""
+
+
 def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) -> bool:
     """
     SnapTik-style path: resolve play URL via public API or client-provided mediaUrl,
@@ -653,9 +662,7 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
     page_url = (payload.get("pageUrl") or payload.get("url") or "").strip()
     media_hint = (payload.get("mediaUrl") or "").strip()
     cookie_header = (payload.get("cookieHeader") or "").strip()
-    title_hint = (payload.get("filename") or payload.get("title") or "").strip()
-    if is_generic_name(title_hint):
-        title_hint = ""
+    title_hint = supplied_title_hint(payload)
 
     play_url = ""
     title = title_hint
@@ -905,9 +912,7 @@ def run_download(job_id: str, payload: dict) -> None:
     url = (payload.get("url") or "").strip()
     page_url = (payload.get("pageUrl") or payload.get("referer") or "").strip()
     quality = (payload.get("quality") or "best").strip()
-    title_hint = (payload.get("filename") or payload.get("title") or "").strip()
-    if is_generic_name(title_hint):
-        title_hint = ""
+    title_hint = supplied_title_hint(payload)
     # directFile: url IS the media file — download it as-is (referer only as
     # header), never re-target to the page for extractor detection.
     direct_file = bool(payload.get("directFile"))

@@ -237,7 +237,9 @@
             : cleanedTabTitle;
         }
       }
-      if (!title && pageRef) title = Naming.extractProductCode?.(pageRef) || "";
+      if (!title && pageRef) {
+        title = Naming.bindTitleToPage?.(pageRef, "") || "";
+      }
 
       const host = meta?.host || item.host || "";
       const thumbnail =
