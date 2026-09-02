@@ -240,14 +240,27 @@
           throw new Error(pageResult?.error || "페이지 병합 실패");
         };
 
+        // A resumed job with stored segments must go straight to the worker
+        // path — the page path has no checkpoint support and would restart
+        // from zero.
+        const resumeJob = jid ? activeDownloads.get(jid) : null;
+        const hasCheckpoint = !!(
+          options.resume &&
+          resumeJob?.resumeState?.kind === "hls" &&
+          resumeJob.resumeState.partBase
+        );
+        const order = UVDDownloadRouting.hlsAttemptOrder(tryPageFirst, {
+          hasCheckpoint
+        });
         // Each attempt reports its own honest segment progress (with reset on retry)
         const attemptRunners = {
           page: () => runPageHls(),
-          worker: () => runSwHls(tryPageFirst)
+          worker: () => runSwHls(order[0] !== "worker")
         };
-        const attempts = UVDDownloadRouting.hlsAttemptOrder(tryPageFirst).map(
-          (name) => ({ name, run: attemptRunners[name] })
-        );
+        const attempts = order.map((name) => ({
+          name,
+          run: attemptRunners[name]
+        }));
 
         for (let i = 0; i < attempts.length; i++) {
           try {

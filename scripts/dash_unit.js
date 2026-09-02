@@ -141,7 +141,59 @@ async function main() {
   assert.equal(directSmartArgs[4], "stream");
   assert.equal(directSmartArgs[5].isHls, true);
 
-  console.log("DASH/MPD helper routing: 18 assertions passed");
+  // Resumed HLS job with an IndexedDB checkpoint: the worker path owns the
+  // checkpoint, so it must run first even on a page-first site.
+  const Routing = require("../src/download-routing.js");
+  assert.deepEqual(Routing.hlsAttemptOrder(true), ["page", "worker"]);
+  assert.deepEqual(Routing.hlsAttemptOrder(true, { hasCheckpoint: true }), ["worker", "page"]);
+  const attemptsRun = [];
+  const hlsJobs = new Map([
+    [
+      "job-hls",
+      {
+        id: "job-hls",
+        filename: "clip.mp4",
+        resumeState: { kind: "hls", partBase: "hls_job-hls", parts: { 1: {} } }
+      }
+    ]
+  ]);
+  const hlsRouter = SmartDownload.createRouter({
+    UVD: { isGenericSaveName: () => false, getSitePackForUrl: async () => null },
+    UVDDownloadRouting: Routing,
+    activeDownloads: hlsJobs,
+    getCurrentJobContext: () => "job-hls",
+    resolvePageUrl: async () => "https://missav.example/watch/1",
+    emitDownloadProgress: () => {},
+    isRealDash: DownloadEngine.isRealDash,
+    isRealHls: DownloadEngine.isRealHls,
+    bestNonBlobAlternative: () => null,
+    withTimeout: (promise) => promise,
+    withTabReferer: (_tabId, operation, pageUrl) => operation(pageUrl),
+    friendlyFetchError: (error) => String(error?.message || error),
+    runHlsDownload: async () => {
+      attemptsRun.push("worker");
+      return { ok: true, downloadId: 3, size: 500_000 };
+    },
+    pageDownloadAllFrames: async () => {
+      attemptsRun.push("page");
+      return { ok: true, downloadId: 4, size: 500_000 };
+    }
+  });
+  const hlsUrl = "https://cdn.missav.example/hls/master.m3u8";
+  await hlsRouter.downloadSmart(7, hlsUrl, "clip.mp4", "best", "stream", {}, {
+    pageUrl: "https://missav.example/watch/1",
+    jobId: "job-hls",
+    resume: true
+  });
+  assert.deepEqual(attemptsRun, ["worker"], "resume with checkpoint skips page-first");
+  attemptsRun.length = 0;
+  await hlsRouter.downloadSmart(7, hlsUrl, "clip.mp4", "best", "stream", {}, {
+    pageUrl: "https://missav.example/watch/1",
+    jobId: "job-hls"
+  });
+  assert.deepEqual(attemptsRun, ["page"], "fresh download keeps the site heuristic");
+
+  console.log("DASH/MPD helper routing: 22 assertions passed");
 }
 
 main().catch((error) => {
