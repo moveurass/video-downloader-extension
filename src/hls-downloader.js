@@ -569,38 +569,64 @@ const HLS = (() => {
     };
   }
 
+  /** Rough height when the master omits RESOLUTION (same thresholds as the popup) */
+  function heightFromBandwidth(value) {
+    const bandwidth = Number(value) || 0;
+    if (bandwidth >= 8_000_000) return 2160;
+    if (bandwidth >= 4_000_000) return 1440;
+    if (bandwidth >= 2_000_000) return 1080;
+    if (bandwidth >= 1_000_000) return 720;
+    if (bandwidth >= 500_000) return 480;
+    if (bandwidth >= 250_000) return 360;
+    return bandwidth > 0 ? 240 : 0;
+  }
+
+  /** Height/label the popup advertises for a variant — must be what we match on. */
+  function variantHeight(v) {
+    return (
+      (v.height || 0) ||
+      heightFromBandwidth(v.estimateBandwidth || v.bandwidth || 0)
+    );
+  }
+
+  function variantLabel(v) {
+    if (v.quality && v.quality !== "unknown") return v.quality;
+    return qualityFromHeight(variantHeight(v));
+  }
+
   function pickVariant(variants, preferQuality) {
     if (!variants?.length) return null;
-    // Prefer MP4-looking variants (fMP4 / avc1) when quality equal
-    const scored = [...variants].sort((a, b) => {
-      const mp4 = (v) =>
-        /avc1|hvc1|mp4a|fmp4|m4s/i.test(v.codecs || "") ||
-        /mp4|fmp4|avc/i.test(v.url || "")
-          ? 1
-          : 0;
-      return (
+    const mp4 = (v) =>
+      /avc1|hvc1|hev1|av01|mp4a|fmp4|m4s/i.test(v.codecs || "") ||
+      /mp4|fmp4|avc/i.test(v.url || "")
+        ? 1
+        : 0;
+    // Resolution first; MP4-looking variants only break ties within the same
+    // height (codec taste must never pick 720p over 4K for "best").
+    const scored = [...variants].sort(
+      (a, b) =>
+        variantHeight(b) - variantHeight(a) ||
         mp4(b) - mp4(a) ||
-        (b.bandwidth || 0) - (a.bandwidth || 0) ||
-        (b.height || 0) - (a.height || 0)
-      );
-    });
+        (b.bandwidth || 0) - (a.bandwidth || 0)
+    );
 
     if (!preferQuality || preferQuality === "best" || preferQuality === "all") {
       return scored[0];
     }
+
+    const exact = scored.find((v) => variantLabel(v) === preferQuality);
+    if (exact) return exact;
+
     const order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"];
     const targetIdx = order.indexOf(preferQuality);
     if (targetIdx === -1) return scored[0];
 
-    const exact = scored.find((v) => v.quality === preferQuality);
-    if (exact) return exact;
-
     for (let i = targetIdx; i < order.length; i++) {
-      const v = scored.find((x) => x.quality === order[i]);
+      const v = scored.find((x) => variantLabel(x) === order[i]);
       if (v) return v;
     }
     for (let i = targetIdx; i >= 0; i--) {
-      const v = scored.find((x) => x.quality === order[i]);
+      const v = scored.find((x) => variantLabel(x) === order[i]);
       if (v) return v;
     }
     return scored[0];
@@ -1463,6 +1489,7 @@ const HLS = (() => {
     parsePlaylist,
     qualityFromHeight,
     heightFromString,
+    heightFromBandwidth,
     pickVariant,
     parseByteRange,
     segmentIdentity,
