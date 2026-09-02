@@ -86,9 +86,38 @@ def main() -> int:
             and helper_server.PAIR_FILE.is_file()
             and (helper_server.PAIR_FILE.stat().st_mode & 0o777) == 0o600,
         )
+        # A pinned UVD_ALLOWED_ORIGIN must also gate /pair, otherwise another
+        # extension can pair first and lock the pinned extension out.
+        helper_server.PAIR_FILE = Path(tmp) / "pairing-pinned.json"
+        helper_server.auto_pairing = {}
+        original_exact = helper_server.ALLOWED_ORIGIN_EXACT
+        helper_server.ALLOWED_ORIGIN_EXACT = "chrome-extension://" + "a" * 32
+        hijacked, hijack_error = helper_server.pair_extension(
+            "chrome-extension://" + "b" * 32, "c" * 64
+        )
+        check(
+            "pinned origin rejects foreign /pair",
+            not hijacked
+            and hijack_error == "origin not allowed"
+            and not helper_server.auto_pairing,
+            f"{hijacked} {hijack_error}",
+        )
+        pinned_ok, pinned_error = helper_server.pair_extension(
+            "chrome-extension://" + "a" * 32, "c" * 64
+        )
+        check("pinned origin can pair", pinned_ok and not pinned_error, str(pinned_error))
+        helper_server.ALLOWED_ORIGIN_EXACT = original_exact
     helper_server.PAIR_FILE = original_pair_file
     helper_server.auto_pairing = original_pairing
     helper_server.AUTH_TOKEN = original_auth_token
+
+    check(
+        "tiktok cookies only for first-party hosts",
+        helper_server.tiktok_cookie_host("https://v16-webapp.tiktok.com/x.mp4")
+        and helper_server.tiktok_cookie_host("https://v19.tiktokcdn-us.com/x.mp4")
+        and not helper_server.tiktok_cookie_host("https://www.tikwm.com/video/media/play/1.mp4")
+        and not helper_server.tiktok_cookie_host("https://tiktok.com.evil.example/x.mp4"),
+    )
 
     print("== helper health ==")
     try:
