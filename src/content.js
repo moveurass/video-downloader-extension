@@ -1223,6 +1223,7 @@
             url: msg.url,
             filename: msg.filename,
             preferQuality: msg.preferQuality || "best",
+            audioTrackId: msg.audioTrackId || "",
             type: msg.mediaType || msg.type,
             jobId
           },

@@ -186,6 +186,7 @@
       } catch {
         downloadId = await startDownload(objectUrl, name);
       }
+      await report({ type: "SAVE_PAGE_STARTED", downloadId, filename: name });
       const timeoutMs = Math.min(20 * 60 * 1000, Math.max(120_000, blob.size / 8));
       const done = await waitComplete(downloadId, timeoutMs);
       let path = done.path || "";

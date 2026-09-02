@@ -269,7 +269,13 @@
     return saveBlobThroughBackground(blob, filename, onProgress);
   }
 
-  async function downloadHls(url, filename, preferQuality, onProgress) {
+  async function downloadHls(
+    url,
+    filename,
+    preferQuality,
+    onProgress,
+    trackOptions = {}
+  ) {
     if (typeof HLS === "undefined" || !HLS.downloadAndMerge) {
       throw new Error("HLS 모듈 없음 — 페이지를 새로고침 하세요");
     }
@@ -282,6 +288,7 @@
     const result = await withTimeout(
       HLS.downloadAndMerge(url, {
         preferQuality: preferQuality || "best",
+        audioTrackId: trackOptions.audioTrackId || "",
         pageUrl,
         referer: pageUrl,
         signal,
@@ -367,7 +374,7 @@
   }
 
   async function smartDownload(opts, onProgress) {
-    const { url, filename, preferQuality, type } = opts || {};
+    const { url, filename, preferQuality, type, audioTrackId } = opts || {};
     if (!url) throw new Error("받을 주소가 없습니다");
 
     // Fresh abort controller per download
@@ -381,7 +388,9 @@
         return await downloadBlobUrl(url, filename, onProgress);
       }
       if (looksHls(url, type)) {
-        return await downloadHls(url, filename, preferQuality, onProgress);
+        return await downloadHls(url, filename, preferQuality, onProgress, {
+          audioTrackId: audioTrackId || ""
+        });
       }
       return await downloadDirect(url, filename, onProgress);
     } finally {

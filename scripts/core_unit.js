@@ -50,6 +50,28 @@ const heights = [
 for (const [value, expected] of heights) {
   assert.equal(HLS.heightFromString(value), expected, value);
 }
+const hlsMaster = HLS.parsePlaylist(
+  [
+    "#EXTM3U",
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub",NAME="English",LANGUAGE="en",DEFAULT=YES,URI="audio/en.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO="dub"',
+    "video/720.m3u8"
+  ].join("\n"),
+  "https://media.example/master.m3u8"
+);
+assert.equal(hlsMaster.audioRenditions.length, 1);
+assert.equal(hlsMaster.audioRenditions[0].url, "https://media.example/audio/en.m3u8");
+assert.equal(hlsMaster.variants[0].audioGroup, "dub");
+const liveMedia = HLS.parsePlaylist(
+  "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:42\n#EXTINF:6,\nsegment.ts",
+  "https://media.example/live.m3u8"
+);
+assert.equal(liveMedia.isLive, true);
+assert.equal(liveMedia.segments[0].sequence, 42);
+assert.equal(
+  HLS.segmentIdentity(liveMedia.segments[0]),
+  "42:https://media.example/segment.ts"
+);
 
 const single = Quality.ensureQualityChoices([
   { id: "best", label: "최고" },
