@@ -280,6 +280,7 @@
             title: nameHint || undefined,
             quality: preferQuality || "best",
             site: "tiktok",
+            resumeKey: jid || undefined,
             cookieHeader: cookieHeader || undefined,
             mediaUrl:
               mediaUrl && deps.looksLikeVideoFileUrl(mediaUrl) ? mediaUrl : undefined,
@@ -356,11 +357,13 @@
       };
       const label = labelMap[kind] || "영상";
       deps.emitDownloadProgress(tabId, 4, `${label} 준비 중…`, "start", jid);
+      // Always ship the domain-scoped list; the helper never turns a bare
+      // cookieHeader into a global header any more.
       const needsCookieList =
         kind === "x" || kind === "facebook" || kind === "bilibili";
       const [cookieHeader, cookiesList] = await Promise.all([
         getCookieHeaderForUrl(targetPage),
-        needsCookieList ? collectCookiesForUrl(targetPage) : Promise.resolve(undefined)
+        collectCookiesForUrl(targetPage)
       ]);
       if (needsCookieList && cookiesList?.length) {
         deps.emitDownloadProgress(
@@ -386,6 +389,7 @@
           title: nameHint || undefined,
           quality: preferQuality || "best",
           site: kind || undefined,
+          resumeKey: jid || undefined,
           cookieHeader: cookieHeader || undefined,
           cookiesList: cookiesList?.length ? cookiesList : undefined,
           ...extra
@@ -522,6 +526,7 @@
             title: nameHint || undefined,
             quality: preferQuality || "best",
             site: "instagram",
+            resumeKey: jid || undefined,
             cookieHeader: cookieHeader || undefined,
             cookiesList,
             ...extra

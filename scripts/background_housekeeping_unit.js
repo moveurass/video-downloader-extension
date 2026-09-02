@@ -20,7 +20,8 @@ async function main() {
   const keys = [
     "hls_keep:p:000001",
     "hls_stale:p:000001",
-    "hls_keep:p:000002"
+    "hls_keep:p:000002",
+    "hls_interrupted:p:000001"
   ];
   let closed = 0;
   const range = { lower: "hls_", upper: "hls_\uffff" };
@@ -73,6 +74,14 @@ async function main() {
               {
                 status: "done",
                 resumeState: { kind: "hls", partBase: "hls_stale" }
+              }
+            ],
+            // A job that was still running when the worker died is restored as
+            // a resumable row, so its parts must not be swept at startup.
+            uvdRunningDownloads: [
+              {
+                status: "running",
+                resumeState: { kind: "hls", partBase: "hls_interrupted" }
               }
             ]
           })

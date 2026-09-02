@@ -21,7 +21,13 @@
     );
   }
 
-  function hlsAttemptOrder(tryPageFirst) {
+  /**
+   * @param {boolean} tryPageFirst site heuristics prefer page-context fetches
+   * @param {{hasCheckpoint?: boolean}} [options] only the worker path can reuse
+   *   IndexedDB segment checkpoints, so a resumed job must start there.
+   */
+  function hlsAttemptOrder(tryPageFirst, options = {}) {
+    if (options.hasCheckpoint) return ["worker", "page"];
     return tryPageFirst ? ["page", "worker"] : ["worker", "page"];
   }
 

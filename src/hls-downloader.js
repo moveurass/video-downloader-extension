@@ -1476,6 +1476,11 @@ const HLS = (() => {
       filename,
       quality,
       segmentCount: okCount,
+      expectedSegments: expected,
+      skippedSegments: Math.max(0, expected - okCount),
+      // Soft-failed segments were dropped; callers must surface this instead
+      // of reporting an ordinary "저장 완료".
+      partial: okCount < expected,
       duration: parsed.duration || 0,
       size: totalSize,
       audioTrackId: selectedAudio?.id || "",

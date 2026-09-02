@@ -337,6 +337,10 @@
           "video/mp4"
         );
       }
+      if (result.partial) {
+        // Make the gap visible on disk too, not only in the queue row.
+        name = name.replace(/(\.[a-z0-9]{2,5})$/i, " (일부 누락)$1");
+      }
 
       const saveStartedAt = Date.now();
       const blobSize = result.size || result.blob?.size || 0;
@@ -399,7 +403,13 @@
       if (resumeJob?.resumeState?.partBase === partBase) {
         delete resumeJob.resumeState;
       }
-      setProg({ phase: "done", percent: 100, message: "저장 완료" });
+      setProg({
+        phase: "done",
+        percent: 100,
+        message: result.partial
+          ? `일부 누락 저장 (${result.skippedSegments}/${result.expectedSegments} 빠짐)`
+          : "저장 완료"
+      });
       setTimeout(() => hlsProgress.delete(key), 3000);
 
       return {
@@ -410,7 +420,10 @@
         state: saved.state,
         size: result.size,
         quality: result.quality,
-        segmentCount: result.segmentCount
+        segmentCount: result.segmentCount,
+        expectedSegments: result.expectedSegments,
+        skippedSegments: result.skippedSegments,
+        partial: !!result.partial
       };
     }
 

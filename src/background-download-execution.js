@@ -389,6 +389,7 @@
             pageUrl,
             jobId: jid,
             forceMediaMode: mediaMode,
+            resume: !!forceOpts.resume,
             audioTrackId: forceOpts.audioTrackId || "",
             subtitleLanguages: Array.isArray(forceOpts.subtitleLanguages)
               ? forceOpts.subtitleLanguages

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import subprocess
 import sys
 import tempfile
@@ -86,6 +88,23 @@ def main() -> int:
             and helper_server.PAIR_FILE.is_file()
             and (helper_server.PAIR_FILE.stat().st_mode & 0o777) == 0o600,
         )
+        # Same extension origin may rotate its token (reinstall recovery);
+        # a different extension still cannot take the pairing over.
+        rotated, rotate_error = helper_server.pair_extension(
+            "chrome-extension://" + "a" * 32, "d" * 64
+        )
+        foreign, foreign_error = helper_server.pair_extension(
+            "chrome-extension://" + "b" * 32, "e" * 64
+        )
+        check(
+            "same-origin token rotation, foreign origin blocked",
+            rotated
+            and not rotate_error
+            and helper_server.auto_pairing["token"] == "d" * 64
+            and not foreign
+            and foreign_error == "helper already paired",
+            f"{rotate_error} {foreign_error}",
+        )
         # A pinned UVD_ALLOWED_ORIGIN must also gate /pair, otherwise another
         # extension can pair first and lock the pinned extension out.
         helper_server.PAIR_FILE = Path(tmp) / "pairing-pinned.json"
@@ -111,6 +130,125 @@ def main() -> int:
     helper_server.auto_pairing = original_pairing
     helper_server.AUTH_TOKEN = original_auth_token
 
+    scoped = helper_server.cookie_header_to_list(
+        "sid=abc; theme=dark", "https://www.example.com/watch/1"
+    )
+    check(
+        "bare cookie header is scoped to the page host",
+        [c["name"] for c in scoped] == ["sid", "theme"]
+        and all(c["domain"] == ".example.com" and c["secure"] for c in scoped),
+        str(scoped)[:80],
+    )
+    check(
+        "cookie list preferred over header",
+        helper_server.payload_cookie_list(
+            {"cookiesList": [{"name": "a", "value": "1", "domain": ".x.test"}], "cookieHeader": "b=2"},
+            "https://y.test/",
+        )[0]["domain"]
+        == ".x.test",
+    )
+    helper_source = (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+    check(
+        "no global Cookie header passed to yt-dlp",
+        "Cookie:{cookie_header}" not in helper_source,
+    )
+    check(
+        "payload cannot point yt-dlp at local cookie jars / browser profiles",
+        "cookiesFromBrowser" not in helper_source
+        and 'payload.get("cookies")\n            if isinstance(cookies, str)' not in helper_source,
+    )
+    # Pause → resume must share one work_dir so yt-dlp --continue applies.
+    key_a = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")
+    key_b = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")
+    key_c = helper_server.resume_key_for({}, "https://a.test/v?x=1")
+    key_d = helper_server.resume_key_for({}, "https://a.test/v?x=1")
+    key_e = helper_server.resume_key_for({"quality": "720p"}, "https://a.test/v?x=1")
+    check(
+        "helper resume key is stable and sanitized",
+        key_a == key_b == "dl_1700_3"
+        and key_c == key_d
+        and key_c != key_e
+        and helper_server.resume_key_for({"resumeKey": "../evil/x"}, "u") == "___evil_x",
+        f"{key_a} {key_c} {key_e}",
+    )
+    original_tmp_root = helper_server.TMP_ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        helper_server.TMP_ROOT = Path(tmp) / ".uvd-tmp"
+        fresh = helper_server.TMP_ROOT / "fresh"
+        stale = helper_server.TMP_ROOT / "stale"
+        empty = helper_server.TMP_ROOT / "empty"
+        for d in (fresh, stale, empty):
+            d.mkdir(parents=True)
+        (fresh / "a.part").write_bytes(b"x")
+        (stale / "b.part").write_bytes(b"x")
+        old = time.time() - 4 * 24 * 3600
+        os.utime(stale, (old, old))
+        os.utime(stale / "b.part", (old, old))
+        removed = helper_server.sweep_tmp_dirs()
+        check(
+            "startup sweep removes only abandoned temp dirs",
+            removed == 2 and fresh.is_dir() and not stale.exists() and not empty.exists(),
+            f"removed={removed}",
+        )
+        helper_server.purge_work_dir(fresh)
+        check("purge removes a job work dir", not fresh.exists())
+        outside = Path(tmp) / "outside"
+        outside.mkdir()
+        helper_server.purge_work_dir(outside)
+        check("purge refuses paths outside .uvd-tmp", outside.exists())
+    helper_server.TMP_ROOT = original_tmp_root
+
+    # Cancel: a pause keeps partial files, a user cancel purges them; a job
+    # whose worker already exited is purged synchronously.
+    with tempfile.TemporaryDirectory() as tmp:
+        helper_server.TMP_ROOT = Path(tmp) / ".uvd-tmp"
+        wd = helper_server.TMP_ROOT / "job_x"
+        wd.mkdir(parents=True)
+        (wd / "v.part").write_bytes(b"x")
+        helper_server.jobs["smoke-cancel"] = {"status": "error", "workDir": str(wd)}
+        helper_server.request_cancel_job("smoke-cancel", purge=False)
+        kept = wd.exists()
+        helper_server.request_cancel_job("smoke-cancel", purge=True)
+        check(
+            "cancel purge flag controls partial-file removal",
+            kept and not wd.exists() and helper_server.jobs["smoke-cancel"]["purge"] is True,
+        )
+        helper_server.jobs.pop("smoke-cancel", None)
+    helper_server.TMP_ROOT = original_tmp_root
+
+    check(
+        "helper publish dir mirrors Downloads/<subfolder>",
+        helper_server.publish_dir_for("") == helper_server.OUT_DIR
+        and helper_server.publish_dir_for("VideoDownloader") == helper_server.OUT_DIR
+        and helper_server.subfolder_segments("../x/..\\y:z") == ["x", "yz"],
+        str(helper_server.publish_dir_for("My/Folder")),
+    )
+    helper_server._version_cache.clear()
+    calls = {"n": 0}
+    original_check_output = helper_server.subprocess.check_output
+
+    def fake_check_output(*_args, **_kwargs):
+        calls["n"] += 1
+        return "2026.09.01\n"
+
+    helper_server.subprocess.check_output = fake_check_output
+    try:
+        v1 = helper_server.ytdlp_version("/usr/bin/yt-dlp-fake")
+        v2 = helper_server.ytdlp_version("/usr/bin/yt-dlp-fake")
+    finally:
+        helper_server.subprocess.check_output = original_check_output
+        helper_server._version_cache.clear()
+    check(
+        "/health caches yt-dlp --version",
+        v1 == v2 == "2026.09.01" and calls["n"] == 1,
+        f"calls={calls['n']}",
+    )
+    check(
+        "yt-dlp children run in their own session and are killed as a tree",
+        "start_new_session=(os.name != \"nt\")" in helper_source
+        and "os.killpg(" in helper_source
+        and "except subprocess.TimeoutExpired:" in helper_source,
+    )
     check(
         "tiktok cookies only for first-party hosts",
         helper_server.tiktok_cookie_host("https://v16-webapp.tiktok.com/x.mp4")
@@ -353,6 +491,7 @@ def main() -> int:
         ("resume_unit.js", "resume contract"),
         ("recommendations_unit.js", "remaining recommendations"),
         ("popup_wiring_modules_unit.js", "popup wiring modules"),
+        ("injected_capture_unit.js", "injected capture opt-in"),
     ):
         r = subprocess.run(
             ["node", f"scripts/{script}"],

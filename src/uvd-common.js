@@ -59,7 +59,13 @@ const UVD = (() => {
      * Download speed profile (does not change quality):
      * fast | normal | safe
      */
-    downloadSpeed: "fast"
+    downloadSpeed: "fast",
+    /**
+     * Keep MSE/segment bytes in page memory from the first play so blob:
+     * players can be exported without a replay. Off by default: the page
+     * hook otherwise retains nothing until an export is requested.
+     */
+    captureAlways: false
   };
 
   const HISTORY_KEY = "uvdHistory";

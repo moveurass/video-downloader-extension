@@ -21,8 +21,10 @@ function makeHarness(options = {}) {
   const activeDownloads = new Map(options.jobs || []);
   const chrome = {
     tabs: {
-      async sendMessage(tabId, message) {
-        messages.push({ tabId, message });
+      async sendMessage(tabId, message, sendOptions) {
+        messages.push(
+          sendOptions ? { tabId, message, frameId: sendOptions.frameId } : { tabId, message }
+        );
         if (message.type === "PING_CONTENT") {
           if (options.pingError) throw options.pingError;
           return options.pingResponse ?? { hasDownload: true };
@@ -33,6 +35,11 @@ function makeHarness(options = {}) {
     },
     scripting: {
       async executeScript(details) {
+        if (details.func) {
+          // frame probe
+          if (options.probeError) throw options.probeError;
+          return options.frames ?? [{ frameId: 0, result: { hasDownload: true, isTop: true } }];
+        }
         injections.push(details);
         if (options.injectionError) throw options.injectionError;
       }
@@ -108,7 +115,8 @@ async function main() {
       jobId: "payload-job",
       progressAttempt: 4,
       tabId: 10
-    }
+    },
+    frameId: 0
   });
   deepEqual(payload.timeouts[1], {
     milliseconds: 25 * 60 * 1000,
@@ -170,6 +178,27 @@ async function main() {
   );
   equal(invalid.messages.length, 0);
   equal(invalid.injections.length, 0);
+
+  // Frame targeting: the frame that captured the URL and hosts the player
+  // wins over the top frame and over ad iframes without the download module.
+  const frames = makeHarness({
+    downloadResponse: { ok: true },
+    frames: [
+      { frameId: 0, result: { hasDownload: true, isTop: true, hasMedia: false } },
+      { frameId: 44, result: { hasDownload: true, reported: true, hasMedia: true, sameOrigin: true } },
+      { frameId: 45, result: { hasDownload: false, reported: true, hasMedia: true } },
+      { frameId: 46, result: { hasDownload: true, hasMedia: true } }
+    ]
+  });
+  await frames.pageDownloadAllFrames(20, { url: "https://cdn.test/master.m3u8" });
+  equal(frames.messages[1].frameId, 44, "single best frame receives SMART_DOWNLOAD");
+  equal(frames.frameScore({ hasDownload: false, reported: true }), -1);
+  equal(frames.frameScore({ hasDownload: true, reported: true, hasMedia: true, sameOrigin: true, isTop: true }), 15);
+
+  const probeFailed = makeHarness({ downloadResponse: { ok: true }, probeError: new Error("no") });
+  await probeFailed.pageDownloadAllFrames(21, { url: "https://cdn.test/master.m3u8" });
+  equal(probeFailed.messages[1].frameId, 0, "probe failure falls back to the top frame, not fan-out");
+  equal(probeFailed.warnings.some((w) => w[0] === "[UVD] frame probe"), true);
 
   console.log(`background page fallback: ${assertions} assertions passed`);
 }

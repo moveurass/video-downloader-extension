@@ -14,9 +14,37 @@ const Naming = (() => {
       .slice(0, max);
   }
 
+  /**
+   * Ordinary words that precede a number in normal titles/paths and must never
+   * be treated as a product-code label ("Top 10", "Episode 12", "/page-10").
+   * Deliberately excludes real labels that happen to be words (STARS, START…).
+   */
+  const CODE_STOP_WORDS = new Set(
+    (
+      "top best the episode ep part vol volume season chapter lesson day week month year " +
+      "page post item video clip photo image img news article id no num number round level " +
+      "step tip tips iphone galaxy windows android ios mac pixel model version ver build " +
+      "release update patch test demo sample track disc cd dvd bd room floor class grade " +
+      "group team unit hour minute min sec chap ch act scene take shot cam camera live " +
+      "stream gen series set pack lot size age rank ranking hot new old free full hd sd " +
+      "fhd uhd http https www mp4 avc hevc dm cdn watch play player embed user users " +
+      "channel view views list thread comment comments reply story stories highlight " +
+      "shorts short trailer teaser review reviews unboxing vs versus guide tutorial " +
+      "how why what when where who fix fixed bug issue error code pr mr rfc task ticket " +
+      "chunk segment seg init index master manifest media file download source src"
+    ).split(/\s+/)
+  );
+
   function isBadCodePrefix(p) {
-    return /^(http|https|www|mp4|HD|FHD|4K|AVC|HEVC|dm|cdn|img|www\d)$/i.test(
-      p || ""
+    const prefix = String(p || "");
+    if (/^www\d*$/i.test(prefix)) return true;
+    return CODE_STOP_WORDS.has(prefix.toLowerCase());
+  }
+
+  /** Hosts where a code in the URL path is authoritative even without title confirmation */
+  function isKnownCodeSite(host) {
+    return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
+      String(host || "")
     );
   }
 
@@ -80,9 +108,23 @@ const Naming = (() => {
    * Always prefix with the page's product code when known.
    */
   function bindTitleToPage(pageUrl, title) {
-    const urlCode = extractProductCode(pageUrl || "") || "";
     let t = cleanPageTitle(title || "") || "";
     const titleCode = extractProductCode(t) || "";
+    let urlCode = extractProductCode(pageUrl || "") || "";
+    // A code-looking path segment on an ordinary site ("/abcd-123/") must not
+    // replace or prefix a real title that has no code of its own. Trust the
+    // URL code when the host is a known code site, when the title carries a
+    // code (same → confirm, different → title is stale for this page), or when
+    // there is no usable title at all.
+    if (urlCode && !titleCode && t) {
+      let host = "";
+      try {
+        host = new URL(pageUrl).hostname;
+      } catch {
+        host = "";
+      }
+      if (!isKnownCodeSite(host)) urlCode = "";
+    }
 
     // Title is clearly for another video → keep only the URL code
     if (urlCode && titleCode && urlCode.toUpperCase() !== titleCode.toUpperCase()) {
@@ -147,10 +189,21 @@ const Naming = (() => {
     t = t.replace(/^\(\d{1,4}\)\s*/, "");
     t = t.replace(/^[\(\[]?\d{1,3}[\)\]]\s+/, "");
 
-    // Normalize product code at start: [ssis-001] / ssis_001 / SSIS 001
+    // Normalize product code at start: [ssis-001] / ssis_001 / SSIS 001.
+    // Only explicit code shapes qualify: hyphen/underscore, glued letters+3
+    // digits, or an ALL-CAPS label followed by a space and 3+ digits. Plain
+    // "Top 10 …" / "iPhone 15 …" titles must stay readable.
     t = t.replace(
-      /^\[?\s*([A-Za-z]{2,12})[-_ ]?(\d{2,5})\s*\]?\s*/i,
-      (_, p, n) => `${p.toUpperCase()}-${n} `
+      /^\[?\s*([A-Za-z]{2,12})([-_ ]?)(\d{2,5})(?=[\s\]]|$)\s*\]?\s*/,
+      (whole, p, sep, n) => {
+        if (isBadCodePrefix(p)) return whole;
+        const explicit =
+          sep === "-" ||
+          sep === "_" ||
+          (sep === "" && p.length >= 3 && n.length >= 3) ||
+          (sep === " " && p === p.toUpperCase() && n.length >= 3);
+        return explicit ? `${p.toUpperCase()}-${n} ` : whole;
+      }
     );
 
     // Remove English leak / marketing tags (anywhere, common on 123av titles)
@@ -630,6 +683,7 @@ const Naming = (() => {
     cleanPageTitle,
     extractProductCode,
     bindTitleToPage,
+    isKnownCodeSite,
     isUglyBase,
     extFromUrl,
     extFromFilename,

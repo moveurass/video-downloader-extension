@@ -7,21 +7,33 @@
   const partsKey = params.get("parts");
   const key = params.get("key") || partsKey;
   const nameParam = params.get("name") || `영상_${Date.now()}.mp4`;
+  // Relative path (settings subfolder + locked name) chosen by the background;
+  // this page must not re-sanitize or truncate it, or the saved name and the
+  // history entry drift apart.
+  const pathParam = params.get("path") || "";
 
-  function sanitizeName(filename) {
-    let name = String(filename || `영상_${Date.now()}.mp4`)
-      .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
-      .replace(/[\u{2600}-\u{27BF}]/gu, "")
-      .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
-      .replace(/\s+/g, " ")
-      .replace(/\.ts$/i, ".mp4")
-      .trim();
-    if (!name || name.length < 2) name = `영상_${Date.now()}.mp4`;
-    if (!/\.mp4$/i.test(name)) {
-      name = name.replace(/\.[a-z0-9]{2,5}$/i, "") + ".mp4";
+  function leafName(filename) {
+    let name = String(filename || "")
+      .replace(/\\/g, "/")
+      .split("/")
+      .filter(Boolean)
+      .pop() || "";
+    name = name.replace(/[<>:"|?*\x00-\x1f]/g, " ").replace(/\s+/g, " ").trim();
+    if (!name || name.length < 2 || !/\.[a-z0-9]{2,5}$/i.test(name)) {
+      name = `영상_${Date.now()}.mp4`;
     }
-    if (name.length > 100) name = name.slice(0, 96).trim() + ".mp4";
     return name;
+  }
+
+  function relativePath(path, leaf) {
+    const segments = String(path || "")
+      .replace(/\\/g, "/")
+      .split("/")
+      .map((s) => s.replace(/[<>:"|?*\x00-\x1f]/g, "").trim())
+      .filter((s) => s && s !== "." && s !== "..");
+    if (!segments.length) return leaf;
+    segments[segments.length - 1] = leaf;
+    return segments.join("/");
   }
 
   function openDb() {
@@ -84,6 +96,7 @@
   function waitComplete(downloadId, timeoutMs) {
     return new Promise((resolve, reject) => {
       let settled = false;
+      let timer = null;
       const finish = (fn, v) => {
         if (settled) return;
         settled = true;
@@ -111,16 +124,22 @@
             finish(resolve, { state: "complete", path: item.filename });
           } else if (item?.state === "interrupted") {
             finish(reject, new Error("다운로드가 중단되었습니다"));
+          } else if (item?.state === "in_progress" && item.paused) {
+            // User paused the final save: this page owns the blob URL, so it
+            // must stay alive until the download resumes and finishes.
+            armTimer();
           }
         } catch {
           /* ignore */
         }
       }, 400);
-      const timer = setTimeout(async () => {
+      const onTimeout = async () => {
         try {
           const [item] = await chrome.downloads.search({ id: downloadId });
           if (item?.state === "complete") {
             finish(resolve, { state: "complete", path: item.filename });
+          } else if (item?.state === "in_progress" && item.paused) {
+            armTimer();
           } else if (item?.state === "in_progress" && (item.bytesReceived || 0) > 0) {
             finish(resolve, { state: "in_progress", path: item.filename, partial: true });
           } else {
@@ -129,7 +148,13 @@
         } catch {
           finish(reject, new Error("다운로드 상태 확인 실패"));
         }
-      }, timeoutMs);
+      };
+      function armTimer() {
+        if (settled) return;
+        clearTimeout(timer);
+        timer = setTimeout(onTimeout, timeoutMs);
+      }
+      armTimer();
     });
   }
 
@@ -177,12 +202,13 @@
       throw new Error(`파일이 너무 작습니다 (${Math.round((blob.size || 0) / 1024)}KB)`);
     }
 
-    const name = sanitizeName(nameParam);
+    const name = leafName(nameParam);
+    const target = pathParam ? relativePath(pathParam, name) : `VideoDownloader/${name}`;
     const objectUrl = URL.createObjectURL(blob);
     let downloadId;
     try {
       try {
-        downloadId = await startDownload(objectUrl, `VideoDownloader/${name}`);
+        downloadId = await startDownload(objectUrl, target);
       } catch {
         downloadId = await startDownload(objectUrl, name);
       }

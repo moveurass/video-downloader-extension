@@ -365,6 +365,7 @@ const {
   YtDlp,
   activeDownloads,
   getCookieHeaderForUrl: siteHelperRunner.getCookieHeaderForUrl,
+  collectCookiesForUrl: siteHelperRunner.collectCookiesForUrl,
   ytdlpFilenameHint: filenameYtdlpHint,
   throwIfJobStopped,
   emitDownloadProgress,

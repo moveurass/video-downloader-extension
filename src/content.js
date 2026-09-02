@@ -7,6 +7,9 @@
 
   /** @type {Map<string, { hasThumb: boolean, title: string }>} */
   const REPORTED = new Map();
+  // Isolated-world only (not visible to the page): lets the background probe
+  // which frame actually saw a media URL before targeting SMART_DOWNLOAD.
+  window.__UVD_REPORTED__ = REPORTED;
   let scanTimer = null;
 
   function absUrl(src) {
@@ -829,17 +832,41 @@
     return h.includes("instagram.com") || h.includes("instagr.am");
   }
 
+  function armPageCapture() {
+    try {
+      window.postMessage({ source: "uvd-content", type: "ARM_CAPTURE" }, "*");
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Byte capture in the page hook is opt-in; arm it from the first play only when asked. */
+  function armCaptureIfConfigured() {
+    try {
+      chrome.storage?.local?.get?.("uvdSettings", (data) => {
+        if (data?.uvdSettings?.captureAlways === true) armPageCapture();
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   function injectPageScript() {
     // Never inject MSE/fetch hooks on major social sites — breaks playback
     if (isTikTokHost() || isYouTubeHost() || isInstagramHost()) return;
     try {
       const s = document.createElement("script");
       s.src = chrome.runtime.getURL("src/injected.js");
-      s.onload = () => s.remove();
+      s.onload = () => {
+        s.remove();
+        armCaptureIfConfigured();
+      };
       (document.documentElement || document.head).appendChild(s);
     } catch {
       /* ignore */
     }
+    // early-inject.js may already have installed the hook at document_start
+    armCaptureIfConfigured();
   }
 
   window.addEventListener("message", (event) => {

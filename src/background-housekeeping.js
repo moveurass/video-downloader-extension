@@ -11,16 +11,22 @@
     async function cleanupStaleHlsParts() {
       try {
         const durable = await deps.chrome.storage?.local
-          ?.get("uvdPausedDownloads")
+          ?.get(["uvdPausedDownloads", "uvdRunningDownloads"])
           .catch(() => ({}));
+        // Jobs that were running when the previous worker died are restored
+        // as resumable paused rows; their parts must survive this sweep too.
         const preserved = new Set(
-          (Array.isArray(durable?.uvdPausedDownloads)
-            ? durable.uvdPausedDownloads
-            : []
-          )
+          [
+            ...(Array.isArray(durable?.uvdPausedDownloads)
+              ? durable.uvdPausedDownloads
+              : []),
+            ...(Array.isArray(durable?.uvdRunningDownloads)
+              ? durable.uvdRunningDownloads
+              : [])
+          ]
             .filter(
               (job) =>
-                job?.status === "paused" &&
+                (job?.status === "paused" || job?.status === "running") &&
                 job.resumeState?.kind === "hls" &&
                 job.resumeState.partBase
             )

@@ -58,6 +58,184 @@ async function testHelperAutoPairing() {
   assert.equal(writes[0].helperToken, token);
 }
 
+function loadYtDlp(fetchImpl, extraContext = {}) {
+  const source =
+    fs.readFileSync(path.join(__dirname, "../src/ytdlp.js"), "utf8") +
+    "\nglobalThis.__YtDlp = YtDlp;";
+  const context = {
+    console,
+    Uint8Array,
+    AbortController,
+    crypto: webcrypto,
+    // Fast-forward the 500 ms poll sleep.
+    setTimeout: (fn, ms, ...args) => setTimeout(fn, ms >= 500 ? 0 : ms, ...args),
+    clearTimeout,
+    Date,
+    JSON,
+    fetch: fetchImpl,
+    chrome: {
+      storage: {
+        local: { get: async () => ({}), set: async () => {} },
+        onChanged: { addListener() {} }
+      }
+    },
+    ...extraContext
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  return context.__YtDlp;
+}
+
+async function testPairingRecovery() {
+  const pairedHealth = { ok: true, ytdlp: true, pairingMode: "paired" };
+
+  // 1) Extension reinstalled: helper is paired, extension has no token →
+  //    same-origin re-pair succeeds and the new token is stored.
+  let requests = [];
+  let writes = [];
+  let ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/health")) return { ok: true, json: async () => pairedHealth };
+      if (String(url).endsWith("/pair")) return { ok: true, json: async () => ({ ok: true }) };
+      return { ok: false, status: 404, json: async () => ({ ok: false }) };
+    },
+    {
+      chrome: {
+        storage: {
+          local: { get: async () => ({}), set: async (v) => writes.push(v) },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  let health = await ytdlp.health(true);
+  assert.equal(health.pairingMode, "paired");
+  assert.equal(health.pairedNow, true);
+  assert.equal(health.authRequired, undefined);
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].helperToken, /^[a-f0-9]{64}$/);
+
+  // 2) Helper cache wiped ("available") while the extension still holds a
+  //    stale token → pair again with a fresh token.
+  requests = [];
+  writes = [];
+  ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/health")) {
+        return { ok: true, json: async () => ({ ok: true, ytdlp: true, pairingMode: "available" }) };
+      }
+      if (String(url).endsWith("/pair")) return { ok: true, json: async () => ({ ok: true }) };
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    {
+      chrome: {
+        storage: {
+          local: { get: async () => ({ helperToken: "stale".repeat(8) }), set: async (v) => writes.push(v) },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  health = await ytdlp.health(true);
+  assert.equal(health.pairedNow, true);
+  assert.equal(requests.some((r) => r.url.endsWith("/pair")), true, "stale token does not block re-pair");
+  assert.notEqual(writes[0].helperToken, "stale".repeat(8));
+
+  // 3) Paired helper rejects our token (403 on a protected route) → re-pair.
+  requests = [];
+  writes = [];
+  ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/health")) return { ok: true, json: async () => pairedHealth };
+      if (String(url).includes("/job/__uvd_token_probe__")) {
+        return { ok: false, status: 403, json: async () => ({ ok: false, error: "forbidden origin" }) };
+      }
+      if (String(url).endsWith("/pair")) return { ok: true, json: async () => ({ ok: true }) };
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    {
+      chrome: {
+        storage: {
+          local: { get: async () => ({ helperToken: "old".repeat(12) }), set: async (v) => writes.push(v) },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  health = await ytdlp.health(true);
+  assert.equal(health.pairedNow, true);
+  assert.equal(requests.filter((r) => r.url.endsWith("/pair")).length, 1);
+
+  // 4) Genuinely paired to another extension → clear, actionable error.
+  ytdlp = loadYtDlp(async (url) => {
+    if (String(url).endsWith("/health")) return { ok: true, json: async () => pairedHealth };
+    if (String(url).endsWith("/pair")) {
+      return { ok: false, status: 409, json: async () => ({ ok: false, error: "helper already paired" }) };
+    }
+    return { ok: false, status: 403, json: async () => ({ ok: false }) };
+  });
+  health = await ytdlp.health(true);
+  assert.equal(health.authRequired, true);
+  assert.match(health.pairingError, /pairing\.json/);
+  assert.equal(await ytdlp.available(), false);
+}
+
+async function testHelperPollingFailsFast() {
+  // Helper restarted: /job/<id> 404s forever. Must not spin to the timeout.
+  const calls = [];
+  const restarted = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "j1" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({ ok: false, error: "job not found" }) };
+  });
+  await assert.rejects(
+    () => restarted.downloadAndWait({ url: "https://x.test/v" }, () => {}, 60_000),
+    /재시작/
+  );
+  assert.equal(
+    calls.filter((c) => c.url.includes("/job/j1")).length,
+    6,
+    "six consecutive 404s are terminal"
+  );
+
+  // UI timeout: the helper job is cancelled instead of running untracked.
+  const timeoutCalls = [];
+  const slow = loadYtDlp(async (url, options = {}) => {
+    timeoutCalls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "j2" }) };
+    }
+    if (String(url).endsWith("/cancel")) {
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({ ok: true, job: { status: "running", percent: 10 } })
+    };
+  });
+  await assert.rejects(
+    () => slow.downloadAndWait({ url: "https://x.test/v" }, () => {}, 1),
+    /시간 초과/
+  );
+  const cancel = timeoutCalls.find((c) => c.url.endsWith("/job/j2/cancel"));
+  assert.ok(cancel, "timeout cancels the helper job");
+  assert.deepEqual(JSON.parse(cancel.options.body), { purge: false });
+
+  // Explicit user cancel asks the helper to purge partial files.
+  const purgeCalls = [];
+  const purging = loadYtDlp(async (url, options = {}) => {
+    purgeCalls.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ ok: true }) };
+  });
+  await purging.cancelJob("j3", { purge: true });
+  assert.deepEqual(JSON.parse(purgeCalls[0].options.body), { purge: true });
+}
+
 async function testHistoryCap() {
   const history = Array.from({ length: 40 }, (_, index) => ({
     id: `old-${index}`,
@@ -142,6 +320,8 @@ function testPermissionReductionAndTrackPlumbing() {
 
 async function main() {
   await testHelperAutoPairing();
+  await testHelperPollingFailsFast();
+  await testPairingRecovery();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();
   console.log("remaining recommendations: tracks, permissions, pairing, and history cap passed");

@@ -43,15 +43,17 @@ const YtDlp = (() => {
     return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
   }
 
-  async function pairIfAvailable(healthData) {
-    await authHeaders();
-    if (cachedToken || healthData?.pairingMode !== "available") {
-      return healthData;
-    }
-    if (pairingPromise) {
-      const paired = await pairingPromise;
-      return { ...healthData, ...paired };
-    }
+  /** When the current token was last accepted by a protected endpoint. */
+  let tokenVerifiedAt = 0;
+  const TOKEN_VERIFY_TTL = 60_000;
+
+  /**
+   * Pair (or re-pair) with a fresh token. The helper accepts this when it is
+   * unpaired or when the request comes from the same extension origin, which
+   * is how a reinstalled extension or a wiped helper cache recovers.
+   */
+  function requestPairing() {
+    if (pairingPromise) return pairingPromise;
     pairingPromise = (async () => {
       const token = generatePairToken();
       try {
@@ -67,6 +69,7 @@ const YtDlp = (() => {
         await chrome.storage.local.set({ helperToken: token });
         cachedToken = token;
         tokenLoaded = true;
+        tokenVerifiedAt = Date.now();
         return { pairingMode: "paired", pairedNow: true };
       } catch (error) {
         return {
@@ -74,11 +77,56 @@ const YtDlp = (() => {
         };
       }
     })();
-    try {
-      return { ...healthData, ...(await pairingPromise) };
-    } finally {
+    return pairingPromise.finally(() => {
       pairingPromise = null;
+    });
+  }
+
+  /** /health is public; hit a protected route to learn whether our token still works. */
+  async function tokenAccepted() {
+    if (!cachedToken) return false;
+    if (Date.now() - tokenVerifiedAt < TOKEN_VERIFY_TTL) return true;
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 1500);
+      const res = await fetch(`${BASE}/job/__uvd_token_probe__`, {
+        headers: await authHeaders(),
+        signal: ctrl.signal
+      });
+      clearTimeout(t);
+      if (res.status === 403) return false;
+      tokenVerifiedAt = Date.now();
+      return true;
+    } catch {
+      // Unreachable helper is not a token problem; keep the current token.
+      return true;
     }
+  }
+
+  async function pairIfAvailable(healthData) {
+    await authHeaders();
+    if (healthData?.pairingMode === "manual") return healthData;
+    if (healthData?.pairingMode === "available") {
+      // Helper has no pairing (fresh install or wiped cache): any token we
+      // still hold is stale, so pair again instead of keeping it.
+      return { ...healthData, ...(await requestPairing()) };
+    }
+    if (healthData?.pairingMode === "paired") {
+      if (await tokenAccepted()) return healthData;
+      // No token (extension reinstalled) or a rejected one (helper re-paired
+      // by the same origin elsewhere): try a same-origin re-pair once.
+      const repaired = await requestPairing();
+      if (repaired.pairingMode === "paired") return { ...healthData, ...repaired };
+      return {
+        ...healthData,
+        authRequired: true,
+        pairingError:
+          /already paired/i.test(String(repaired.pairingError || ""))
+            ? "도우미가 다른 확장 설치와 연결되어 있습니다. ~/.cache/uvd-helper/pairing.json 을 지우고 도우미를 재시작해 주세요"
+            : repaired.pairingError || "도우미 인증에 실패했습니다"
+      };
+    }
+    return healthData;
   }
 
   async function health(force = false) {
@@ -91,15 +139,6 @@ const YtDlp = (() => {
       clearTimeout(t);
       if (!res.ok) throw new Error("bad status");
       cachedHealth = await pairIfAvailable(await res.json());
-      if (cachedHealth?.pairingMode === "paired" && !cachedToken) {
-        cachedHealth = {
-          ...cachedHealth,
-          authRequired: true,
-          pairingError:
-            cachedHealth.pairingError ||
-            "도우미가 다른 확장 설치와 연결되어 있습니다"
-        };
-      }
       cachedAt = now;
       return cachedHealth;
     } catch {
@@ -114,12 +153,18 @@ const YtDlp = (() => {
     return !!(h && h.ok && h.ytdlp && !h.authRequired);
   }
 
-  async function startDownload(payload) {
+  async function startDownload(payload, retried = false) {
     const res = await fetch(`${BASE}/download`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(await authHeaders()) },
       body: JSON.stringify(payload)
     });
+    if (res.status === 403 && !retried) {
+      // Token rejected (helper re-paired / cache wiped): re-pair once and retry.
+      tokenVerifiedAt = 0;
+      const repaired = await requestPairing();
+      if (repaired.pairingMode === "paired") return startDownload(payload, true);
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
       throw new Error(
@@ -138,18 +183,26 @@ const YtDlp = (() => {
       headers: await authHeaders()
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || "job not found");
+    if (!res.ok || !data.ok) {
+      const error = new Error(data.error || "job not found");
+      error.status = res.status;
+      throw error;
+    }
     return data.job;
   }
 
-  /** Cancel a running helper download (kills yt-dlp process). */
-  async function cancelJob(jobId) {
+  /**
+   * Cancel a running helper download (kills yt-dlp and its children).
+   * `purge` also deletes the job's partial files; omit it for a pause so the
+   * next job with the same resumeKey can --continue.
+   */
+  async function cancelJob(jobId, options = {}) {
     if (!jobId) return { ok: false };
     try {
       const res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: "{}"
+        body: JSON.stringify({ purge: !!options.purge })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: !!(res.ok && data.ok), ...data };
@@ -207,12 +260,31 @@ const YtDlp = (() => {
       outDir: started.outDir
     });
 
+    // A helper restart wipes its in-memory job table (404), and a dead helper
+    // fails every poll; neither must spin silently until the 40-minute timeout.
+    let missing = 0;
+    let unreachable = 0;
     while (Date.now() - t0 < timeoutMs) {
       await new Promise((r) => setTimeout(r, 500));
       let job;
       try {
         job = await getJob(jobId);
-      } catch {
+        missing = 0;
+        unreachable = 0;
+      } catch (error) {
+        if (error?.status === 404) {
+          missing += 1;
+          if (missing >= 6) {
+            throw new Error(
+              "도우미가 재시작되어 진행 중인 작업을 잃었습니다. 다시 시작해 주세요"
+            );
+          }
+        } else {
+          unreachable += 1;
+          if (unreachable >= 40) {
+            throw new Error("도우미와 연결이 끊겼습니다. helper/start.command 를 실행해 주세요");
+          }
+        }
         continue;
       }
       const pct = typeof job.percent === "number" ? job.percent : 0;
@@ -243,6 +315,8 @@ const YtDlp = (() => {
         throw new Error(job.error || job.message || "다운로드 실패");
       }
     }
+    // Do not leave yt-dlp running untracked after the UI gives up.
+    await cancelJob(jobId).catch(() => {});
     throw new Error("다운로드 시간 초과");
   }
 
