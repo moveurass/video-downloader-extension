@@ -617,6 +617,176 @@ async function testDirectTransportRegistersCheckpoint() {
   assert.equal(job.resumeState, undefined);
 }
 
+async function testByteRangeSegmentsFetchSubRanges() {
+  const originalFetch = global.fetch;
+  // One 300KB resource split into init (0..999) + 3 media sub-ranges.
+  const resource = new Uint8Array(300_000);
+  for (let i = 0; i < resource.length; i++) resource[i] = (i * 13) & 0xff;
+  const playlist = [
+    "#EXTM3U",
+    "#EXT-X-TARGETDURATION:10",
+    '#EXT-X-MAP:URI="movie.mp4",BYTERANGE="1000@0"',
+    "#EXTINF:10,",
+    "#EXT-X-BYTERANGE:100000@1000",
+    "movie.mp4",
+    "#EXTINF:10,",
+    "#EXT-X-BYTERANGE:100000",
+    "movie.mp4",
+    "#EXTINF:10,",
+    "#EXT-X-BYTERANGE:99000@201000",
+    "movie.mp4",
+    "#EXT-X-ENDLIST"
+  ].join("\n");
+
+  const parsed = HLS.parsePlaylist(playlist, "https://media.test/movie.m3u8");
+  assert.deepEqual(parsed.mapByteRange, { offset: 0, length: 1000 });
+  assert.deepEqual(
+    parsed.segments.map((segment) => segment.byteRange),
+    [
+      { offset: 1000, length: 100_000 },
+      { offset: 101_000, length: 100_000 },
+      { offset: 201_000, length: 99_000 }
+    ],
+    "BYTERANGE without @offset continues after the previous sub-range"
+  );
+  assert.equal(
+    HLS.segmentIdentity(parsed.segments[1]),
+    "1:https://media.test/movie.mp4@101000+100000",
+    "resume identity distinguishes sub-ranges of one URL"
+  );
+
+  const runAgainst = async (honorRange) => {
+    const ranges = [];
+    global.fetch = async (url, init) => {
+      const value = String(url);
+      if (value.endsWith("movie.m3u8")) {
+        return new Response(playlist, { status: 200 });
+      }
+      const range = init?.headers?.Range || init?.headers?.range || "";
+      ranges.push(range);
+      const m = range.match(/^bytes=(\d+)-(\d+)$/);
+      if (!honorRange || !m) {
+        return new Response(resource.slice(), { status: 200 });
+      }
+      const start = Number(m[1]);
+      const end = Number(m[2]);
+      return new Response(resource.slice(start, end + 1), {
+        status: 206,
+        headers: { "Content-Range": `bytes ${start}-${end}/${resource.length}` }
+      });
+    };
+    const parts = [];
+    const result = await HLS.downloadAndMerge("https://media.test/movie.m3u8", {
+      onSegmentData: async (index, data, metadata) => {
+        parts.push({ index, data, metadata });
+      },
+      allowPartial: false,
+      speedProfile: "safe"
+    });
+    return { ranges, parts, result };
+  };
+
+  try {
+    for (const honorRange of [true, false]) {
+      const { ranges, parts, result } = await runAgainst(honorRange);
+      assert.deepEqual(
+        [...new Set(ranges)].sort(),
+        [
+          "bytes=0-999",
+          "bytes=1000-100999",
+          "bytes=101000-200999",
+          "bytes=201000-299999"
+        ],
+        `every fetch carries its sub-range (server honors Range: ${honorRange})`
+      );
+      parts.sort((a, b) => a.index - b.index);
+      assert.deepEqual(
+        parts.map((part) => part.data.byteLength),
+        [1000, 100_000, 100_000, 99_000]
+      );
+      const merged = new Uint8Array(resource.length);
+      let offset = 0;
+      for (const part of parts) {
+        merged.set(part.data, offset);
+        offset += part.data.byteLength;
+      }
+      assert.deepEqual(
+        merged,
+        resource,
+        `output is the resource exactly once, not once per segment (honor=${honorRange})`
+      );
+      assert.equal(result.size, resource.length);
+      assert.equal(
+        parts[0].metadata.sourceId,
+        "init:https://media.test/movie.mp4@0+1000"
+      );
+    }
+
+    // A URL-only legacy checkpoint must not be reused for a byte-range
+    // segment: it cannot tell which sub-range the stored bytes came from.
+    const fetched = [];
+    global.fetch = async (url, init) => {
+      const value = String(url);
+      if (value.endsWith("movie.m3u8")) {
+        return new Response(playlist, { status: 200 });
+      }
+      fetched.push(init?.headers?.Range || "");
+      const m = String(init?.headers?.Range || "").match(/^bytes=(\d+)-(\d+)$/);
+      return new Response(resource.slice(Number(m[1]), Number(m[2]) + 1), {
+        status: 206
+      });
+    };
+    await HLS.downloadAndMerge("https://media.test/movie.m3u8", {
+      resumeParts: new Map([
+        [2, { size: 100_000, sourceUrl: "https://media.test/movie.mp4" }]
+      ]),
+      onSegmentData: async () => {},
+      allowPartial: false,
+      speedProfile: "safe"
+    });
+    assert.equal(
+      fetched.includes("bytes=101000-200999"),
+      true,
+      "ambiguous URL-only checkpoint is refetched"
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testRefererRuleOnlyTargetsExtensionRequests() {
+  const calls = [];
+  const transport = DirectMedia.createTransport({
+    chrome: {
+      tabs: {
+        TAB_ID_NONE: -1,
+        get: async () => ({ url: "https://site.test/watch/1" })
+      },
+      declarativeNetRequest: {
+        updateSessionRules: async (options) => {
+          calls.push(options);
+        }
+      }
+    }
+  });
+  const seenPage = await transport.withTabReferer(
+    12,
+    async (pageUrl) => pageUrl
+  );
+  assert.equal(seenPage, "https://site.test/watch/1");
+  assert.equal(calls.length, 2, "rule is installed and then removed");
+  const rule = calls[0].addRules[0];
+  assert.deepEqual(rule.action.requestHeaders, [
+    { header: "Referer", operation: "set", value: "https://site.test/watch/1" }
+  ]);
+  assert.deepEqual(
+    rule.condition.tabIds,
+    [-1],
+    "Referer override must not apply to requests made by web pages in tabs"
+  );
+  assert.deepEqual(calls[1], { removeRuleIds: [rule.id] });
+}
+
 async function main() {
   await testHlsSkipsCheckpointedSegments();
   await testLiveHlsRequiresSequenceIdentity();
@@ -624,6 +794,8 @@ async function main() {
   await testFinalSavePublishesNativeCheckpoint();
   await testHlsRuntimePreservesPauseCheckpoint();
   await testDirectTransportRegistersCheckpoint();
+  await testByteRangeSegmentsFetchSubRanges();
+  await testRefererRuleOnlyTargetsExtensionRequests();
   await testNativeDirectPauseResume();
   const helperSource = fs.readFileSync(
     path.join(__dirname, "../helper/yt_dlp_server.py"),

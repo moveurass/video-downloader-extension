@@ -285,6 +285,15 @@
                 },
                 condition: {
                   urlFilter: "*",
+                  // Only requests that do not originate from a tab, i.e. this
+                  // service worker's own fetches and chrome.downloads. Without
+                  // this the rule rewrote Referer on every page's XHR/image/
+                  // iframe traffic browser-wide for the whole download.
+                  tabIds: [
+                    typeof chrome.tabs?.TAB_ID_NONE === "number"
+                      ? chrome.tabs.TAB_ID_NONE
+                      : -1
+                  ],
                   resourceTypes: [
                     "xmlhttprequest",
                     "media",
