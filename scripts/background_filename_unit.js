@@ -38,7 +38,7 @@ async function main() {
       pageUrl: "https://example.test/watch/ssis-001",
       quality: "1080p"
     }),
-    "SSIS-001 1080p.mp4"
+    "SSIS-001_1080p.mp4"
   );
   equal(
     manager.lockSaveName({
@@ -131,6 +131,56 @@ async function main() {
     "Song title.mp3"
   );
   equal(settingsCalls, 3);
+
+  // Generic-site titles must stay readable: "<word> <number>" is not a
+  // product code, and a code-looking path segment on an ordinary host does
+  // not replace a real title.
+  for (const [title, expected] of [
+    ["Top 10 goals of 2024", "Top 10 goals of 2024"],
+    ["iPhone 15 review", "iPhone 15 review"],
+    ["Episode 12 The Return", "Episode 12 The Return"],
+    ["The 100 best songs", "The 100 best songs"],
+    ["[ssis-001] title", "SSIS-001 title"],
+    ["ssis_001 x", "SSIS-001 x"],
+    ["SSIS 001 title", "SSIS-001 title"],
+    ["MIDV123 abc", "MIDV-123 abc"]
+  ]) {
+    equal(Naming.cleanPageTitle(title), expected);
+  }
+  equal(
+    Naming.bindTitleToPage("https://site.test/episode-12/", "Top 10 goals of 2024"),
+    "Top 10 goals of 2024"
+  );
+  equal(
+    Naming.bindTitleToPage("https://site.test/blog/page-10", "Windows 11 tips"),
+    "Windows 11 tips"
+  );
+  equal(
+    Naming.bindTitleToPage("https://site.test/abcd-123/", "Some show"),
+    "Some show",
+    "unknown host: URL code needs the title to confirm it"
+  );
+  equal(Naming.bindTitleToPage("https://site.test/abcd-123/", ""), "ABCD-123");
+  equal(
+    Naming.bindTitleToPage("https://123av.com/ja/v/snos-309", "대규모 정전"),
+    "SNOS-309 대규모 정전",
+    "known code site: URL code is authoritative"
+  );
+  equal(
+    Naming.bindTitleToPage("https://example.test/watch/ssis-001", "ABP-123 Old video"),
+    "SSIS-001",
+    "conflicting explicit codes: title is stale for this page"
+  );
+  equal(Naming.extractProductCode("https://example.com/watch/ep-05"), "");
+  equal(Naming.extractProductCode("https://example.com/ssis-001"), "SSIS-001");
+  equal(
+    manager.lockSaveName({
+      title: "Top 10 goals of 2024",
+      pageUrl: "https://videos.example/episode-12/",
+      quality: "1080p"
+    }),
+    "Top 10 goals of 2024_1080p.mp4"
+  );
 
   console.log(`background_filename_unit: ${assertions} assertions passed`);
 }
