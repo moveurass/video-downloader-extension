@@ -235,6 +235,7 @@ async function testBrowserHlsAlternateAudio() {
 async function testFinalSavePublishesNativeCheckpoint() {
   let listener;
   let startedId = null;
+  const createdUrls = [];
   const pipeline = SavePipeline.createPipeline({
     chrome: {
       runtime: {
@@ -247,14 +248,17 @@ async function testFinalSavePublishesNativeCheckpoint() {
         }
       },
       tabs: {
-        create: async () => ({ id: 9 }),
+        create: async ({ url }) => {
+          createdUrls.push(url);
+          return { id: 9 };
+        },
         remove: async () => {}
       }
     },
     indexedDB: null,
     IDBKeyRange: null,
     safeDownloadName: String,
-    relDownloadPath: async (value) => value,
+    relDownloadPath: async (value) => `Chosen/Subfolder/${value}`,
     startKeepAlive: () => true,
     stopKeepAlive: () => {}
   });
@@ -264,8 +268,11 @@ async function testFinalSavePublishesNativeCheckpoint() {
     240_000,
     { onDownloadStarted: (id) => { startedId = id; } }
   );
-  await Promise.resolve();
-  await Promise.resolve();
+  // The tab is created after the (async) relative path lookup; wait for the
+  // message listener instead of counting microtasks.
+  for (let i = 0; i < 50 && typeof listener !== "function"; i++) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
   assert.equal(typeof listener, "function");
   listener(
     { type: "SAVE_PAGE_STARTED", key: "hls_save", downloadId: 55 },
@@ -286,6 +293,15 @@ async function testFinalSavePublishesNativeCheckpoint() {
   );
   const saved = await saving;
   assert.equal(saved.downloadId, 55);
+  // The save page receives the same settings-derived relative path as the
+  // service-worker save path, so streamed HLS saves honour the subfolder and
+  // keep the locked name instead of re-sanitizing it.
+  const saveUrl = new URL(createdUrls[0]);
+  assert.equal(saveUrl.searchParams.get("path"), "Chosen/Subfolder/Episode.mp4");
+  assert.equal(saveUrl.searchParams.get("name"), "Episode.mp4");
+  const saveSource = fs.readFileSync(path.join(__dirname, "../src/save.js"), "utf8");
+  assert.equal(saveSource.includes("sanitizeName("), false, "save page no longer re-sanitizes");
+  assert.match(saveSource, /params\.get\("path"\)/);
 }
 
 async function testHlsRuntimePreservesPauseCheckpoint() {

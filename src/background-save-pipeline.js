@@ -501,10 +501,22 @@
      * Save streamed HLS parts via hidden save page: it assembles Blob(parts)
      * lazily from IndexedDB (disk-backed, memory-light) and chrome.downloads it.
      */
-    async function downloadPartsViaTab(baseKey, name, size, opts = {}) {
-      const pageUrl = chrome.runtime.getURL(
-        `src/save.html?parts=${encodeURIComponent(baseKey)}&name=${encodeURIComponent(name)}`
+    /** Same relative path the service-worker save path would use (settings subfolder). */
+    async function savePageUrl(query, name) {
+      let relPath = "";
+      try {
+        relPath = await relDownloadPath(name);
+      } catch {
+        relPath = "";
+      }
+      return chrome.runtime.getURL(
+        `src/save.html?${query}&name=${encodeURIComponent(name)}` +
+          (relPath ? `&path=${encodeURIComponent(relPath)}` : "")
       );
+    }
+
+    async function downloadPartsViaTab(baseKey, name, size, opts = {}) {
+      const pageUrl = await savePageUrl(`parts=${encodeURIComponent(baseKey)}`, name);
       const tab = await chrome.tabs.create({ url: pageUrl, active: false });
       const startedAt = Date.now();
       let pulse = null;
@@ -594,9 +606,7 @@
       const key = `dl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       await idbPutBlob(key, blob);
 
-      const pageUrl = chrome.runtime.getURL(
-        `src/save.html?key=${encodeURIComponent(key)}&name=${encodeURIComponent(name)}`
-      );
+      const pageUrl = await savePageUrl(`key=${encodeURIComponent(key)}`, name);
       const tab = await chrome.tabs.create({ url: pageUrl, active: false });
 
       try {
