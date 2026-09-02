@@ -754,6 +754,37 @@ async function testByteRangeSegmentsFetchSubRanges() {
   }
 }
 
+async function testStartChromeDownloadKeepsDottedTitles() {
+  const requested = [];
+  const pipeline = SavePipeline.createPipeline({
+    chrome: {
+      runtime: {},
+      downloads: {
+        download: (options, callback) => {
+          requested.push(options.filename);
+          callback(requested.length);
+        }
+      }
+    },
+    safeDownloadName: (value) => value,
+    relDownloadPath: async (value) => `VideoDownloader/${value}`
+  });
+  await pipeline.startChromeDownload("blob:x", "VideoDownloader/Wait.. what.mp4");
+  await pipeline.startChromeDownload("blob:x", "VideoDownloader/../escape.mp4");
+  await pipeline.startChromeDownload("blob:x", "/etc/passwd.mp4");
+  assert.equal(
+    requested[0],
+    "VideoDownloader/Wait.. what.mp4",
+    "'..' inside a title keeps its name and folder"
+  );
+  assert.equal(
+    requested[1],
+    "VideoDownloader/escape.mp4",
+    "a '..' path segment is dropped, not the whole name"
+  );
+  assert.match(requested[2], /^영상_\d+\.mp4$/, "absolute paths fall back to a safe name");
+}
+
 async function testRefererRuleOnlyTargetsExtensionRequests() {
   const calls = [];
   const transport = DirectMedia.createTransport({
@@ -795,6 +826,7 @@ async function main() {
   await testHlsRuntimePreservesPauseCheckpoint();
   await testDirectTransportRegistersCheckpoint();
   await testByteRangeSegmentsFetchSubRanges();
+  await testStartChromeDownloadKeepsDottedTitles();
   await testRefererRuleOnlyTargetsExtensionRequests();
   await testNativeDirectPauseResume();
   const helperSource = fs.readFileSync(

@@ -20,7 +20,10 @@
       return new Promise((resolve, reject) => {
         // Chrome requires a relative path (optional subfolder) with a valid basename
         let fname = String(filename || "").trim();
-        if (!fname || fname.startsWith("/") || fname.includes("..")) {
+        // Only an absolute path is unrecoverable here; a ".." *segment* is
+        // dropped by the per-segment filter below, and ".." inside a title
+        // ("Wait.. what") is a legal filename that must keep its name+folder.
+        if (!fname || fname.startsWith("/")) {
           fname = safeDownloadName(`영상_${Date.now()}.mp4`);
         }
         // If path has folders, sanitize only the leaf

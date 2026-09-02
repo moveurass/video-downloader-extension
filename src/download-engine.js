@@ -241,6 +241,11 @@
     ) {
       name = `영상_${Date.now()}`;
     }
+    // chrome.downloads rejects Windows device names on every platform
+    // ("CON.mp4" → Invalid filename), and all save fallbacks retry the same leaf.
+    if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9]|clock\$)$/i.test(name)) {
+      name = `${name}_`;
+    }
     let full = `${name}${extension.startsWith(".") ? extension : `.${extension}`}`;
     full = full.replace(
       /\.(mp4|webm|mkv|mp3|m4a)\.(mp4|webm|mkv|mp3|m4a)$/i,
