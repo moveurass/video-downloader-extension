@@ -349,6 +349,10 @@ def main() -> int:
         ("background_housekeeping_unit.js", "background housekeeping"),
         ("background_keyboard_commands_unit.js", "background keyboard commands"),
         ("background_runtime_messages_unit.js", "background runtime dispatch"),
+        ("dash_unit.js", "DASH helper routing"),
+        ("resume_unit.js", "resume contract"),
+        ("recommendations_unit.js", "remaining recommendations"),
+        ("popup_wiring_modules_unit.js", "popup wiring modules"),
     ):
         r = subprocess.run(
             ["node", f"scripts/{script}"],
