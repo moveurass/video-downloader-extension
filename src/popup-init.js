@@ -48,7 +48,9 @@
         UVDPopupMediaLoader,
         UVDPopupDownloadRequests,
         UVDPopupDomEvents,
-        UVDPopupRuntimeEvents
+        UVDPopupRuntimeEvents,
+        UVDPopupNavigation,
+        UVDPopupSeriesState
       } = root;
 
       let currentTabId = null;
@@ -287,19 +289,7 @@
         showHelperHelp
       } = recoveryController);
 
-      function switchTab(name) {
-        activeTabName = name;
-        document.querySelectorAll(".tab").forEach((t) => {
-          t.classList.toggle("active", t.getAttribute("data-tab") === name);
-        });
-        document.querySelectorAll(".tab-panel").forEach((p) => {
-          p.classList.toggle("hidden", p.id !== `tab-${name}`);
-        });
-        if (name === "history") loadHistoryUi();
-        if (name === "watch") loadWatchlistUi();
-        if (name === "settings") fillSettingsForm();
-        if (name === "main") loadRecentStrip();
-      }
+      let switchTab;
 
       const {
         hideClipBanner,
@@ -420,22 +410,13 @@
       const resolveSeriesIdFromPayload = UVDPopupSeriesUI.resolveSeriesId;
 
       function rebuildSeriesVisibleItems() {
-        if (!seriesPending) return;
-        const visible = UVDPopupSeriesUI.buildVisibleItems(
-          {
-            ...seriesPending,
-            rangePref: seriesPending.rangePref ?? seriesRangePref
-          },
+        UVDPopupSeriesState.rebuildVisibleItems(seriesPending, {
+          rangePref: seriesRangePref,
           historyItems,
-          UVD.annotateSeriesDownloaded
-        );
-        seriesPending.allItems = visible.allItems;
-        seriesPending.items = visible.items;
-        seriesPending.rangePref =
-          seriesPending.rangePref || seriesRangePref;
-        seriesPending.seriesId =
-          seriesPending.seriesId ||
-          resolveSeriesIdFromPayload(seriesPending);
+          buildVisibleItems: UVDPopupSeriesUI.buildVisibleItems,
+          annotateSeriesDownloaded: UVD.annotateSeriesDownloaded,
+          resolveSeriesId: resolveSeriesIdFromPayload
+        });
       }
 
       const shortUrlDisplay = UVDPopupSeriesUI.shortUrlDisplay;
@@ -541,7 +522,7 @@
           refreshHelperStatus,
           ensureQueuePoll,
           refreshJobsFromBackground,
-          switchTab,
+          switchTab: (...args) => switchTab(...args),
           hideSeriesBanner: (...args) => hideSeriesBanner(...args),
           updateSeriesGoButton: (...args) =>
             updateSeriesGoButton(...args),
@@ -596,6 +577,17 @@
         addCurrentToWatchlist,
         downloadAllWatchlist
       } = seriesWatchlistController;
+
+      ({ switchTab } = UVDPopupNavigation.createController({
+        document,
+        loadHistoryUi,
+        loadWatchlistUi,
+        fillSettingsForm,
+        loadRecentStrip,
+        setActiveTabName: (value) => {
+          activeTabName = value;
+        }
+      }));
 
       const {
         hideSeriesBanner,
