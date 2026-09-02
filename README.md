@@ -121,7 +121,9 @@ open helper/start.command
 | 상황 | 결과 |
 |------|------|
 | 일반 mp4/webm | 직접 또는 도우미로 저장 |
-| HLS (AES-128 포함) | 확장 병합 저장 |
+| HLS (AES-128 포함) | 확장 병합 저장 · 마스터가 노출한 호환 MPEG-TS 대체 오디오 선택 |
+| HLS 일시정지 | 저장된 조각의 URL+미디어 시퀀스가 같은 경우만 이어받기 · 최종 브라우저 저장은 Chrome 다운로드 일시정지 사용 |
+| fMP4 HLS 대체 오디오 | 브라우저 내 안전한 mux 미지원 · 로컬 도우미 필요 |
 | YouTube / TikTok 등 | **도우미 권장** |
 | 123av·missav 계열 | 페이지 재생 후 캡처 + 품번 시리즈 검증 |
 | SAMPLE-AES / Widevine DRM | **불가** |
