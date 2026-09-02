@@ -92,11 +92,13 @@ def pair_extension(origin: str, token: str) -> tuple[bool, str]:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or ""):
         return False, "invalid pairing token"
     with pairing_lock:
-        if auto_pairing:
-            if auto_pairing.get("origin") != origin:
-                return False, "helper already paired"
-            if auto_pairing.get("token") != token:
-                return False, "pairing token mismatch"
+        if auto_pairing and auto_pairing.get("origin") != origin:
+            return False, "helper already paired"
+        # Same extension origin may rotate its token: a reinstalled extension
+        # (storage wiped) would otherwise be locked out for good. Browsers do
+        # not let web pages forge an Origin header, and another extension has
+        # a different id, so origin equality is the authorization here.
+        if auto_pairing and auto_pairing.get("token") == token:
             return True, ""
         auto_pairing = {"origin": origin, "token": token}
         try:

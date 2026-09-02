@@ -88,6 +88,23 @@ def main() -> int:
             and helper_server.PAIR_FILE.is_file()
             and (helper_server.PAIR_FILE.stat().st_mode & 0o777) == 0o600,
         )
+        # Same extension origin may rotate its token (reinstall recovery);
+        # a different extension still cannot take the pairing over.
+        rotated, rotate_error = helper_server.pair_extension(
+            "chrome-extension://" + "a" * 32, "d" * 64
+        )
+        foreign, foreign_error = helper_server.pair_extension(
+            "chrome-extension://" + "b" * 32, "e" * 64
+        )
+        check(
+            "same-origin token rotation, foreign origin blocked",
+            rotated
+            and not rotate_error
+            and helper_server.auto_pairing["token"] == "d" * 64
+            and not foreign
+            and foreign_error == "helper already paired",
+            f"{rotate_error} {foreign_error}",
+        )
         # A pinned UVD_ALLOWED_ORIGIN must also gate /pair, otherwise another
         # extension can pair first and lock the pinned extension out.
         helper_server.PAIR_FILE = Path(tmp) / "pairing-pinned.json"

@@ -86,6 +86,103 @@ function loadYtDlp(fetchImpl, extraContext = {}) {
   return context.__YtDlp;
 }
 
+async function testPairingRecovery() {
+  const pairedHealth = { ok: true, ytdlp: true, pairingMode: "paired" };
+
+  // 1) Extension reinstalled: helper is paired, extension has no token →
+  //    same-origin re-pair succeeds and the new token is stored.
+  let requests = [];
+  let writes = [];
+  let ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/health")) return { ok: true, json: async () => pairedHealth };
+      if (String(url).endsWith("/pair")) return { ok: true, json: async () => ({ ok: true }) };
+      return { ok: false, status: 404, json: async () => ({ ok: false }) };
+    },
+    {
+      chrome: {
+        storage: {
+          local: { get: async () => ({}), set: async (v) => writes.push(v) },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  let health = await ytdlp.health(true);
+  assert.equal(health.pairingMode, "paired");
+  assert.equal(health.pairedNow, true);
+  assert.equal(health.authRequired, undefined);
+  assert.equal(writes.length, 1);
+  assert.match(writes[0].helperToken, /^[a-f0-9]{64}$/);
+
+  // 2) Helper cache wiped ("available") while the extension still holds a
+  //    stale token → pair again with a fresh token.
+  requests = [];
+  writes = [];
+  ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/health")) {
+        return { ok: true, json: async () => ({ ok: true, ytdlp: true, pairingMode: "available" }) };
+      }
+      if (String(url).endsWith("/pair")) return { ok: true, json: async () => ({ ok: true }) };
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    {
+      chrome: {
+        storage: {
+          local: { get: async () => ({ helperToken: "stale".repeat(8) }), set: async (v) => writes.push(v) },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  health = await ytdlp.health(true);
+  assert.equal(health.pairedNow, true);
+  assert.equal(requests.some((r) => r.url.endsWith("/pair")), true, "stale token does not block re-pair");
+  assert.notEqual(writes[0].helperToken, "stale".repeat(8));
+
+  // 3) Paired helper rejects our token (403 on a protected route) → re-pair.
+  requests = [];
+  writes = [];
+  ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      requests.push({ url: String(url), options });
+      if (String(url).endsWith("/health")) return { ok: true, json: async () => pairedHealth };
+      if (String(url).includes("/job/__uvd_token_probe__")) {
+        return { ok: false, status: 403, json: async () => ({ ok: false, error: "forbidden origin" }) };
+      }
+      if (String(url).endsWith("/pair")) return { ok: true, json: async () => ({ ok: true }) };
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    {
+      chrome: {
+        storage: {
+          local: { get: async () => ({ helperToken: "old".repeat(12) }), set: async (v) => writes.push(v) },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  health = await ytdlp.health(true);
+  assert.equal(health.pairedNow, true);
+  assert.equal(requests.filter((r) => r.url.endsWith("/pair")).length, 1);
+
+  // 4) Genuinely paired to another extension → clear, actionable error.
+  ytdlp = loadYtDlp(async (url) => {
+    if (String(url).endsWith("/health")) return { ok: true, json: async () => pairedHealth };
+    if (String(url).endsWith("/pair")) {
+      return { ok: false, status: 409, json: async () => ({ ok: false, error: "helper already paired" }) };
+    }
+    return { ok: false, status: 403, json: async () => ({ ok: false }) };
+  });
+  health = await ytdlp.health(true);
+  assert.equal(health.authRequired, true);
+  assert.match(health.pairingError, /pairing\.json/);
+  assert.equal(await ytdlp.available(), false);
+}
+
 async function testHelperPollingFailsFast() {
   // Helper restarted: /job/<id> 404s forever. Must not spin to the timeout.
   const calls = [];
@@ -224,6 +321,7 @@ function testPermissionReductionAndTrackPlumbing() {
 async function main() {
   await testHelperAutoPairing();
   await testHelperPollingFailsFast();
+  await testPairingRecovery();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();
   console.log("remaining recommendations: tracks, permissions, pairing, and history cap passed");
