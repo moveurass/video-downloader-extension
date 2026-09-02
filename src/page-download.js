@@ -364,6 +364,9 @@
     if (!/\.mp4$/i.test(name)) {
       name = name.replace(/\.[^.]+$/, "") + ".mp4";
     }
+    if (result.partial) {
+      name = name.replace(/(\.[a-z0-9]{2,5})$/i, " (일부 누락)$1");
+    }
 
     // MUST use chrome.downloads — a[download] does not work after long async
     const saved = await saveBlobThroughBackground(result.blob, name, onProgress);
@@ -371,6 +374,9 @@
       ...saved,
       quality: result.quality,
       segmentCount: result.segmentCount,
+      expectedSegments: result.expectedSegments,
+      skippedSegments: result.skippedSegments,
+      partial: !!result.partial,
       method: "page-hls"
     };
   }

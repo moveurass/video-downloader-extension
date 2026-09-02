@@ -106,7 +106,7 @@
 
     function jobPhaseLabel(job) {
       const status = job?.status || "running";
-      if (status === "done") return "완료";
+      if (status === "done") return job?.partial ? "일부 누락" : "완료";
       if (status === "error") return "실패";
       if (status === "cancelled") return "취소";
       if (status === "paused") return "일시정지";
@@ -120,6 +120,11 @@
 
     function cleanJobMessage(message, phase) {
       const text = String(message || "").trim();
+      if (phase === "done" || /누락/.test(text)) {
+        // Final outcome (incl. "일부 누락") must never be rewritten into a
+        // generic "받는 중…" by the segment-word filter below.
+        return text.length > 56 ? `${text.slice(0, 54)}…` : text || "완료";
+      }
       if (phase === "error" || /ERROR|실패|error/i.test(text)) {
         const clean = text.replace(/^Error:\s*/i, "").trim();
         return clean.length > 56 ? `${clean.slice(0, 54)}…` : clean || "실패";

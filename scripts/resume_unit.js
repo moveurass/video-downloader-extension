@@ -576,6 +576,167 @@ async function testNativeDirectPauseResume() {
   );
 }
 
+async function testPartialDownloadsAreExplicit() {
+  // Engine: a segment that keeps 403ing is skipped under allowPartial, and
+  // the result says so instead of looking like a clean merge.
+  const originalFetch = global.fetch;
+  const playlist = [
+    "#EXTM3U",
+    "#EXT-X-TARGETDURATION:10",
+    ...Array.from({ length: 6 }, (_, i) => [`#EXTINF:10,`, `seg${i}.ts`]).flat(),
+    "#EXT-X-ENDLIST"
+  ].join("\n");
+  const segment = new Uint8Array(120_000);
+  segment[0] = 0x47;
+  global.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith("playlist.m3u8")) return new Response(playlist, { status: 200 });
+    if (value.endsWith("seg3.ts")) return new Response("", { status: 403 });
+    return new Response(segment.slice(), { status: 200 });
+  };
+  const originalTimeout = global.setTimeout;
+  global.setTimeout = (fn, _ms, ...args) => originalTimeout(fn, 0, ...args);
+  let engineResult;
+  try {
+    engineResult = await HLS.downloadAndMerge("https://media.test/playlist.m3u8", {
+      allowPartial: true,
+      speedProfile: "safe"
+    });
+  } finally {
+    global.fetch = originalFetch;
+    global.setTimeout = originalTimeout;
+  }
+  assert.equal(engineResult.partial, true);
+  assert.equal(engineResult.skippedSegments, 1);
+  assert.equal(engineResult.expectedSegments, 6);
+  assert.equal(engineResult.segmentCount, 5);
+
+  // Runner: the saved name and the returned result carry the gap.
+  const job = { id: "job-partial", status: "running" };
+  const runner = HlsRuntime.createRunner({
+    HLS: {
+      downloadAndMerge: async () => ({
+        streamed: false,
+        blob: { size: 500_000 },
+        size: 500_000,
+        quality: "720p",
+        segmentCount: 7,
+        expectedSegments: 10,
+        skippedSegments: 3,
+        partial: true
+      })
+    },
+    UVD: { getSettings: async () => ({}), isGenericSaveName: () => false },
+    Naming: { buildFilename: () => "Episode.mp4" },
+    activeDownloads: new Map([[job.id, job]]),
+    getCurrentJobContext: () => job.id,
+    jobAbortControllers: new Map(),
+    hlsProgress: new Map(),
+    resolvePageUrl: async () => "https://example.test/watch",
+    lockSaveName: () => "Episode.mp4",
+    applyQualityToLockedName: (name) => name,
+    safeDownloadName: (name) => name,
+    hlsPhasePercent: () => 5,
+    estimateSavePercent: () => 90,
+    emitDownloadProgress: () => {},
+    broadcastJob: () => {},
+    throwIfJobStopped: () => {},
+    openBlobDb: async () => {
+      throw new Error("no idb");
+    },
+    idbPutPart: async () => {},
+    idbPartKey: () => "",
+    idbListParts: async () => [],
+    idbDeleteParts: async () => {},
+    downloadPartsViaTab: async () => {
+      throw new Error("unexpected");
+    },
+    downloadBlob: async (_blob, name) => ({
+      downloadId: 12,
+      filename: name,
+      path: `/Downloads/${name}`,
+      state: "complete"
+    })
+  });
+  const saved = await runner.runHlsDownload(
+    7,
+    "https://media.test/playlist.m3u8",
+    "720p",
+    "Episode.mp4",
+    {},
+    "https://example.test/watch",
+    job.id
+  );
+  assert.equal(saved.partial, true);
+  assert.equal(saved.filename, "Episode (일부 누락).mp4");
+  assert.equal(saved.skippedSegments, 3);
+
+  // Job manager: queue row, history and notification all say "일부 누락".
+  const history = [];
+  const notifications = [];
+  const manager = createManager({
+    chrome: {
+      runtime: { sendMessage: async () => {}, getURL: (p) => p },
+      storage: {
+        session: { set: async () => {}, get: async () => ({}) },
+        local: { set: async () => {}, get: async () => ({}) }
+      },
+      tabs: { sendMessage: async () => {} },
+      downloads: { search: async () => [] },
+      notifications: {
+        onClicked: { addListener() {} },
+        create: async (_id, options) => notifications.push(options),
+        clear: async () => {}
+      },
+      action: { setBadgeText() {}, setBadgeBackgroundColor() {}, setTitle() {} }
+    },
+    UVD: {
+      classifyError: () => ({}),
+      formatSpeed: () => "",
+      isGenericSaveName: () => false,
+      getSettings: async () => ({ showBadge: false }),
+      appendHistory: async (entry) => history.push(entry),
+      siteFromUrl: () => "example"
+    },
+    UVDProgress,
+    Naming: { cleanPageTitle: (value) => value },
+    YtDlp: { cancelJob: async () => {} },
+    parseSpeedFromMessage: () => 0,
+    getTabMeta: () => ({}),
+    saveCompanionThumbnail: async () => {},
+    downloadPageFromUi: async () => {},
+    startKeepAlive: () => true,
+    stopKeepAlive: () => {},
+    setTimeout: () => 1
+  });
+  await manager.ready;
+  const jobId = manager.createDownloadJob({
+    tabId: 7,
+    title: "Episode",
+    pageUrl: "https://example.test/watch"
+  });
+  manager.finishDownloadJob(jobId, saved, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  const finished = manager.publicJob(manager.activeDownloads.get(jobId));
+  assert.equal(finished.status, "done");
+  assert.equal(finished.partial, true);
+  assert.match(finished.message, /일부 누락 저장 \(3\/10 빠짐\)/);
+  assert.equal(history[0].partial, true);
+  assert.equal(history[0].skippedSegments, 3);
+  assert.equal(history[0].expectedSegments, 10);
+  assert.equal(notifications[0].title, "일부 누락 저장");
+  assert.match(notifications[0].message, /3\/10/);
+
+  const QueueUi = require("../src/popup-queue-ui.js");
+  const queue = QueueUi.createPresenter({ siteLabel: () => "", now: Date.now });
+  assert.equal(queue.jobPhaseLabel(finished), "일부 누락");
+  assert.equal(
+    queue.cleanJobMessage(finished.message, "done"),
+    finished.message,
+    "final outcome text is not rewritten by the segment-word filter"
+  );
+}
+
 async function testInterruptedRunningJobsAreRestored() {
   const durableWrites = [];
   const history = [];
@@ -1003,6 +1164,7 @@ async function main() {
   await testBrowserHlsAlternateAudio();
   await testFinalSavePublishesNativeCheckpoint();
   await testHlsRuntimePreservesPauseCheckpoint();
+  await testPartialDownloadsAreExplicit();
   await testInterruptedRunningJobsAreRestored();
   await testDirectTransportRegistersCheckpoint();
   await testByteRangeSegmentsFetchSubRanges();

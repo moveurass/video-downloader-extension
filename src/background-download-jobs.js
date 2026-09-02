@@ -83,6 +83,9 @@
               totalBytes: job.resumeState.totalBytes || 0
             }
           : null,
+        partial: !!job.partial,
+        skippedSegments: job.skippedSegments || 0,
+        expectedSegments: job.expectedSegments || 0,
         result: job.result
           ? {
               ok: job.result.ok,
@@ -91,7 +94,8 @@
               filename: job.result.filename || job.filename,
               size: job.result.size || 0,
               method: job.result.method || null,
-              ytdlp: !!job.result.ytdlp
+              ytdlp: !!job.result.ytdlp,
+              partial: !!job.result.partial
             }
           : null,
         startedAt: job.startedAt,
@@ -918,6 +922,12 @@
           (result?.path ? String(result.path).split(/[/\\]/).pop() : "") ||
           job.filename ||
           "";
+        job.partial = !!result?.partial;
+        job.skippedSegments = Number(result?.skippedSegments) || 0;
+        job.expectedSegments = Number(result?.expectedSegments) || 0;
+        const outcome = job.partial
+          ? `일부 누락 저장 (${job.skippedSegments}/${job.expectedSegments} 빠짐)`
+          : "저장 완료";
         if (savedName) {
           job.filename = savedName;
           const base = String(savedName).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
@@ -927,9 +937,9 @@
           ) {
             job.title = base;
           }
-          job.message = `저장 완료 · ${savedName}`;
+          job.message = `${outcome} · ${savedName}`;
         } else {
-          job.message = "저장 완료";
+          job.message = outcome;
         }
       }
       job.updatedAt = now();
@@ -953,6 +963,9 @@
           status: job.status,
           error: job.error,
           errorCode: job.errorCode,
+          partial: !!job.partial,
+          skippedSegments: job.skippedSegments || 0,
+          expectedSegments: job.expectedSegments || 0,
           size: result?.size || 0,
           method: result?.method || "",
           quality: job.quality || "",
@@ -1020,15 +1033,21 @@
         } catch {
           // Keep raw message.
         }
+        const partial = ok && !!(result?.partial || job?.partial);
+        const skipped = Number(result?.skippedSegments ?? job?.skippedSegments) || 0;
+        const expected =
+          Number(result?.expectedSegments ?? job?.expectedSegments) || 0;
         await chrome.notifications.create(notifId, {
           type: "basic",
           iconUrl: chrome.runtime.getURL("icons/icon128.png"),
-          title: ok ? "저장 완료" : "다운로드 실패",
-          message: ok
-            ? `${title}${sizeText ? ` · ${sizeText}` : ""}\n클릭하면 폴더를 엽니다`
-            : `${title}\n${failMessage.slice(0, 120)}`,
-          priority: ok ? 1 : 2,
-          requireInteraction: !ok
+          title: !ok ? "다운로드 실패" : partial ? "일부 누락 저장" : "저장 완료",
+          message: !ok
+            ? `${title}\n${failMessage.slice(0, 120)}`
+            : partial
+              ? `${title}${sizeText ? ` · ${sizeText}` : ""}\n조각 ${skipped}/${expected}개가 빠졌습니다 · 다시 받기를 권장`
+              : `${title}${sizeText ? ` · ${sizeText}` : ""}\n클릭하면 폴더를 엽니다`,
+          priority: !ok || partial ? 2 : 1,
+          requireInteraction: !ok || partial
         });
       } catch (notificationError) {
         (deps.console || console).warn("[UVD] notify", notificationError);
