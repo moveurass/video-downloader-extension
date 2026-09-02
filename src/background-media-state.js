@@ -176,11 +176,22 @@
     function enrichItem(tabId, item) {
       const meta = tabId != null ? tabMeta.get(tabId) : null;
       const quality = item.quality || qualityLabel(item.height) || null;
-      const isHls = !!(
-        item.isHls ||
-        item.type === "stream" ||
-        (item.url && /\.m3u8(\?|$|#)/i.test(item.url))
+      const mime = String(item.mime || "").toLowerCase();
+      // DASH is classified as a stream too, but it must never be treated as
+      // HLS: the m3u8 path cannot parse an MPD and the helper handles DASH.
+      const isDash = !!(
+        item.isDash ||
+        mime.includes("dash+xml") ||
+        (item.url && /\.mpd(\?|$|#)/i.test(item.url))
       );
+      const isHls =
+        !isDash &&
+        !!(
+          item.isHls ||
+          item.type === "stream" ||
+          mime.includes("mpegurl") ||
+          (item.url && /\.m3u8(\?|$|#)/i.test(item.url))
+        );
 
       const itemPage = item.pageUrl || item.url || meta?.lastUrl || "";
       const samePage =
@@ -267,6 +278,7 @@
         ...item,
         quality,
         isHls,
+        isDash,
         isFmp4: true,
         format: "MP4",
         estimatedSize: estimatedSize || undefined,
@@ -833,7 +845,13 @@
             size: contentLength || undefined
           });
         },
-        { urls: ["<all_urls>"] },
+        // Same resource types as onBeforeRequest: scripts, styles, images and
+        // documents never carry media and would otherwise wake the worker for
+        // every response in every tab.
+        {
+          urls: ["<all_urls>"],
+          types: ["media", "xmlhttprequest", "other", "object"]
+        },
         ["responseHeaders"]
       );
 

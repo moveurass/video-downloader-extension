@@ -223,6 +223,26 @@ def main() -> int:
         and helper_server.subfolder_segments("../x/..\\y:z") == ["x", "yz"],
         str(helper_server.publish_dir_for("My/Folder")),
     )
+    helper_server._version_cache.clear()
+    calls = {"n": 0}
+    original_check_output = helper_server.subprocess.check_output
+
+    def fake_check_output(*_args, **_kwargs):
+        calls["n"] += 1
+        return "2026.09.01\n"
+
+    helper_server.subprocess.check_output = fake_check_output
+    try:
+        v1 = helper_server.ytdlp_version("/usr/bin/yt-dlp-fake")
+        v2 = helper_server.ytdlp_version("/usr/bin/yt-dlp-fake")
+    finally:
+        helper_server.subprocess.check_output = original_check_output
+        helper_server._version_cache.clear()
+    check(
+        "/health caches yt-dlp --version",
+        v1 == v2 == "2026.09.01" and calls["n"] == 1,
+        f"calls={calls['n']}",
+    )
     check(
         "yt-dlp children run in their own session and are killed as a tree",
         "start_new_session=(os.name != \"nt\")" in helper_source

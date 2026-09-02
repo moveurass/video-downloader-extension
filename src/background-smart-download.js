@@ -42,7 +42,13 @@
 
       emitDownloadProgress(tabId, 3, "시작…", "start", jid);
 
-      if (isRealDash(url, mediaType)) {
+      // Manifests detected only by Content-Type (token-less URLs such as
+      // /api/manifest?id=…) must route like their URL-detectable siblings.
+      const mimeHint = String(itemHint?.mime || "").toLowerCase();
+      const dashByMime = itemHint?.isDash === true || mimeHint.includes("dash+xml");
+      const hlsByMime = mimeHint.includes("mpegurl");
+
+      if (isRealDash(url, mediaType) || dashByMime) {
         emitDownloadProgress(tabId, 4, "DASH 트랙 준비 중…", "playlist", jid);
         const result = await downloadDashViaHelper(
           tabId,
@@ -152,7 +158,10 @@
         );
       }
 
-      const hls = isRealHls(workUrl, workType);
+      const hls =
+        isRealHls(workUrl, workType) ||
+        (hlsByMime && workUrl === url) ||
+        (workItem?.isHls === true && workItem?.isDash !== true && workType === "stream");
 
       if (hls) {
         emitDownloadProgress(tabId, 6, "스트림 받는 중…", "playlist", jid);

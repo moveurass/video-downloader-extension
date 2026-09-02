@@ -201,11 +201,37 @@
       };
     }
 
+    /** Best-effort HEAD so a manifest/HTML body is never saved as "<title>.mp4". */
+    async function probeContentType(url) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        const res = await fetch(url, {
+          method: "HEAD",
+          credentials: "include",
+          cache: "no-store",
+          signal: ctrl.signal
+        });
+        return String(res.headers.get("content-type") || "").toLowerCase();
+      } catch {
+        return "";
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
     async function downloadMedia(url, filename, jid = null) {
       if (!url) throw new Error("받을 주소가 없습니다");
       if (url.startsWith("blob:")) throw new Error("이 형식은 바로 받을 수 없습니다");
       if (/\.m3u8(\?|$|#)/i.test(url) || /\.mpd(\?|$|#)/i.test(url)) {
         throw new Error("스트리밍 영상은 조각을 합쳐야 합니다");
+      }
+      const contentType = await probeContentType(url);
+      if (/dash\+xml|mpegurl|\bm3u8\b/.test(contentType)) {
+        throw new Error("스트리밍 영상은 조각을 합쳐야 합니다");
+      }
+      if (/text\/html/.test(contentType)) {
+        throw new Error("영상 대신 웹페이지가 반환됨");
       }
       const name = safeDownloadName(filename || filenameFromUrl(url), "video/mp4");
       let id;
@@ -250,7 +276,11 @@
           }
         }
       });
-      if (job?.resumeState?.downloadId === id) delete job.resumeState;
+      // Only a completed download has nothing left to resume; a paused one that
+      // outlived the wait keeps its checkpoint so resume uses chrome.downloads.
+      if (job?.resumeState?.downloadId === id && done.state === "complete") {
+        delete job.resumeState;
+      }
       return {
         downloadId: id,
         filename: name,

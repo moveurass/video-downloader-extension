@@ -97,6 +97,7 @@
       const onProgress = opts.onProgress || null;
       return new Promise((resolve, reject) => {
         let settled = false;
+        let timer = null;
         const finish = (fn, v) => {
           if (settled) return;
           settled = true;
@@ -158,6 +159,9 @@
             if (!item) return;
             if (item.state === "in_progress") {
               reportWrite(item);
+              // A user pause must not run the clock down and then tear down the
+              // blob/parts this download still reads from.
+              if (item.paused) armTimer();
             }
             if (item.state === "complete") {
               finish(resolve, {
@@ -182,7 +186,7 @@
           }
         }, 500);
 
-        const timer = setTimeout(async () => {
+        const onTimeout = async () => {
           try {
             const [item] = await chrome.downloads.search({ id: downloadId });
             if (item?.state === "complete") {
@@ -192,6 +196,9 @@
                 path: item.filename,
                 bytesReceived: item.bytesReceived
               });
+            } else if (item?.state === "in_progress" && item.paused) {
+              // Paused by the user: keep waiting, the deadline restarts on resume.
+              armTimer();
             } else if (item?.state === "in_progress" && (item.bytesReceived || 0) > 0) {
               // Still writing after long wait — accept only if substantial progress
               // and keep the blob URL alive a bit longer outside this promise.
@@ -211,7 +218,13 @@
           } catch {
             finish(reject, new Error("다운로드 상태 확인 실패"));
           }
-        }, timeoutMs);
+        };
+        function armTimer() {
+          if (settled) return;
+          clearTimeout(timer);
+          timer = setTimeout(onTimeout, timeoutMs);
+        }
+        armTimer();
       });
     }
 
@@ -537,14 +550,34 @@
 
       try {
         const result = await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
+          const timeoutMs = Math.min(20 * 60 * 1000, Math.max(180_000, (size || 0) / 8));
+          let startedDownloadId = null;
+          let timeout = null;
+          const onTimeout = async () => {
+            // The save page owns the blob URL and the parts are still in IDB;
+            // while the user has the final save paused, keep both alive.
+            if (startedDownloadId != null && chrome.downloads?.search) {
+              const [item] = await chrome.downloads
+                .search({ id: startedDownloadId })
+                .catch(() => []);
+              if (item?.state === "in_progress" && item.paused) {
+                armTimeout();
+                return;
+              }
+            }
             cleanup();
             reject(new Error("저장 페이지 시간 초과"));
-          }, Math.min(20 * 60 * 1000, Math.max(180_000, (size || 0) / 8)));
+          };
+          function armTimeout() {
+            clearTimeout(timeout);
+            timeout = setTimeout(onTimeout, timeoutMs);
+          }
+          armTimeout();
 
           function onMsg(msg, sender, sendResponse) {
             if (msg?.key !== baseKey || sender?.tab?.id !== tab?.id) return false;
             if (msg.type === "SAVE_PAGE_STARTED" && msg.downloadId != null) {
+              startedDownloadId = msg.downloadId;
               opts.onDownloadStarted?.(msg.downloadId);
               try {
                 sendResponse({ ok: true });

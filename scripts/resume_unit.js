@@ -1141,6 +1141,179 @@ async function testStartChromeDownloadKeepsDottedTitles() {
   assert.match(requested[2], /^영상_\d+\.mp4$/, "absolute paths fall back to a safe name");
 }
 
+async function testPausedFinalSaveIsNotTornDown() {
+  // waitDownloadComplete: a paused Chrome download re-arms the deadline
+  // instead of resolving "partial" / rejecting and letting callers revoke
+  // the blob or delete the parts it still reads from.
+  const timers = [];
+  const realSetTimeout = global.setTimeout;
+  const realSetInterval = global.setInterval;
+  const realClearTimeout = global.clearTimeout;
+  const realClearInterval = global.clearInterval;
+  let state = { state: "in_progress", paused: true, bytesReceived: 10 };
+  global.setTimeout = (fn, ms) => {
+    const id = timers.push({ fn, ms, cleared: false });
+    return id;
+  };
+  global.clearTimeout = (id) => {
+    if (timers[id - 1]) timers[id - 1].cleared = true;
+  };
+  global.setInterval = () => 999;
+  global.clearInterval = () => {};
+  try {
+    const pipeline = SavePipeline.createPipeline({
+      chrome: {
+        runtime: {},
+        downloads: {
+          search: async () => [{ id: 5, ...state }],
+          onChanged: { addListener() {}, removeListener() {} }
+        }
+      },
+      safeDownloadName: String,
+      relDownloadPath: async (v) => v
+    });
+    const waiting = pipeline.waitDownloadComplete(5, 1000);
+    const first = timers.find((t) => t.ms === 1000 && !t.cleared);
+    assert.ok(first, "deadline armed");
+    await first.fn();
+    const rearmed = timers.filter((t) => t.ms === 1000 && !t.cleared);
+    assert.equal(rearmed.length, 1, "paused download re-arms the deadline");
+    assert.notEqual(rearmed[0], first);
+    state = { state: "complete", filename: "/Downloads/x.mp4", bytesReceived: 99 };
+    await rearmed[0].fn();
+    const done = await waiting;
+    assert.equal(done.state, "complete");
+  } finally {
+    global.setTimeout = realSetTimeout;
+    global.setInterval = realSetInterval;
+    global.clearTimeout = realClearTimeout;
+    global.clearInterval = realClearInterval;
+  }
+
+  // downloadMedia keeps the native checkpoint when the wait ends while the
+  // download is still in progress (long pause), so resume can use
+  // chrome.downloads.resume instead of restarting from zero.
+  const job = { id: "job-long-pause", tabId: 3 };
+  const transport = DirectMedia.createTransport({
+    activeDownloads: new Map([[job.id, job]]),
+    safeDownloadName: (v) => v,
+    filenameFromUrl: () => "Direct.mp4",
+    relDownloadPath: async (v) => v,
+    startChromeDownload: async () => 61,
+    waitDownloadComplete: async () => ({ state: "in_progress", partial: true, bytesReceived: 1 }),
+    emitDownloadProgress: () => {}
+  });
+  await transport.downloadMedia("https://cdn.test/v.mp4", "Direct.mp4", job.id);
+  assert.equal(job.resumeState?.downloadId, 61, "checkpoint survives a partial wait");
+
+  const saveSource = fs.readFileSync(path.join(__dirname, "../src/save.js"), "utf8");
+  assert.match(saveSource, /item\.paused\)\s*\{\s*\n\s*\/\/ User paused/);
+}
+
+async function testManifestsRouteByMime() {
+  // A DASH manifest detected only by Content-Type must go to the helper, and
+  // a token-less HLS manifest must go to the HLS path — never to a direct
+  // chrome.downloads save that would write XML/text as "<title>.mp4".
+  const routes = [];
+  const Routing = require("../src/download-routing.js");
+  const router = require("../src/background-smart-download.js").createRouter({
+    UVD: { isGenericSaveName: () => false, getSitePackForUrl: async () => null },
+    YtDlp: { available: async () => false },
+    UVDDownloadRouting: Routing,
+    activeDownloads: new Map(),
+    getCurrentJobContext: () => null,
+    resolvePageUrl: async () => "https://site.test/watch",
+    emitDownloadProgress: () => {},
+    isRealDash: require("../src/download-engine.js").isRealDash,
+    isRealHls: require("../src/download-engine.js").isRealHls,
+    bestNonBlobAlternative: () => null,
+    withTimeout: (p) => p,
+    withTabReferer: (_t, op, pageUrl) => op(pageUrl),
+    friendlyFetchError: (e) => String(e?.message || e),
+    downloadDashViaHelper: async () => {
+      routes.push("dash");
+      return { ok: true, downloadId: null, size: 1 };
+    },
+    runHlsDownload: async () => {
+      routes.push("hls");
+      return { ok: true, downloadId: 1, size: 500_000 };
+    },
+    pageDownloadAllFrames: async () => ({ ok: false, error: "no" }),
+    downloadMedia: async () => {
+      routes.push("direct");
+      return { downloadId: 2, size: 1 };
+    },
+    probeContentLength: async () => 0,
+    downloadDirectViaHelper: async () => ({})
+  });
+  await router.downloadSmart(1, "https://site.test/api/manifest?id=9", "a.mp4", "best", "stream", {
+    mime: "application/dash+xml",
+    isDash: true
+  });
+  await router.downloadSmart(1, "https://site.test/api/manifest?id=10", "b.mp4", "best", "stream", {
+    mime: "application/vnd.apple.mpegurl",
+    isHls: true
+  });
+  assert.deepEqual(routes, ["dash", "hls"]);
+
+  // Direct path refuses manifests / HTML by Content-Type.
+  const transport = DirectMedia.createTransport({
+    fetch: async () => ({ headers: { get: () => "application/dash+xml" } }),
+    activeDownloads: new Map(),
+    safeDownloadName: (v) => v,
+    filenameFromUrl: () => "x.mp4",
+    relDownloadPath: async (v) => v,
+    startChromeDownload: async () => {
+      throw new Error("must not start");
+    },
+    waitDownloadComplete: async () => ({}),
+    emitDownloadProgress: () => {}
+  });
+  await assert.rejects(
+    () => transport.downloadMedia("https://site.test/api/manifest?id=9", "x.mp4"),
+    /조각을 합쳐야/
+  );
+
+  // Media-state: DASH items are never flagged as HLS.
+  const MediaState = require("../src/background-media-state.js");
+  const store = MediaState.createStore({
+    chrome: {
+      action: { setBadgeText() {}, setBadgeBackgroundColor() {}, setTitle() {} },
+      runtime: { sendMessage: async () => {} },
+      tabs: { sendMessage: async () => {}, get: async () => ({ id: 4, url: "https://site.test/watch" }) }
+    },
+    Naming: require("../src/naming.js"),
+    HLS: require("../src/hls-downloader.js"),
+    hostOf: () => "site.test",
+    isYoutubeUrl: () => false,
+    isTiktokUrl: () => false,
+    isInstagramPostUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    needsYtDlpHelper: () => false,
+    siteKind: () => "",
+    siteDefaultTitle: () => "",
+    isLikelyMedia: () => true,
+    classifyMedia: () => ({ type: "stream" }),
+    qualityLabel: () => "",
+    hashUrl: (v) => v,
+    titlesMatchVideo: () => true,
+    withTabReferer: async (_t, op) => op(),
+    detachJobsFromTab: () => {},
+    console
+  });
+  store.addMedia(4, {
+    url: "https://site.test/api/manifest?id=9",
+    type: "stream",
+    mime: "application/dash+xml",
+    source: "network"
+  });
+  const [dashItem] = store.getTabItems(4);
+  assert.equal(dashItem.isDash, true);
+  assert.equal(dashItem.isHls, false);
+}
+
 async function testRefererRuleOnlyTargetsExtensionRequests() {
   const calls = [];
   const transport = DirectMedia.createTransport({
@@ -1185,6 +1358,8 @@ async function main() {
   await testDirectTransportRegistersCheckpoint();
   await testByteRangeSegmentsFetchSubRanges();
   await testStartChromeDownloadKeepsDottedTitles();
+  await testPausedFinalSaveIsNotTornDown();
+  await testManifestsRouteByMime();
   await testRefererRuleOnlyTargetsExtensionRequests();
   await testNativeDirectPauseResume();
   const helperSource = fs.readFileSync(

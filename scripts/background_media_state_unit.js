@@ -197,7 +197,12 @@ async function main() {
   equal(events.onUpdated.listeners.length, 1);
   equal(events.onActivated.listeners.length, 1);
   deepEqual(events.onHeadersReceived.listeners[0].options, [
-    { urls: ["<all_urls>"] },
+    // Filtered like onBeforeRequest so scripts/images/documents do not wake
+    // the worker for every response in every tab.
+    {
+      urls: ["<all_urls>"],
+      types: ["media", "xmlhttprequest", "other", "object"]
+    },
     ["responseHeaders"]
   ]);
   deepEqual(events.onBeforeRequest.listeners[0].options, [

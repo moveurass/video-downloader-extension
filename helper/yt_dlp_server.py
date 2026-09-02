@@ -745,12 +745,27 @@ def find_ytdlp() -> str | None:
     return None
 
 
+_version_cache: dict[str, tuple[str, float]] = {}
+VERSION_CACHE_SECONDS = 10 * 60
+
+
 def ytdlp_version(bin_path: str) -> str:
+    """
+    Cached: /health is polled every few seconds by the popup with a 1.2 s
+    client timeout, and a cold `yt-dlp --version` alone can take that long,
+    which made the helper look offline intermittently.
+    """
+    cached = _version_cache.get(bin_path)
+    now = time.time()
+    if cached and now - cached[1] < VERSION_CACHE_SECONDS:
+        return cached[0]
     try:
         out = subprocess.check_output([bin_path, "--version"], text=True, timeout=8)
-        return out.strip()
+        version = out.strip() or "unknown"
     except Exception:
-        return "unknown"
+        version = "unknown"
+    _version_cache[bin_path] = (version, now)
+    return version
 
 
 def origin_allowed(origin: str) -> bool:

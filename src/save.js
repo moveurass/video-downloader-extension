@@ -96,6 +96,7 @@
   function waitComplete(downloadId, timeoutMs) {
     return new Promise((resolve, reject) => {
       let settled = false;
+      let timer = null;
       const finish = (fn, v) => {
         if (settled) return;
         settled = true;
@@ -123,16 +124,22 @@
             finish(resolve, { state: "complete", path: item.filename });
           } else if (item?.state === "interrupted") {
             finish(reject, new Error("다운로드가 중단되었습니다"));
+          } else if (item?.state === "in_progress" && item.paused) {
+            // User paused the final save: this page owns the blob URL, so it
+            // must stay alive until the download resumes and finishes.
+            armTimer();
           }
         } catch {
           /* ignore */
         }
       }, 400);
-      const timer = setTimeout(async () => {
+      const onTimeout = async () => {
         try {
           const [item] = await chrome.downloads.search({ id: downloadId });
           if (item?.state === "complete") {
             finish(resolve, { state: "complete", path: item.filename });
+          } else if (item?.state === "in_progress" && item.paused) {
+            armTimer();
           } else if (item?.state === "in_progress" && (item.bytesReceived || 0) > 0) {
             finish(resolve, { state: "in_progress", path: item.filename, partial: true });
           } else {
@@ -141,7 +148,13 @@
         } catch {
           finish(reject, new Error("다운로드 상태 확인 실패"));
         }
-      }, timeoutMs);
+      };
+      function armTimer() {
+        if (settled) return;
+        clearTimeout(timer);
+        timer = setTimeout(onTimeout, timeoutMs);
+      }
+      armTimer();
     });
   }
 
