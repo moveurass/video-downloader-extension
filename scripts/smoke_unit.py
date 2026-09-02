@@ -54,6 +54,18 @@ def main() -> int:
         )
         == "Actual extractor title",
     )
+    check(
+        "untitled TikTok resolver falls through to extractor",
+        not helper_server.try_tiktok_direct_download(
+            "unused",
+            {
+                "pageUrl": "https://example.test/post",
+                "mediaUrl": "https://cdn.test/opaque.mp4",
+                "filename": "host_829104.mp4",
+            },
+            "",
+        ),
+    )
     with tempfile.TemporaryDirectory() as tmp:
         output_dir = Path(tmp)
         check(

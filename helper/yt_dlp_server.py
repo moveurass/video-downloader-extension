@@ -481,7 +481,7 @@ def resolve_tiktok_via_public_apis(page_url: str) -> dict | None:
         if play:
             return {
                 "play_url": play,
-                "title": d.get("title") or d.get("id") or "tiktok",
+                "title": d.get("title") or "",
                 "cover": d.get("cover") or d.get("origin_cover"),
                 "id": str(d.get("id") or ""),
                 "method": "tikwm",
@@ -685,8 +685,13 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
     if not play_url:
         return False
 
+    # A resolver media URL without a human title must fall through to yt-dlp,
+    # whose extractor can populate %(title)s. Never publish an id/generic name.
+    if not title or is_generic_name(title):
+        return False
+
     # Build output path
-    safe = clean_name(title or "TikTok video")
+    safe = clean_name(title)
     dest = unique_output_path(OUT_DIR, f"{safe}.mp4")
 
     with jobs_lock:
