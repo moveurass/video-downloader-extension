@@ -197,7 +197,8 @@
                   filename,
                   workItem,
                   resolvedPage || pageUrl,
-                  jid
+                  jid,
+                  { audioTrackId: options.audioTrackId || "" }
                 ),
               pageUrl
             ),
@@ -226,7 +227,8 @@
             mediaType: "stream",
             tabId,
             pageUrl,
-            jobId: jid
+            jobId: jid,
+            audioTrackId: options.audioTrackId || ""
           });
           if (
             pageResult?.ok &&

@@ -98,6 +98,25 @@ const HLS = (() => {
     const isMaster = lines.some((l) => l.startsWith("#EXT-X-STREAM-INF"));
 
     if (isMaster) {
+      const audioRenditions = [];
+      for (const line of lines) {
+        if (!line.startsWith("#EXT-X-MEDIA:")) continue;
+        const attrs = parseAttributes(line.slice("#EXT-X-MEDIA:".length));
+        if ((attrs.TYPE || "").toUpperCase() !== "AUDIO" || !attrs.URI) continue;
+        const url = resolveUrl(baseUrl, attrs.URI);
+        const groupId = attrs["GROUP-ID"] || "";
+        const name = attrs.NAME || attrs.LANGUAGE || "Audio";
+        audioRenditions.push({
+          id: `hls-audio:${groupId}:${name}:${url}`,
+          url,
+          groupId,
+          name,
+          language: attrs.LANGUAGE || "",
+          default: (attrs.DEFAULT || "").toUpperCase() === "YES",
+          autoselect: (attrs.AUTOSELECT || "").toUpperCase() === "YES",
+          channels: attrs.CHANNELS || ""
+        });
+      }
       /** @type {HlsVariant[]} */
       const variants = [];
       for (let i = 0; i < lines.length; i++) {
@@ -118,7 +137,7 @@ const HLS = (() => {
           width = w || 0;
           height = h || 0;
         }
-        const name = attrs.NAME || attrs.AUDIO || undefined;
+        const name = attrs.NAME || undefined;
         const resolved = resolveUrl(baseUrl, uri);
         // Many CDNs omit RESOLUTION — recover from NAME or path (/720p/, /1080/)
         if (!height) {
@@ -141,12 +160,13 @@ const HLS = (() => {
           width,
           height,
           codecs: attrs.CODECS,
+          audioGroup: attrs.AUDIO || "",
           name,
           quality: qualityFromHeight(height)
         });
       }
       variants.sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0) || (b.height || 0) - (a.height || 0));
-      return { kind: "master", variants };
+      return { kind: "master", variants, audioRenditions };
     }
 
     // Media playlist
@@ -160,6 +180,7 @@ const HLS = (() => {
     let mediaSequence = 0;
     let isFmp4 = false;
     let segDuration = 0;
+    const isLive = !lines.some((line) => line === "#EXT-X-ENDLIST");
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
@@ -213,6 +234,8 @@ const HLS = (() => {
       encryptionMethod,
       mapUri,
       isFmp4,
+      isLive,
+      mediaSequence,
       segmentCount: segments.length
     };
   }
@@ -447,6 +470,7 @@ const HLS = (() => {
       return {
         kind: "master",
         variants: parsed.variants,
+        audioRenditions: parsed.audioRenditions || [],
         url: finalUrl
       };
     }
@@ -471,6 +495,8 @@ const HLS = (() => {
       encrypted: parsed.encrypted,
       encryptionMethod: parsed.encryptionMethod,
       isFmp4: parsed.isFmp4,
+      isLive: parsed.isLive,
+      mediaSequence: parsed.mediaSequence,
       url: finalUrl,
       sampleUrls,
       inferredHeight: inferredHeight || 0
@@ -548,6 +574,213 @@ const HLS = (() => {
       data
     );
     return new Uint8Array(plain);
+  }
+
+  function segmentIdentity(segment) {
+    if (!segment) return "";
+    return `${Number(segment.sequence)}:${segment.url || ""}`;
+  }
+
+  function tsPid(packet) {
+    return ((packet[1] & 0x1f) << 8) | packet[2];
+  }
+
+  function tsSection(packet, expectedTableId) {
+    if (
+      packet?.byteLength !== 188 ||
+      packet[0] !== 0x47 ||
+      !(packet[1] & 0x40)
+    ) {
+      return null;
+    }
+    const adaptation = (packet[3] >> 4) & 0x03;
+    if (adaptation === 0 || adaptation === 2) return null;
+    let offset = 4;
+    if (adaptation === 3) offset += 1 + packet[offset];
+    if (offset >= 188) return null;
+    offset += 1 + packet[offset];
+    if (offset + 3 > 188 || packet[offset] !== expectedTableId) return null;
+    const length = ((packet[offset + 1] & 0x0f) << 8) | packet[offset + 2];
+    const end = offset + 3 + length;
+    if (end > 188) return null;
+    return { offset, bytes: packet.slice(offset, end) };
+  }
+
+  function pmtPidFromPat(packet) {
+    const section = tsSection(packet, 0x00)?.bytes;
+    if (!section) return -1;
+    for (let offset = 8; offset + 4 <= section.length - 4; offset += 4) {
+      const program = (section[offset] << 8) | section[offset + 1];
+      if (program !== 0) {
+        return ((section[offset + 2] & 0x1f) << 8) | section[offset + 3];
+      }
+    }
+    return -1;
+  }
+
+  function pmtStreams(section) {
+    if (!section || section[0] !== 0x02 || section.length < 16) return [];
+    const programInfoLength = ((section[10] & 0x0f) << 8) | section[11];
+    const end = section.length - 4;
+    const streams = [];
+    for (let offset = 12 + programInfoLength; offset + 5 <= end; ) {
+      const infoLength =
+        ((section[offset + 3] & 0x0f) << 8) | section[offset + 4];
+      const length = 5 + infoLength;
+      if (offset + length > end) return [];
+      streams.push({
+        pid: ((section[offset + 1] & 0x1f) << 8) | section[offset + 2],
+        bytes: section.slice(offset, offset + length)
+      });
+      offset += length;
+    }
+    return streams;
+  }
+
+  function mpegCrc32(bytes) {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte << 24;
+      for (let bit = 0; bit < 8; bit++) {
+        crc =
+          crc & 0x80000000
+            ? ((crc << 1) ^ 0x04c11db7) >>> 0
+            : (crc << 1) >>> 0;
+      }
+    }
+    return crc >>> 0;
+  }
+
+  function mergedPmt(videoSection, audioStreams, pidMap) {
+    const body = videoSection.slice(0, -4);
+    const appended = audioStreams.map((stream) => {
+      const bytes = stream.bytes.slice();
+      const pid = pidMap.get(stream.pid);
+      bytes[1] = (bytes[1] & 0xe0) | ((pid >> 8) & 0x1f);
+      bytes[2] = pid & 0xff;
+      return bytes;
+    });
+    const size =
+      body.length + appended.reduce((total, bytes) => total + bytes.length, 0) + 4;
+    const output = new Uint8Array(size);
+    output.set(body);
+    let offset = body.length;
+    for (const bytes of appended) {
+      output.set(bytes, offset);
+      offset += bytes.length;
+    }
+    const sectionLength = size - 3;
+    output[1] = (output[1] & 0xf0) | ((sectionLength >> 8) & 0x0f);
+    output[2] = sectionLength & 0xff;
+    const crc = mpegCrc32(output.subarray(0, size - 4));
+    output[size - 4] = (crc >>> 24) & 0xff;
+    output[size - 3] = (crc >>> 16) & 0xff;
+    output[size - 2] = (crc >>> 8) & 0xff;
+    output[size - 1] = crc & 0xff;
+    return output;
+  }
+
+  /**
+   * Mux aligned MPEG-TS renditions without transcoding. Audio elementary PIDs
+   * are remapped and appended to the video's PMT; merely concatenating the two
+   * transport streams would advertise conflicting programs and is not valid.
+   */
+  function interleaveTs(video, audio) {
+    const packetSize = 188;
+    const packets = (data) => {
+      if (
+        !data?.byteLength ||
+        data.byteLength % packetSize !== 0 ||
+        data[0] !== 0x47
+      ) {
+        throw new Error(
+          "선택한 HLS 오디오는 MPEG-TS 형식이 아니어서 브라우저에서 병합할 수 없습니다"
+        );
+      }
+      return Array.from(
+        { length: data.byteLength / packetSize },
+        (_, index) => data.slice(index * packetSize, (index + 1) * packetSize)
+      );
+    };
+    const videoPackets = packets(video);
+    const audioPackets = packets(audio);
+    const videoPmtPid = videoPackets
+      .map(pmtPidFromPat)
+      .find((pid) => pid >= 0);
+    const audioPmtPid = audioPackets
+      .map(pmtPidFromPat)
+      .find((pid) => pid >= 0);
+    const videoPmtPacket = videoPackets.find(
+      (packet) => tsPid(packet) === videoPmtPid && tsSection(packet, 0x02)
+    );
+    const audioPmtPacket = audioPackets.find(
+      (packet) => tsPid(packet) === audioPmtPid && tsSection(packet, 0x02)
+    );
+    const videoPmt = tsSection(videoPmtPacket, 0x02);
+    const audioPmt = tsSection(audioPmtPacket, 0x02);
+    const audioStreams = pmtStreams(audioPmt?.bytes);
+    if (!videoPmt || !audioPmt || !audioStreams.length) {
+      throw new Error("HLS MPEG-TS 프로그램 정보를 읽을 수 없어 대체 오디오를 병합할 수 없습니다");
+    }
+    const occupied = new Set([
+      0,
+      videoPmtPid,
+      ...pmtStreams(videoPmt.bytes).map((stream) => stream.pid)
+    ]);
+    const pidMap = new Map();
+    let nextPid = 0x1e00;
+    for (const stream of audioStreams) {
+      while (occupied.has(nextPid) && nextPid < 0x1fff) nextPid += 1;
+      if (nextPid >= 0x1fff) throw new Error("HLS 오디오 PID를 할당할 수 없습니다");
+      pidMap.set(stream.pid, nextPid);
+      occupied.add(nextPid);
+      nextPid += 1;
+    }
+    const pmt = mergedPmt(videoPmt.bytes, audioStreams, pidMap);
+    const rewrittenVideo = videoPackets.map((packet) => {
+      if (tsPid(packet) !== videoPmtPid) return packet;
+      const section = tsSection(packet, 0x02);
+      if (!section) return packet;
+      if (section.offset + pmt.length > packetSize) {
+        throw new Error("HLS PMT가 커서 브라우저에서 대체 오디오를 병합할 수 없습니다");
+      }
+      const next = packet.slice();
+      next.fill(0xff, section.offset);
+      next.set(pmt, section.offset);
+      return next;
+    });
+    const rewrittenAudio = audioPackets
+      .filter((packet) => pidMap.has(tsPid(packet)))
+      .map((packet) => {
+        const next = packet.slice();
+        const pid = pidMap.get(tsPid(packet));
+        next[1] = (next[1] & 0xe0) | ((pid >> 8) & 0x1f);
+        next[2] = pid & 0xff;
+        return next;
+      });
+    if (!rewrittenAudio.length) {
+      throw new Error("선택한 HLS 오디오 조각에 미디어 패킷이 없습니다");
+    }
+    const output = new Uint8Array(
+      (rewrittenVideo.length + rewrittenAudio.length) * packetSize
+    );
+    let outputOffset = 0;
+    let videoOffset = 0;
+    let audioOffset = 0;
+    while (
+      videoOffset < rewrittenVideo.length ||
+      audioOffset < rewrittenAudio.length
+    ) {
+      if (videoOffset < rewrittenVideo.length) {
+        output.set(rewrittenVideo[videoOffset++], outputOffset);
+        outputOffset += packetSize;
+      }
+      if (audioOffset < rewrittenAudio.length) {
+        output.set(rewrittenAudio[audioOffset++], outputOffset);
+        outputOffset += packetSize;
+      }
+    }
+    return output;
   }
 
   /**
@@ -711,10 +944,13 @@ const HLS = (() => {
     let parsed = parsePlaylist(text, finalUrl);
     let quality = "unknown";
     let mediaUrl = finalUrl;
+    let audioParsed = null;
+    let selectedAudio = null;
 
     /** Bandwidth of selected variant — used to estimate total size */
     let variantBandwidth = 0;
     if (parsed.kind === "master") {
+      const master = parsed;
       const variant = pickVariant(parsed.variants, options.preferQuality);
       if (!variant) throw new Error("마스터 플레이리스트에 변형이 없습니다");
       quality = variant.quality || qualityFromHeight(variant.height);
@@ -733,6 +969,43 @@ const HLS = (() => {
       if (parsed.kind === "master") {
         throw new Error("중첩 마스터 플레이리스트는 지원하지 않습니다");
       }
+      if (options.audioTrackId) {
+        const requestedAudio = (master.audioRenditions || []).find(
+          (track) => track.id === options.audioTrackId
+        );
+        selectedAudio = (master.audioRenditions || []).find(
+          (track) =>
+            track.groupId === variant.audioGroup &&
+            (track.id === options.audioTrackId ||
+              (requestedAudio &&
+                track.name === requestedAudio.name &&
+                track.language === requestedAudio.language))
+        );
+        if (!selectedAudio) {
+          throw new Error("선택한 HLS 오디오 트랙을 이 화질에서 찾을 수 없습니다");
+        }
+        const audioMedia = await fetchText(selectedAudio.url, {}, requestInit);
+        audioParsed = parsePlaylist(audioMedia.text, audioMedia.finalUrl);
+        if (audioParsed.kind !== "media" || !audioParsed.segments?.length) {
+          throw new Error("선택한 HLS 오디오 재생목록에 조각이 없습니다");
+        }
+        if (parsed.isFmp4 || audioParsed.isFmp4) {
+          throw new Error(
+            "fMP4 HLS 대체 오디오는 브라우저에서 안전하게 병합할 수 없어 로컬 도우미가 필요합니다"
+          );
+        }
+        if (audioParsed.segments.length !== parsed.segments.length) {
+          throw new Error("HLS 영상과 오디오 조각이 정렬되지 않아 안전하게 병합할 수 없습니다");
+        }
+        if (
+          Math.abs((audioParsed.duration || 0) - (parsed.duration || 0)) > 1 ||
+          ((parsed.isLive || audioParsed.isLive) &&
+            (parsed.isLive !== audioParsed.isLive ||
+              parsed.mediaSequence !== audioParsed.mediaSequence))
+        ) {
+          throw new Error("HLS 영상과 오디오 타임라인이 달라 안전하게 병합할 수 없습니다");
+        }
+      }
     }
 
     if (parsed.encryptionMethod && !["NONE", "AES-128", null].includes(parsed.encryptionMethod)) {
@@ -743,7 +1016,9 @@ const HLS = (() => {
 
     // Fail fast on SAMPLE-AES / DRM-like methods
     const methods = new Set(
-      (parsed.segments || []).map((s) => s.encryptionMethod).filter(Boolean)
+      [...(parsed.segments || []), ...(audioParsed?.segments || [])]
+        .map((s) => s.encryptionMethod)
+        .filter(Boolean)
     );
     for (const m of methods) {
       if (m !== "NONE" && m !== "AES-128") {
@@ -793,10 +1068,12 @@ const HLS = (() => {
       onProgress({ phase: "init", current: 0, total: 1, message: "초기화 중…" });
       try {
         const cachedInit = resumeParts.get(0);
+        const initIdentity = `init:${parsed.mapUri}`;
         const reuseInit =
           streamOut &&
           cachedInit?.size > 0 &&
-          cachedInit.sourceUrl === parsed.mapUri;
+          (cachedInit.sourceId === initIdentity ||
+            (!parsed.isLive && cachedInit.sourceUrl === parsed.mapUri));
         if (reuseInit) {
           streamedCount += 1;
           streamedBytes += cachedInit.size;
@@ -806,7 +1083,10 @@ const HLS = (() => {
         } else {
           const initBuf = await fetchBuffer(parsed.mapUri, requestInit);
           if (streamOut) {
-            await streamOut(0, initBuf, { sourceUrl: parsed.mapUri });
+            await streamOut(0, initBuf, {
+              sourceUrl: parsed.mapUri,
+              sourceId: initIdentity
+            });
             if (initBuf?.byteLength) {
               streamedCount += 1;
               streamedBytes += initBuf.byteLength;
@@ -898,11 +1178,19 @@ const HLS = (() => {
       async (seg, index) => {
         shouldStop();
         const partIndex = index + 1;
+        const audioSegment = audioParsed?.segments?.[index] || null;
+        const sourceId = audioSegment
+          ? `${segmentIdentity(seg)}|${segmentIdentity(audioSegment)}`
+          : segmentIdentity(seg);
         const cached = resumeParts.get(partIndex);
         if (
           streamOut &&
           cached?.size > 0 &&
-          cached.sourceUrl === seg.url
+          (cached.sourceId === sourceId ||
+            (!parsed.isLive &&
+              !audioParsed?.isLive &&
+              !audioSegment &&
+              cached.sourceUrl === seg.url))
         ) {
           return { byteLength: cached.size, resumed: true };
         }
@@ -924,9 +1212,24 @@ const HLS = (() => {
               const iv = parseIv(seg.keyIv, seg.sequence);
               data = await decryptAes128(data, key, iv);
             }
+            if (audioSegment) {
+              let audioData = await fetchBuffer(audioSegment.url, requestInit);
+              if (audioSegment.encryptionMethod === "AES-128" && audioSegment.keyUri) {
+                const audioKey = await getKey(audioSegment.keyUri);
+                const audioIv = parseIv(
+                  audioSegment.keyIv,
+                  audioSegment.sequence
+                );
+                audioData = await decryptAes128(audioData, audioKey, audioIv);
+              }
+              data = interleaveTs(data, audioData);
+            }
             if (streamOut) {
               // Part 0 is reserved for the init segment (mapUri)
-              await streamOut(partIndex, data, { sourceUrl: seg.url });
+              await streamOut(partIndex, data, {
+                sourceUrl: seg.url,
+                sourceId
+              });
               return { byteLength: data.byteLength };
             }
             return data;
@@ -1070,6 +1373,7 @@ const HLS = (() => {
       segmentCount: okCount,
       duration: parsed.duration || 0,
       size: totalSize,
+      audioTrackId: selectedAudio?.id || "",
       isFmp4: true // user-facing: always treat as mp4 container name
     };
   }
@@ -1080,7 +1384,9 @@ const HLS = (() => {
     parsePlaylist,
     qualityFromHeight,
     heightFromString,
-    pickVariant
+    pickVariant,
+    segmentIdentity,
+    interleaveTs
   };
 })();
 

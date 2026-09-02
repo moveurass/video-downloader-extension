@@ -8,6 +8,7 @@ const HlsRuntime = require("../src/background-hls-runtime.js");
 const DirectMedia = require("../src/background-direct-media.js");
 const UVDProgress = require("../src/progress-protocol.js");
 const { createManager } = require("../src/background-download-jobs.js");
+const SavePipeline = require("../src/background-save-pipeline.js");
 
 async function testHlsSkipsCheckpointedSegments() {
   const originalFetch = global.fetch;
@@ -73,7 +74,10 @@ async function testHlsSkipsCheckpointedSegments() {
       {
         index: 2,
         size: segment.byteLength,
-        metadata: { sourceUrl: "https://media.test/seg2.ts" }
+        metadata: {
+          sourceUrl: "https://media.test/seg2.ts",
+          sourceId: "1:https://media.test/seg2.ts"
+        }
       }
     ]);
     assert.equal(result.streamed, true);
@@ -82,6 +86,206 @@ async function testHlsSkipsCheckpointedSegments() {
   } finally {
     global.fetch = originalFetch;
   }
+}
+
+async function testLiveHlsRequiresSequenceIdentity() {
+  const originalFetch = global.fetch;
+  const fetched = [];
+  const playlist = [
+    "#EXTM3U",
+    "#EXT-X-MEDIA-SEQUENCE:42",
+    "#EXTINF:6,",
+    "rolling.ts",
+    "#EXTINF:6,",
+    "next.ts"
+  ].join("\n");
+  const segment = new Uint8Array(120_000);
+  segment[0] = 0x47;
+  global.fetch = async (url) => {
+    fetched.push(String(url));
+    return String(url).endsWith(".m3u8")
+      ? new Response(playlist, { status: 200 })
+      : new Response(segment.slice(), { status: 200 });
+  };
+  try {
+    await HLS.downloadAndMerge("https://live.test/index.m3u8", {
+      resumeParts: new Map([
+        [
+          1,
+          {
+            size: segment.byteLength,
+            sourceUrl: "https://live.test/rolling.ts"
+          }
+        ]
+      ]),
+      onSegmentData: async () => {},
+      allowPartial: false,
+      speedProfile: "safe"
+    });
+    assert.equal(
+      fetched.filter((url) => url.endsWith("rolling.ts")).length,
+      1,
+      "live URL alone is not a safe checkpoint identity"
+    );
+
+    fetched.length = 0;
+    await HLS.downloadAndMerge("https://live.test/index.m3u8", {
+      resumeParts: new Map([
+        [
+          1,
+          {
+            size: segment.byteLength,
+            sourceUrl: "https://live.test/rolling.ts",
+            sourceId: "42:https://live.test/rolling.ts"
+          }
+        ]
+      ]),
+      onSegmentData: async () => {},
+      allowPartial: false,
+      speedProfile: "safe"
+    });
+    assert.equal(
+      fetched.filter((url) => url.endsWith("rolling.ts")).length,
+      0,
+      "matching live media sequence reuses the checkpoint"
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testBrowserHlsAlternateAudio() {
+  const originalFetch = global.fetch;
+  const master = [
+    "#EXTM3U",
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="dub",NAME="English",LANGUAGE="en",URI="audio.m3u8"',
+    '#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720,AUDIO="dub"',
+    "video.m3u8"
+  ].join("\n");
+  const media = (name) =>
+    [
+      "#EXTM3U",
+      "#EXT-X-MEDIA-SEQUENCE:1",
+      "#EXTINF:6,",
+      `${name}1.ts`,
+      "#EXTINF:6,",
+      `${name}2.ts`,
+      "#EXT-X-ENDLIST"
+    ].join("\n");
+  const sectionPacket = (pid, section) => {
+    const packet = new Uint8Array(188).fill(0xff);
+    packet.set([0x47, 0x40 | ((pid >> 8) & 0x1f), pid & 0xff, 0x10, 0x00]);
+    packet.set(section, 5);
+    return packet;
+  };
+  const buildTs = (audio) => {
+    const pmtPid = audio ? 200 : 100;
+    const streamPid = 256;
+    const streamType = audio ? 0x0f : 0x1b;
+    const pat = sectionPacket(0, [
+      0x00, 0xb0, 0x0d, 0x00, 0x01, 0xc1, 0x00, 0x00,
+      0x00, 0x01, 0xe0 | ((pmtPid >> 8) & 0x1f), pmtPid & 0xff,
+      0, 0, 0, 0
+    ]);
+    const pmt = sectionPacket(pmtPid, [
+      0x02, 0xb0, 0x12, 0x00, 0x01, 0xc1, 0x00, 0x00,
+      0xe0 | ((streamPid >> 8) & 0x1f), streamPid & 0xff,
+      0xf0, 0x00,
+      streamType, 0xe0 | ((streamPid >> 8) & 0x1f), streamPid & 0xff,
+      0xf0, 0x00, 0, 0, 0, 0
+    ]);
+    const data = new Uint8Array(188 * 402);
+    data.set(pat, 0);
+    data.set(pmt, 188);
+    for (let index = 2; index < 402; index += 1) {
+      const offset = index * 188;
+      data.set(
+        [0x47, (streamPid >> 8) & 0x1f, streamPid & 0xff, 0x10],
+        offset
+      );
+      data.fill(audio ? 0xaa : 0x55, offset + 4, offset + 188);
+    }
+    return data;
+  };
+  global.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith("master.m3u8")) return new Response(master);
+    if (value.endsWith("video.m3u8")) return new Response(media("video"));
+    if (value.endsWith("audio.m3u8")) return new Response(media("audio"));
+    return new Response(buildTs(value.includes("audio")));
+  };
+  try {
+    const parsed = HLS.parsePlaylist(master, "https://mux.test/master.m3u8");
+    const result = await HLS.downloadAndMerge(
+      "https://mux.test/master.m3u8",
+      {
+        audioTrackId: parsed.audioRenditions[0].id,
+        allowPartial: false,
+        speedProfile: "safe"
+      }
+    );
+    assert.equal(result.audioTrackId, parsed.audioRenditions[0].id);
+    assert.equal(result.segmentCount, 2);
+    assert.equal(result.blob.size, 188 * 802 * 2);
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+async function testFinalSavePublishesNativeCheckpoint() {
+  let listener;
+  let startedId = null;
+  const pipeline = SavePipeline.createPipeline({
+    chrome: {
+      runtime: {
+        getURL: (value) => `chrome-extension://unit/${value}`,
+        onMessage: {
+          addListener(value) {
+            listener = value;
+          },
+          removeListener() {}
+        }
+      },
+      tabs: {
+        create: async () => ({ id: 9 }),
+        remove: async () => {}
+      }
+    },
+    indexedDB: null,
+    IDBKeyRange: null,
+    safeDownloadName: String,
+    relDownloadPath: async (value) => value,
+    startKeepAlive: () => true,
+    stopKeepAlive: () => {}
+  });
+  const saving = pipeline.downloadPartsViaTab(
+    "hls_save",
+    "Episode.mp4",
+    240_000,
+    { onDownloadStarted: (id) => { startedId = id; } }
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(typeof listener, "function");
+  listener(
+    { type: "SAVE_PAGE_STARTED", key: "hls_save", downloadId: 55 },
+    { tab: { id: 9 } },
+    () => {}
+  );
+  assert.equal(startedId, 55);
+  listener(
+    {
+      type: "SAVE_PAGE_DONE",
+      key: "hls_save",
+      ok: true,
+      downloadId: 55,
+      filename: "Episode.mp4"
+    },
+    { tab: { id: 9 } },
+    () => {}
+  );
+  const saved = await saving;
+  assert.equal(saved.downloadId, 55);
 }
 
 async function testHlsRuntimePreservesPauseCheckpoint() {
@@ -190,7 +394,8 @@ async function testHlsRuntimePreservesPauseCheckpoint() {
   );
   assert.deepEqual(resumedPart, {
     size: 120_000,
-    sourceUrl: "https://media.test/seg1.ts"
+    sourceUrl: "https://media.test/seg1.ts",
+    sourceId: ""
   });
   assert.equal(checkpointBase.startsWith("hls_job-hls"), true);
   assert.equal(result.downloadId, 10);
@@ -414,6 +619,9 @@ async function testDirectTransportRegistersCheckpoint() {
 
 async function main() {
   await testHlsSkipsCheckpointedSegments();
+  await testLiveHlsRequiresSequenceIdentity();
+  await testBrowserHlsAlternateAudio();
+  await testFinalSavePublishesNativeCheckpoint();
   await testHlsRuntimePreservesPauseCheckpoint();
   await testDirectTransportRegistersCheckpoint();
   await testNativeDirectPauseResume();

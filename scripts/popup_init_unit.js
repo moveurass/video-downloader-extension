@@ -90,7 +90,9 @@ for (const name of [
   "UVDPopupMediaLoader",
   "UVDPopupDownloadRequests",
   "UVDPopupDomEvents",
-  "UVDPopupRuntimeEvents"
+  "UVDPopupRuntimeEvents",
+  "UVDPopupNavigation",
+  "UVDPopupSeriesState"
 ]) {
   root[name] = moduleProxy(name);
 }

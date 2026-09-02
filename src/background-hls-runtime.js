@@ -39,7 +39,8 @@
       filenameHint,
       itemHint,
       pageUrlHint,
-      jobId = null
+      jobId = null,
+      trackOptions = {}
     ) {
       if (!url) throw new Error("받을 주소가 없습니다");
       const jid = jobId || getCurrentJobContext();
@@ -179,7 +180,9 @@
       const canReusePrevious =
         previousResume?.kind === "hls" &&
         previousResume.url === url &&
-        previousResume.quality === resumeQuality;
+        previousResume.quality === resumeQuality &&
+        (previousResume.audioTrackId || "") ===
+          (trackOptions.audioTrackId || "");
       if (previousResume?.partBase && !canReusePrevious) {
         await idbDeleteParts(previousResume.partBase);
       }
@@ -203,7 +206,8 @@
             ) {
               resumeParts.set(stored.index, {
                 size: stored.size,
-                sourceUrl: metadata.sourceUrl
+                sourceUrl: metadata.sourceUrl,
+                sourceId: metadata.sourceId || ""
               });
             }
           }
@@ -221,6 +225,7 @@
             kind: "hls",
             url,
             quality: resumeQuality,
+            audioTrackId: trackOptions.audioTrackId || "",
             partBase,
             parts: canReusePrevious ? { ...(previousResume.parts || {}) } : {}
           };
@@ -245,6 +250,7 @@
       try {
         result = await HLS.downloadAndMerge(url, {
           preferQuality: preferQuality || "best",
+          audioTrackId: trackOptions.audioTrackId || "",
           pageUrl,
           referer: pageUrl,
           signal: ac?.signal || null,
@@ -264,7 +270,8 @@
                 if (resumeJob?.resumeState?.partBase === partBase) {
                   resumeJob.resumeState.parts[idx] = {
                     size: Number(data?.byteLength || data?.size || 0),
-                    sourceUrl: metadata.sourceUrl || ""
+                    sourceUrl: metadata.sourceUrl || "",
+                    sourceId: metadata.sourceId || ""
                   };
                 }
               }
@@ -370,9 +377,23 @@
       // Streamed mode: parts are already on disk (IDB) — the save page assembles
       // a lazy Blob(parts) and hands it to chrome.downloads. Legacy mode keeps
       // the in-memory blob chain.
+      stopCheck();
       const saved = result.streamed
         ? await downloadPartsViaTab(partBase, name, blobSize, {
-            onProgress: saveProgress
+            onProgress: saveProgress,
+            onDownloadStarted: (downloadId) => {
+              if (!resumeJob || downloadId == null) return;
+              resumeJob.resumeState = {
+                kind: "direct",
+                downloadId,
+                url: "",
+                bytesReceived: 0,
+                totalBytes: blobSize,
+                sourceKind: "hls-save"
+              };
+              resumeJob.updatedAt = Date.now();
+              broadcastJob(resumeJob);
+            }
           })
         : await downloadBlob(result.blob, name, { onProgress: saveProgress });
       if (resumeJob?.resumeState?.partBase === partBase) {

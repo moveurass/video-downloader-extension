@@ -528,7 +528,17 @@
           }, Math.min(20 * 60 * 1000, Math.max(180_000, (size || 0) / 8)));
 
           function onMsg(msg, sender, sendResponse) {
-            if (msg?.type !== "SAVE_PAGE_DONE" || msg.key !== baseKey) return false;
+            if (msg?.key !== baseKey || sender?.tab?.id !== tab?.id) return false;
+            if (msg.type === "SAVE_PAGE_STARTED" && msg.downloadId != null) {
+              opts.onDownloadStarted?.(msg.downloadId);
+              try {
+                sendResponse({ ok: true });
+              } catch {
+                /* ignore */
+              }
+              return true;
+            }
+            if (msg.type !== "SAVE_PAGE_DONE") return false;
             cleanup();
             try {
               sendResponse({ ok: true });

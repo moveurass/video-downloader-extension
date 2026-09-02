@@ -83,11 +83,45 @@
       }
     }
     let duration = 0;
+    let videoMedia = null;
     try {
-      const media = await deps.withReferer(() => deps.HLS.probe(info.variants[0].url));
-      duration = media?.duration >= 1 ? media.duration : 0;
+      videoMedia = await deps.withReferer(() => deps.HLS.probe(info.variants[0].url));
+      duration = videoMedia?.duration >= 1 ? videoMedia.duration : 0;
     } catch {
       // Size remains unknown.
+    }
+    const audioTracks = [];
+    if (videoMedia?.kind === "media" && !videoMedia.isFmp4) {
+      for (const rendition of info.audioRenditions || []) {
+        try {
+          const audioMedia = await deps.withReferer(() =>
+            deps.HLS.probe(rendition.url)
+          );
+          if (
+            audioMedia?.kind !== "media" ||
+            audioMedia.isFmp4 ||
+            audioMedia.segmentCount !== videoMedia.segmentCount
+          ) {
+            continue;
+          }
+          const details = [
+            rendition.name || rendition.language || "Audio",
+            rendition.language &&
+            rendition.language !== rendition.name
+              ? rendition.language
+              : "",
+            rendition.channels ? `${rendition.channels}ch` : ""
+          ].filter(Boolean);
+          audioTracks.push({
+            id: rendition.id,
+            label: details.join(" · "),
+            language: rendition.language || "",
+            default: !!rendition.default
+          });
+        } catch {
+          // Only advertise tracks the browser path can fetch and mux safely.
+        }
+      }
     }
     for (const quality of byLabel.values()) {
       if (quality.estimateBandwidth > 0 && duration) {
@@ -117,7 +151,14 @@
       });
     }
     return qualities.length
-      ? { ok: true, qualities, source: "hls", duration, estimatedSize }
+      ? {
+          ok: true,
+          qualities,
+          audioTracks,
+          source: "hls",
+          duration,
+          estimatedSize
+        }
       : null;
   }
 

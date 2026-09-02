@@ -114,6 +114,22 @@ function testPermissionReductionAndTrackPlumbing() {
     false
   );
   assert.equal(manifest.permissions.includes("declarativeNetRequest"), true);
+  assert.deepEqual(
+    [...manifest.permissions].sort(),
+    [
+      "alarms",
+      "contextMenus",
+      "cookies",
+      "declarativeNetRequest",
+      "downloads",
+      "notifications",
+      "scripting",
+      "storage",
+      "tabs",
+      "webRequest"
+    ],
+    "manifest keeps only permissions with active product paths"
+  );
   assert.deepEqual(manifest.host_permissions, ["<all_urls>"]);
 
   const helper = fs.readFileSync(
