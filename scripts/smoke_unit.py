@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 import subprocess
 import sys
 import tempfile
@@ -137,6 +139,78 @@ def main() -> int:
         "payload cannot point yt-dlp at local cookie jars / browser profiles",
         "cookiesFromBrowser" not in helper_source
         and 'payload.get("cookies")\n            if isinstance(cookies, str)' not in helper_source,
+    )
+    # Pause → resume must share one work_dir so yt-dlp --continue applies.
+    key_a = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")
+    key_b = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")
+    key_c = helper_server.resume_key_for({}, "https://a.test/v?x=1")
+    key_d = helper_server.resume_key_for({}, "https://a.test/v?x=1")
+    key_e = helper_server.resume_key_for({"quality": "720p"}, "https://a.test/v?x=1")
+    check(
+        "helper resume key is stable and sanitized",
+        key_a == key_b == "dl_1700_3"
+        and key_c == key_d
+        and key_c != key_e
+        and helper_server.resume_key_for({"resumeKey": "../evil/x"}, "u") == "___evil_x",
+        f"{key_a} {key_c} {key_e}",
+    )
+    original_tmp_root = helper_server.TMP_ROOT
+    with tempfile.TemporaryDirectory() as tmp:
+        helper_server.TMP_ROOT = Path(tmp) / ".uvd-tmp"
+        fresh = helper_server.TMP_ROOT / "fresh"
+        stale = helper_server.TMP_ROOT / "stale"
+        empty = helper_server.TMP_ROOT / "empty"
+        for d in (fresh, stale, empty):
+            d.mkdir(parents=True)
+        (fresh / "a.part").write_bytes(b"x")
+        (stale / "b.part").write_bytes(b"x")
+        old = time.time() - 4 * 24 * 3600
+        os.utime(stale, (old, old))
+        os.utime(stale / "b.part", (old, old))
+        removed = helper_server.sweep_tmp_dirs()
+        check(
+            "startup sweep removes only abandoned temp dirs",
+            removed == 2 and fresh.is_dir() and not stale.exists() and not empty.exists(),
+            f"removed={removed}",
+        )
+        helper_server.purge_work_dir(fresh)
+        check("purge removes a job work dir", not fresh.exists())
+        outside = Path(tmp) / "outside"
+        outside.mkdir()
+        helper_server.purge_work_dir(outside)
+        check("purge refuses paths outside .uvd-tmp", outside.exists())
+    helper_server.TMP_ROOT = original_tmp_root
+
+    # Cancel: a pause keeps partial files, a user cancel purges them; a job
+    # whose worker already exited is purged synchronously.
+    with tempfile.TemporaryDirectory() as tmp:
+        helper_server.TMP_ROOT = Path(tmp) / ".uvd-tmp"
+        wd = helper_server.TMP_ROOT / "job_x"
+        wd.mkdir(parents=True)
+        (wd / "v.part").write_bytes(b"x")
+        helper_server.jobs["smoke-cancel"] = {"status": "error", "workDir": str(wd)}
+        helper_server.request_cancel_job("smoke-cancel", purge=False)
+        kept = wd.exists()
+        helper_server.request_cancel_job("smoke-cancel", purge=True)
+        check(
+            "cancel purge flag controls partial-file removal",
+            kept and not wd.exists() and helper_server.jobs["smoke-cancel"]["purge"] is True,
+        )
+        helper_server.jobs.pop("smoke-cancel", None)
+    helper_server.TMP_ROOT = original_tmp_root
+
+    check(
+        "helper publish dir mirrors Downloads/<subfolder>",
+        helper_server.publish_dir_for("") == helper_server.OUT_DIR
+        and helper_server.publish_dir_for("VideoDownloader") == helper_server.OUT_DIR
+        and helper_server.subfolder_segments("../x/..\\y:z") == ["x", "yz"],
+        str(helper_server.publish_dir_for("My/Folder")),
+    )
+    check(
+        "yt-dlp children run in their own session and are killed as a tree",
+        "start_new_session=(os.name != \"nt\")" in helper_source
+        and "os.killpg(" in helper_source
+        and "except subprocess.TimeoutExpired:" in helper_source,
     )
     check(
         "tiktok cookies only for first-party hosts",

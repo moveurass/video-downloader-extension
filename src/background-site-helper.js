@@ -280,6 +280,7 @@
             title: nameHint || undefined,
             quality: preferQuality || "best",
             site: "tiktok",
+            resumeKey: jid || undefined,
             cookieHeader: cookieHeader || undefined,
             mediaUrl:
               mediaUrl && deps.looksLikeVideoFileUrl(mediaUrl) ? mediaUrl : undefined,
@@ -388,6 +389,7 @@
           title: nameHint || undefined,
           quality: preferQuality || "best",
           site: kind || undefined,
+          resumeKey: jid || undefined,
           cookieHeader: cookieHeader || undefined,
           cookiesList: cookiesList?.length ? cookiesList : undefined,
           ...extra
@@ -524,6 +526,7 @@
             title: nameHint || undefined,
             quality: preferQuality || "best",
             site: "instagram",
+            resumeKey: jid || undefined,
             cookieHeader: cookieHeader || undefined,
             cookiesList,
             ...extra

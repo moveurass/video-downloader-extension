@@ -138,18 +138,26 @@ const YtDlp = (() => {
       headers: await authHeaders()
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) throw new Error(data.error || "job not found");
+    if (!res.ok || !data.ok) {
+      const error = new Error(data.error || "job not found");
+      error.status = res.status;
+      throw error;
+    }
     return data.job;
   }
 
-  /** Cancel a running helper download (kills yt-dlp process). */
-  async function cancelJob(jobId) {
+  /**
+   * Cancel a running helper download (kills yt-dlp and its children).
+   * `purge` also deletes the job's partial files; omit it for a pause so the
+   * next job with the same resumeKey can --continue.
+   */
+  async function cancelJob(jobId, options = {}) {
     if (!jobId) return { ok: false };
     try {
       const res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: "{}"
+        body: JSON.stringify({ purge: !!options.purge })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: !!(res.ok && data.ok), ...data };
@@ -207,12 +215,31 @@ const YtDlp = (() => {
       outDir: started.outDir
     });
 
+    // A helper restart wipes its in-memory job table (404), and a dead helper
+    // fails every poll; neither must spin silently until the 40-minute timeout.
+    let missing = 0;
+    let unreachable = 0;
     while (Date.now() - t0 < timeoutMs) {
       await new Promise((r) => setTimeout(r, 500));
       let job;
       try {
         job = await getJob(jobId);
-      } catch {
+        missing = 0;
+        unreachable = 0;
+      } catch (error) {
+        if (error?.status === 404) {
+          missing += 1;
+          if (missing >= 6) {
+            throw new Error(
+              "도우미가 재시작되어 진행 중인 작업을 잃었습니다. 다시 시작해 주세요"
+            );
+          }
+        } else {
+          unreachable += 1;
+          if (unreachable >= 40) {
+            throw new Error("도우미와 연결이 끊겼습니다. helper/start.command 를 실행해 주세요");
+          }
+        }
         continue;
       }
       const pct = typeof job.percent === "number" ? job.percent : 0;
@@ -243,6 +270,8 @@ const YtDlp = (() => {
         throw new Error(job.error || job.message || "다운로드 실패");
       }
     }
+    // Do not leave yt-dlp running untracked after the UI gives up.
+    await cancelJob(jobId).catch(() => {});
     throw new Error("다운로드 시간 초과");
   }
 

@@ -419,7 +419,7 @@
       }
       if (job.helperJobId) {
         try {
-          await YtDlp.cancelJob(job.helperJobId);
+          await YtDlp.cancelJob(job.helperJobId, { purge: true });
         } catch {
           // Helper may already have stopped.
         }

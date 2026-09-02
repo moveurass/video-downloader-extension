@@ -98,6 +98,8 @@
           directFile: true,
           filename: nameHint || undefined,
           title: nameHint || undefined,
+          resumeKey: jid || undefined,
+          subfolder: settings?.subfolder || undefined,
           ...cookies,
           speedProfile: settings?.downloadSpeed || "fast"
         },
@@ -160,6 +162,8 @@
           manifest: true,
           filename: nameHint || undefined,
           title: nameHint || undefined,
+          resumeKey: jid || undefined,
+          subfolder: settings?.subfolder || undefined,
           quality: quality || "best",
           audioTrackId: trackOptions.audioTrackId || undefined,
           subtitleLanguages: Array.isArray(trackOptions.subtitleLanguages)

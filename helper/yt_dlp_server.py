@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -110,30 +111,157 @@ def pair_extension(origin: str, token: str) -> tuple[bool, str]:
     return True, ""
 
 
-def request_cancel_job(job_id: str) -> bool:
-    """Mark job cancelled and kill yt-dlp process if running."""
+TMP_ROOT = OUT_DIR / ".uvd-tmp"
+OUT_DIR_IS_DEFAULT = "UVD_OUT" not in os.environ
+
+
+def subfolder_segments(subfolder: str) -> list[str]:
+    out = []
+    for raw in re.split(r"[\\/]+", str(subfolder or "")):
+        seg = re.sub(r'[<>:"|?*\x00-\x1f]', "", raw).strip().strip(".")
+        if not seg or seg in (".", ".."):
+            continue
+        out.append(seg[:64])
+        if len(out) >= 3:
+            break
+    return out
+
+
+def publish_dir_for(subfolder: str) -> Path:
+    """
+    Mirror the browser path's "Downloads/<subfolder>" so helper and extension
+    saves land in the same place. With a custom UVD_OUT the subfolder nests
+    inside it; the default OUT_DIR already *is* Downloads/VideoDownloader.
+    """
+    segments = subfolder_segments(subfolder)
+    if not segments:
+        return OUT_DIR
+    base = HOME / "Downloads" if OUT_DIR_IS_DEFAULT else OUT_DIR
+    candidate = base.joinpath(*segments)
+    try:
+        if candidate.resolve() == OUT_DIR.resolve():
+            return OUT_DIR
+    except OSError:
+        pass
+    return candidate
+# Partial downloads older than this are considered abandoned and swept at startup.
+TMP_MAX_AGE_SECONDS = 3 * 24 * 3600
+
+
+def _signal_process_tree(proc: subprocess.Popen, hard: bool) -> None:
+    """Signal yt-dlp and the aria2c/ffmpeg children it spawned (own session)."""
+    if os.name != "nt":
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL if hard else signal.SIGTERM)
+            return
+        except Exception:
+            pass
+    try:
+        proc.kill() if hard else proc.terminate()
+    except Exception:
+        pass
+
+
+def kill_process_tree(proc: subprocess.Popen, grace: float = 2.0) -> None:
+    if proc.poll() is not None:
+        return
+    _signal_process_tree(proc, hard=False)
+    try:
+        proc.wait(timeout=grace)
+    except Exception:
+        _signal_process_tree(proc, hard=True)
+        try:
+            proc.wait(timeout=grace)
+        except Exception:
+            pass
+
+
+def resume_key_for(payload: dict, target: str) -> str:
+    """
+    Stable per-download key so a paused job and its resume share one work_dir
+    and yt-dlp's --continue finds the .part files. The extension passes its own
+    job id; otherwise derive from what makes the download unique.
+    """
+    raw = str(payload.get("resumeKey") or "").strip()
+    if not raw:
+        import hashlib
+
+        parts = [
+            target,
+            str(payload.get("quality") or "best"),
+            str(payload.get("mediaMode") or ""),
+            str(payload.get("audioTrackId") or ""),
+            "audio" if payload.get("audioOnly") else "",
+        ]
+        raw = "auto_" + hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:20]
+    return re.sub(r"[^A-Za-z0-9_-]", "_", raw)[:80] or "job"
+
+
+def purge_work_dir(work_dir: Path | None) -> None:
+    if not work_dir:
+        return
+    try:
+        if work_dir.resolve().parent != TMP_ROOT.resolve():
+            return
+        shutil.rmtree(work_dir, ignore_errors=True)
+        TMP_ROOT.rmdir()
+    except OSError:
+        pass
+
+
+def sweep_tmp_dirs(max_age: float = TMP_MAX_AGE_SECONDS) -> int:
+    """Remove abandoned per-download temp dirs; called at startup."""
+    removed = 0
+    try:
+        if not TMP_ROOT.is_dir():
+            return 0
+        now = time.time()
+        for entry in TMP_ROOT.iterdir():
+            try:
+                if not entry.is_dir():
+                    entry.unlink(missing_ok=True)
+                    removed += 1
+                    continue
+                newest = entry.stat().st_mtime
+                for child in entry.rglob("*"):
+                    try:
+                        newest = max(newest, child.stat().st_mtime)
+                    except OSError:
+                        pass
+                if now - newest > max_age or not any(entry.iterdir()):
+                    shutil.rmtree(entry, ignore_errors=True)
+                    removed += 1
+            except OSError:
+                pass
+        try:
+            TMP_ROOT.rmdir()
+        except OSError:
+            pass
+    except Exception as error:
+        print(f"[uvd-helper] tmp sweep: {error}", file=sys.stderr)
+    return removed
+
+
+def request_cancel_job(job_id: str, purge: bool = False) -> bool:
+    """Mark job cancelled and kill yt-dlp (and its children) if running."""
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
             return False
         job["cancel"] = True
+        job["purge"] = bool(purge)
         job["status"] = "cancelled"
         job["message"] = "취소됨"
         job["error"] = "사용자가 취소했습니다"
+        work_dir = job.get("workDir")
+        running = job_id in process_map
     proc = process_map.get(job_id)
     if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=2)
-            except Exception:
-                proc.kill()
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+        kill_process_tree(proc)
     process_map.pop(job_id, None)
+    # When the worker thread is no longer around to honour the flag, purge here.
+    if purge and work_dir and not running:
+        purge_work_dir(Path(work_dir))
     return True
 
 
@@ -474,6 +602,7 @@ def download_url_to_file(
     dest: Path,
     referer: str = "https://www.tiktok.com/",
     cookie_header: str = "",
+    should_cancel=None,
 ) -> int:
     """Stream download media_url to dest. Returns bytes written. Rejects non-video."""
     # Block obvious non-video URLs
@@ -498,6 +627,8 @@ def download_url_to_file(
         if any(x in ctype for x in ("javascript", "text/html", "text/css", "image/", "json")):
             raise ValueError(f"bad content-type {ctype}")
         while True:
+            if should_cancel and should_cancel():
+                raise RuntimeError("cancelled")
             chunk = resp.read(1024 * 256)
             if not chunk:
                 break
@@ -560,6 +691,7 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
             dest,
             referer=page_url or "https://www.tiktok.com/",
             cookie_header=cookie_header,
+            should_cancel=lambda: bool(jobs.get(job_id, {}).get("cancel")),
         )
         if size < 50_000:
             try:
@@ -583,12 +715,15 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
         return True
     except Exception as e:
         with jobs_lock:
-            jobs[job_id]["message"] = f"TikTok 직접 저장 실패: {e}"
+            cancelled = bool(jobs[job_id].get("cancel"))
+            if not cancelled:
+                jobs[job_id]["message"] = f"TikTok 직접 저장 실패: {e}"
         try:
             dest.unlink(missing_ok=True)
         except Exception:
             pass
-        return False
+        # A cancelled job must not fall through to the yt-dlp attempts.
+        return cancelled
 
 
 def find_ytdlp() -> str | None:
@@ -832,11 +967,20 @@ def run_download(job_id: str, payload: dict) -> None:
         else:
             target = url
 
-    # Download into a per-job hidden directory, then publish one uniquely named
-    # completed file. This lets extractor titles remain the source of truth and
-    # avoids yt-dlp silently reusing an existing same-title file.
-    work_dir = OUT_DIR / ".uvd-tmp" / job_id
+    # Download into a hidden per-download directory, then publish one uniquely
+    # named completed file. This lets extractor titles remain the source of
+    # truth and avoids yt-dlp silently reusing an existing same-title file.
+    # The directory is keyed by resumeKey (not job id) so pause → resume lands
+    # in the same place and --continue picks up the .part files.
+    work_dir = TMP_ROOT / resume_key_for(payload, target)
     work_dir.mkdir(parents=True, exist_ok=True)
+    publish_dir = publish_dir_for(payload.get("subfolder") or "")
+    try:
+        publish_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        publish_dir = OUT_DIR
+    with jobs_lock:
+        jobs[job_id]["workDir"] = str(work_dir)
 
     # output template — clean human names (no "(2) " notification prefix, no "_best")
     if title_hint:
@@ -1252,7 +1396,7 @@ def run_download(job_id: str, payload: dict) -> None:
 
     with jobs_lock:
         jobs[job_id]["target"] = target
-        jobs[job_id]["outDir"] = str(OUT_DIR)
+        jobs[job_id]["outDir"] = str(publish_dir)
         jobs[job_id]["message"] = "포맷 선택 중…"
 
     started_at = time.time()
@@ -1282,7 +1426,9 @@ def run_download(job_id: str, payload: dict) -> None:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                errors="replace",
                 bufsize=1,
+                start_new_session=(os.name != "nt"),
             )
             process_map[job_id] = proc
             assert proc.stdout is not None
@@ -1290,12 +1436,10 @@ def run_download(job_id: str, payload: dict) -> None:
             printed_paths = []
             for line in proc.stdout:
                 with jobs_lock:
-                    if jobs.get(job_id, {}).get("cancel"):
-                        try:
-                            proc.terminate()
-                        except Exception:
-                            pass
-                        break
+                    cancelled = bool(jobs.get(job_id, {}).get("cancel"))
+                if cancelled:
+                    kill_process_tree(proc)
+                    break
                 line = line.rstrip()
                 last_line = line
                 if line.startswith("/") or (len(line) > 3 and line[1:3] == ":\\"):
@@ -1390,7 +1534,12 @@ def run_download(job_id: str, payload: dict) -> None:
                         )
                         jobs[job_id]["message"] = "마무리 중…"
 
-            code = proc.wait(timeout=3600)
+            try:
+                code = proc.wait(timeout=3600)
+            except subprocess.TimeoutExpired:
+                kill_process_tree(proc)
+                process_map.pop(job_id, None)
+                raise RuntimeError("yt-dlp가 1시간 동안 끝나지 않아 중단했습니다")
             process_map.pop(job_id, None)
             with jobs_lock:
                 if jobs.get(job_id, {}).get("cancel"):
@@ -1446,7 +1595,7 @@ def run_download(job_id: str, payload: dict) -> None:
             # Newest video file written after we started
             candidates = []
             for pat in ("*.mp4", "*.webm", "*.mkv", "*.m4a"):
-                candidates.extend(OUT_DIR.glob(pat))
+                candidates.extend(work_dir.glob(pat))
             candidates = [p for p in candidates if p.is_file() and p.stat().st_mtime >= started_at - 2]
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             if candidates:
@@ -1477,10 +1626,21 @@ def run_download(job_id: str, payload: dict) -> None:
             # or mistaken for this job's result.
             try:
                 source = Path(final_path)
-                destination = unique_output_path(OUT_DIR, source.name)
+                destination = unique_output_path(publish_dir, source.name)
                 if source.resolve() != destination.resolve():
                     shutil.move(str(source), str(destination))
                     final_path = str(destination)
+                # --write-thumbnail lands beside the template (inside work_dir);
+                # publish it under the final stem instead of leaving litter.
+                for thumb in list(work_dir.glob("*.jpg")) + list(work_dir.glob("*.png")) + list(work_dir.glob("*.webp")):
+                    try:
+                        thumb_dest = Path(final_path).with_suffix(thumb.suffix)
+                        if not thumb_dest.exists():
+                            shutil.move(str(thumb), str(thumb_dest))
+                        else:
+                            thumb.unlink(missing_ok=True)
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"[uvd-helper] publish output: {e}", file=sys.stderr)
             final_size = Path(final_path).stat().st_size
@@ -1503,8 +1663,8 @@ def run_download(job_id: str, payload: dict) -> None:
                     {
                         "status": "done",
                         "percent": 100,
-                        "message": f"저장 완료 → {OUT_DIR}",
-                        "path": final_path or str(OUT_DIR),
+                        "message": f"저장 완료 → {publish_dir}",
+                        "path": final_path or str(publish_dir),
                         "size": final_size,
                         "finishedAt": time.time(),
                     }
@@ -1562,11 +1722,21 @@ def run_download(job_id: str, payload: dict) -> None:
             path_file.unlink(missing_ok=True)
         except Exception:
             pass
-        try:
-            work_dir.rmdir()
-            (OUT_DIR / ".uvd-tmp").rmdir()
-        except OSError:
-            pass
+        with jobs_lock:
+            state = jobs.get(job_id, {})
+            finished_ok = state.get("status") == "done"
+            purge = bool(state.get("purge"))
+        if finished_ok or purge:
+            # Completed downloads have been published; explicit cancels do not
+            # want the partial files. Paused/errored jobs keep them so the same
+            # resumeKey can --continue.
+            purge_work_dir(work_dir)
+        else:
+            try:
+                work_dir.rmdir()  # only succeeds when nothing was written
+                TMP_ROOT.rmdir()
+            except OSError:
+                pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1649,7 +1819,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/job/") and self.path.rstrip("/").endswith("/cancel"):
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
             job_id = rest[: -len("/cancel")].rstrip("/") if rest.endswith("/cancel") else rest
-            ok = request_cancel_job(job_id)
+            cancel_payload = read_json(self)
+            # purge=true (user cancel) removes partial files; a pause omits it so
+            # the next job with the same resumeKey can --continue.
+            ok = request_cancel_job(job_id, purge=bool(cancel_payload.get("purge")))
             send_json(
                 self,
                 200 if ok else 404,
@@ -2245,6 +2418,9 @@ def cleanup_stale_cookie_files() -> None:
 
 def main() -> None:
     cleanup_stale_cookie_files()
+    swept = sweep_tmp_dirs()
+    if swept:
+        print(f"[uvd-helper] removed {swept} abandoned temp dir(s)", file=sys.stderr)
     bin_path = find_ytdlp()
     print(f"UVD yt-dlp helper  http://{HOST}:{PORT}")
     print(f"  output: {OUT_DIR}")

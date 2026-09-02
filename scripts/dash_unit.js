@@ -47,7 +47,11 @@ async function main() {
       }
     },
     UVD: {
-      getSettings: async () => ({ codecPref: "h264", downloadSpeed: "safe" })
+      getSettings: async () => ({
+        codecPref: "h264",
+        downloadSpeed: "safe",
+        subfolder: "Chosen/Folder"
+      })
     },
     activeDownloads: jobs,
     getCookieHeaderForUrl: async () => "session=ok",
@@ -73,6 +77,10 @@ async function main() {
     manifest: true,
     filename: "episode.mp4",
     title: "episode.mp4",
+    // Same key across pause → resume so the helper's --continue finds .part
+    // files, and the user's folder setting reaches helper saves too.
+    resumeKey: "job-1",
+    subfolder: "Chosen/Folder",
     quality: "1080p",
     audioTrackId: undefined,
     subtitleLanguages: [],

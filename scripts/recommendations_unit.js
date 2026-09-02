@@ -58,6 +58,87 @@ async function testHelperAutoPairing() {
   assert.equal(writes[0].helperToken, token);
 }
 
+function loadYtDlp(fetchImpl, extraContext = {}) {
+  const source =
+    fs.readFileSync(path.join(__dirname, "../src/ytdlp.js"), "utf8") +
+    "\nglobalThis.__YtDlp = YtDlp;";
+  const context = {
+    console,
+    Uint8Array,
+    AbortController,
+    crypto: webcrypto,
+    // Fast-forward the 500 ms poll sleep.
+    setTimeout: (fn, ms, ...args) => setTimeout(fn, ms >= 500 ? 0 : ms, ...args),
+    clearTimeout,
+    Date,
+    JSON,
+    fetch: fetchImpl,
+    chrome: {
+      storage: {
+        local: { get: async () => ({}), set: async () => {} },
+        onChanged: { addListener() {} }
+      }
+    },
+    ...extraContext
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context);
+  return context.__YtDlp;
+}
+
+async function testHelperPollingFailsFast() {
+  // Helper restarted: /job/<id> 404s forever. Must not spin to the timeout.
+  const calls = [];
+  const restarted = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "j1" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({ ok: false, error: "job not found" }) };
+  });
+  await assert.rejects(
+    () => restarted.downloadAndWait({ url: "https://x.test/v" }, () => {}, 60_000),
+    /재시작/
+  );
+  assert.equal(
+    calls.filter((c) => c.url.includes("/job/j1")).length,
+    6,
+    "six consecutive 404s are terminal"
+  );
+
+  // UI timeout: the helper job is cancelled instead of running untracked.
+  const timeoutCalls = [];
+  const slow = loadYtDlp(async (url, options = {}) => {
+    timeoutCalls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "j2" }) };
+    }
+    if (String(url).endsWith("/cancel")) {
+      return { ok: true, json: async () => ({ ok: true }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({ ok: true, job: { status: "running", percent: 10 } })
+    };
+  });
+  await assert.rejects(
+    () => slow.downloadAndWait({ url: "https://x.test/v" }, () => {}, 1),
+    /시간 초과/
+  );
+  const cancel = timeoutCalls.find((c) => c.url.endsWith("/job/j2/cancel"));
+  assert.ok(cancel, "timeout cancels the helper job");
+  assert.deepEqual(JSON.parse(cancel.options.body), { purge: false });
+
+  // Explicit user cancel asks the helper to purge partial files.
+  const purgeCalls = [];
+  const purging = loadYtDlp(async (url, options = {}) => {
+    purgeCalls.push({ url: String(url), options });
+    return { ok: true, json: async () => ({ ok: true }) };
+  });
+  await purging.cancelJob("j3", { purge: true });
+  assert.deepEqual(JSON.parse(purgeCalls[0].options.body), { purge: true });
+}
+
 async function testHistoryCap() {
   const history = Array.from({ length: 40 }, (_, index) => ({
     id: `old-${index}`,
@@ -142,6 +223,7 @@ function testPermissionReductionAndTrackPlumbing() {
 
 async function main() {
   await testHelperAutoPairing();
+  await testHelperPollingFailsFast();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();
   console.log("remaining recommendations: tracks, permissions, pairing, and history cap passed");
