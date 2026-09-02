@@ -27,7 +27,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 try:
     from .name_utils import clean_name, is_generic_name, unique_output_path
@@ -84,6 +84,10 @@ def pair_extension(origin: str, token: str) -> tuple[bool, str]:
         return False, "manual token configured"
     if not re.fullmatch(r"chrome-extension://[a-p]{32}", origin or ""):
         return False, "invalid extension origin"
+    if ALLOWED_ORIGIN_EXACT and origin != ALLOWED_ORIGIN_EXACT:
+        # /pair is reachable before request_authorized(); a pinned install
+        # must not be re-pairable by a different extension.
+        return False, "origin not allowed"
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or ""):
         return False, "invalid pairing token"
     with pairing_lock:
@@ -380,6 +384,42 @@ def _sniff_is_video(head: bytes) -> bool:
     return False
 
 
+TIKTOK_COOKIE_HOST_SUFFIXES = (
+    "tiktok.com",
+    "tiktokv.com",
+    "tiktokv.us",
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "tiktokcdn-eu.com",
+    "byteoversea.com",
+    "byteicdn.com",
+    "ibyteimg.com",
+    "muscdn.com",
+)
+
+
+def tiktok_cookie_host(url: str) -> bool:
+    """Only first-party TikTok/ByteDance hosts may receive the user's TikTok cookies."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    return bool(host) and any(
+        host == suffix or host.endswith("." + suffix)
+        for suffix in TIKTOK_COOKIE_HOST_SUFFIXES
+    )
+
+
+class _CookieScopedRedirectHandler(HTTPRedirectHandler):
+    """Drop the Cookie header when a redirect leaves the trusted host set."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None and not tiktok_cookie_host(newurl):
+            new_req.remove_header("Cookie")
+        return new_req
+
+
 def download_url_to_file(
     media_url: str,
     dest: Path,
@@ -396,12 +436,15 @@ def download_url_to_file(
         "Accept": "video/mp4,video/*,*/*;q=0.8",
         "Origin": "https://www.tiktok.com",
     }
-    if cookie_header:
+    # play_url may come from a third-party resolver (tikwm etc.) or a page-
+    # supplied CDN URL; never hand the session cookie jar to those hosts.
+    if cookie_header and tiktok_cookie_host(media_url):
         hdrs["Cookie"] = cookie_header
     req = Request(media_url, headers=hdrs, method="GET")
+    opener = build_opener(_CookieScopedRedirectHandler())
     written = 0
     first = b""
-    with urlopen(req, timeout=120) as resp, open(dest, "wb") as f:
+    with opener.open(req, timeout=120) as resp, open(dest, "wb") as f:
         ctype = (resp.headers.get("Content-Type") or "").lower()
         if any(x in ctype for x in ("javascript", "text/html", "text/css", "image/", "json")):
             raise ValueError(f"bad content-type {ctype}")

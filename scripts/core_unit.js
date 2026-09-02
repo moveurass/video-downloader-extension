@@ -73,6 +73,44 @@ assert.equal(
   "42:https://media.example/segment.ts"
 );
 
+// Chip ↔ download contract: the label the popup derives (bandwidth fallback
+// when RESOLUTION is absent) must select that same variant.
+const bandwidthOnly = HLS.parsePlaylist(
+  [
+    "#EXTM3U",
+    "#EXT-X-STREAM-INF:BANDWIDTH=6000000",
+    "a.m3u8",
+    "#EXT-X-STREAM-INF:BANDWIDTH=2500000",
+    "b.m3u8",
+    "#EXT-X-STREAM-INF:BANDWIDTH=800000",
+    "c.m3u8"
+  ].join("\n"),
+  "https://media.example/master.m3u8"
+);
+// estimate = 55% of peak → 1080p / 720p / 360p, the labels the popup shows
+assert.equal(HLS.pickVariant(bandwidthOnly.variants, "360p").url, "https://media.example/c.m3u8");
+assert.equal(HLS.pickVariant(bandwidthOnly.variants, "720p").url, "https://media.example/b.m3u8");
+assert.equal(HLS.pickVariant(bandwidthOnly.variants, "1080p").url, "https://media.example/a.m3u8");
+assert.equal(HLS.pickVariant(bandwidthOnly.variants, "best").url, "https://media.example/a.m3u8");
+// "best" is decided by resolution; codec taste only breaks ties at equal height.
+const codecMix = HLS.parsePlaylist(
+  [
+    "#EXTM3U",
+    '#EXT-X-STREAM-INF:BANDWIDTH=12000000,RESOLUTION=3840x2160,CODECS="hev1.2.4.L153"',
+    "uhd.m3u8",
+    '#EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS="avc1.64001f"',
+    "hd.m3u8",
+    '#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,CODECS="vp09.00.31.08"',
+    "hd-vp9.m3u8",
+    "#EXT-X-STREAM-INF:BANDWIDTH=200000,RESOLUTION=256x144",
+    "tiny.m3u8"
+  ].join("\n"),
+  "https://media.example/master.m3u8"
+);
+assert.equal(HLS.pickVariant(codecMix.variants, "best").url, "https://media.example/uhd.m3u8");
+assert.equal(HLS.pickVariant(codecMix.variants, "720p").url, "https://media.example/hd.m3u8");
+assert.equal(HLS.pickVariant(codecMix.variants, "144p").url, "https://media.example/tiny.m3u8");
+
 const single = Quality.ensureQualityChoices([
   { id: "best", label: "최고" },
   { id: "720p", label: "720p", height: 720 }
@@ -159,6 +197,10 @@ assert.equal(DownloadEngine.hlsPhasePercent({ phase: "done" }), 100);
 assert.equal(DownloadEngine.parseSpeedFromMessage("받는 중 1.5MiB/s"), 1.5 * 1024 * 1024);
 assert.equal(DownloadEngine.safeDownloadName("title.mp4.mp4"), "title.mp4");
 assert.equal(DownloadEngine.safeDownloadName("clip.ts"), "clip.mp4");
+assert.equal(DownloadEngine.safeDownloadName("CON.mp4"), "CON_.mp4");
+assert.equal(DownloadEngine.safeDownloadName("nul"), "nul_.mp4");
+assert.equal(DownloadEngine.safeDownloadName("com1.webm"), "com1_.webm");
+assert.equal(DownloadEngine.safeDownloadName("Console log.mp4"), "Console log.mp4");
 assert.equal(
   Naming.buildFilename({
     title: "Readable page title",
@@ -369,4 +411,4 @@ assert.equal(
   "X_987654321"
 );
 
-console.log("core modules: 84 assertions passed");
+console.log("core modules: 98 assertions passed");

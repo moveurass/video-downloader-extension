@@ -25,6 +25,24 @@ const HLS = (() => {
     }
   }
 
+  /**
+   * `#EXT-X-BYTERANGE:<n>[@<o>]` → { offset, length }. When `@o` is omitted the
+   * sub-range starts where the previous sub-range of the same resource ended.
+   */
+  function parseByteRange(value, previousEnd = 0) {
+    const m = String(value || "").trim().match(/^(\d+)(?:@(\d+))?$/);
+    if (!m) return null;
+    const length = parseInt(m[1], 10);
+    if (!Number.isFinite(length) || length <= 0) return null;
+    const offset = m[2] !== undefined ? parseInt(m[2], 10) : previousEnd;
+    return { offset: Number.isFinite(offset) ? offset : 0, length };
+  }
+
+  function byteRangeSuffix(byteRange) {
+    if (!byteRange) return "";
+    return `@${byteRange.offset}+${byteRange.length}`;
+  }
+
   function parseAttributes(line) {
     const attrs = {};
     // KEY=VALUE or KEY="VALUE"
@@ -177,9 +195,14 @@ const HLS = (() => {
     let keyUri = null;
     let keyIv = null;
     let mapUri = null;
+    let mapByteRange = null;
     let mediaSequence = 0;
     let isFmp4 = false;
     let segDuration = 0;
+    /** Pending #EXT-X-BYTERANGE for the next segment line */
+    let pendingByteRange = null;
+    /** End offset of the previous sub-range segment (for BYTERANGE without @offset) */
+    let lastByteRangeEnd = 0;
     const isLive = !lines.some((line) => line === "#EXT-X-ENDLIST");
 
     for (let i = 0; i < lines.length; i++) {
@@ -188,10 +211,16 @@ const HLS = (() => {
 
       if (line.startsWith("#EXT-X-MEDIA-SEQUENCE:")) {
         mediaSequence = parseInt(line.split(":")[1], 10) || 0;
+      } else if (line.startsWith("#EXT-X-BYTERANGE:")) {
+        pendingByteRange = parseByteRange(
+          line.slice("#EXT-X-BYTERANGE:".length),
+          lastByteRangeEnd
+        );
       } else if (line.startsWith("#EXT-X-MAP:")) {
         const attrs = parseAttributes(line.slice("#EXT-X-MAP:".length));
         if (attrs.URI) {
           mapUri = resolveUrl(baseUrl, attrs.URI);
+          mapByteRange = attrs.BYTERANGE ? parseByteRange(attrs.BYTERANGE, 0) : null;
           isFmp4 = true;
         }
       } else if (line.startsWith("#EXT-X-KEY:")) {
@@ -214,10 +243,14 @@ const HLS = (() => {
         }
       } else if (!line.startsWith("#")) {
         const seq = mediaSequence + segments.length;
+        const byteRange = pendingByteRange;
+        pendingByteRange = null;
+        lastByteRangeEnd = byteRange ? byteRange.offset + byteRange.length : 0;
         segments.push({
           url: resolveUrl(baseUrl, line),
           duration: segDuration,
           sequence: seq,
+          byteRange,
           keyUri,
           keyIv,
           encryptionMethod
@@ -233,6 +266,7 @@ const HLS = (() => {
       encrypted,
       encryptionMethod,
       mapUri,
+      mapByteRange,
       isFmp4,
       isLive,
       mediaSequence,
@@ -420,12 +454,26 @@ const HLS = (() => {
     throw lastErr || new Error(`Playlist fetch failed: ${url.slice(0, 80)}`);
   }
 
-  async function fetchBuffer(url, requestInit = {}) {
+  /**
+   * @param {string} url
+   * @param {object} [requestInit]
+   * @param {{offset:number,length:number}|null} [byteRange] EXT-X-BYTERANGE sub-range
+   */
+  async function fetchBuffer(url, requestInit = {}, byteRange = null) {
     const attempts = buildFetchAttempts(url, requestInit);
     let lastErr;
     let saw403 = false;
     for (let i = 0; i < attempts.length; i++) {
-      const init = attempts[i];
+      let init = attempts[i];
+      if (byteRange) {
+        init = {
+          ...init,
+          headers: {
+            ...headerBag(init.headers),
+            Range: `bytes=${byteRange.offset}-${byteRange.offset + byteRange.length - 1}`
+          }
+        };
+      }
       try {
         // Small stagger reduces burst 403s on hotlink-protected CDNs
         if (i > 0 && saw403) {
@@ -442,7 +490,25 @@ const HLS = (() => {
           if (res.status === 404) break;
           continue;
         }
-        const buf = new Uint8Array(await res.arrayBuffer());
+        let buf = new Uint8Array(await res.arrayBuffer());
+        if (byteRange) {
+          if (res.status === 206) {
+            if (buf.byteLength !== byteRange.length) {
+              lastErr = new Error(
+                `세그먼트 범위 응답 크기 불일치 (${buf.byteLength}/${byteRange.length})`
+              );
+              continue;
+            }
+          } else {
+            // Server ignored Range and returned the whole resource — cut it here
+            // rather than concatenating the entire file once per segment.
+            if (buf.byteLength < byteRange.offset + byteRange.length) {
+              lastErr = new Error("서버가 세그먼트 바이트 범위를 지원하지 않습니다");
+              continue;
+            }
+            buf = buf.slice(byteRange.offset, byteRange.offset + byteRange.length);
+          }
+        }
         if (buf.byteLength < 16) {
           lastErr = new Error("세그먼트 데이터 없음");
           continue;
@@ -503,38 +569,64 @@ const HLS = (() => {
     };
   }
 
+  /** Rough height when the master omits RESOLUTION (same thresholds as the popup) */
+  function heightFromBandwidth(value) {
+    const bandwidth = Number(value) || 0;
+    if (bandwidth >= 8_000_000) return 2160;
+    if (bandwidth >= 4_000_000) return 1440;
+    if (bandwidth >= 2_000_000) return 1080;
+    if (bandwidth >= 1_000_000) return 720;
+    if (bandwidth >= 500_000) return 480;
+    if (bandwidth >= 250_000) return 360;
+    return bandwidth > 0 ? 240 : 0;
+  }
+
+  /** Height/label the popup advertises for a variant — must be what we match on. */
+  function variantHeight(v) {
+    return (
+      (v.height || 0) ||
+      heightFromBandwidth(v.estimateBandwidth || v.bandwidth || 0)
+    );
+  }
+
+  function variantLabel(v) {
+    if (v.quality && v.quality !== "unknown") return v.quality;
+    return qualityFromHeight(variantHeight(v));
+  }
+
   function pickVariant(variants, preferQuality) {
     if (!variants?.length) return null;
-    // Prefer MP4-looking variants (fMP4 / avc1) when quality equal
-    const scored = [...variants].sort((a, b) => {
-      const mp4 = (v) =>
-        /avc1|hvc1|mp4a|fmp4|m4s/i.test(v.codecs || "") ||
-        /mp4|fmp4|avc/i.test(v.url || "")
-          ? 1
-          : 0;
-      return (
+    const mp4 = (v) =>
+      /avc1|hvc1|hev1|av01|mp4a|fmp4|m4s/i.test(v.codecs || "") ||
+      /mp4|fmp4|avc/i.test(v.url || "")
+        ? 1
+        : 0;
+    // Resolution first; MP4-looking variants only break ties within the same
+    // height (codec taste must never pick 720p over 4K for "best").
+    const scored = [...variants].sort(
+      (a, b) =>
+        variantHeight(b) - variantHeight(a) ||
         mp4(b) - mp4(a) ||
-        (b.bandwidth || 0) - (a.bandwidth || 0) ||
-        (b.height || 0) - (a.height || 0)
-      );
-    });
+        (b.bandwidth || 0) - (a.bandwidth || 0)
+    );
 
     if (!preferQuality || preferQuality === "best" || preferQuality === "all") {
       return scored[0];
     }
+
+    const exact = scored.find((v) => variantLabel(v) === preferQuality);
+    if (exact) return exact;
+
     const order = ["4K", "1440p", "1080p", "720p", "480p", "360p", "240p"];
     const targetIdx = order.indexOf(preferQuality);
     if (targetIdx === -1) return scored[0];
 
-    const exact = scored.find((v) => v.quality === preferQuality);
-    if (exact) return exact;
-
     for (let i = targetIdx; i < order.length; i++) {
-      const v = scored.find((x) => x.quality === order[i]);
+      const v = scored.find((x) => variantLabel(x) === order[i]);
       if (v) return v;
     }
     for (let i = targetIdx; i >= 0; i--) {
-      const v = scored.find((x) => x.quality === order[i]);
+      const v = scored.find((x) => variantLabel(x) === order[i]);
       if (v) return v;
     }
     return scored[0];
@@ -578,7 +670,7 @@ const HLS = (() => {
 
   function segmentIdentity(segment) {
     if (!segment) return "";
-    return `${Number(segment.sequence)}:${segment.url || ""}`;
+    return `${Number(segment.sequence)}:${segment.url || ""}${byteRangeSuffix(segment.byteRange)}`;
   }
 
   function tsPid(packet) {
@@ -1068,12 +1160,14 @@ const HLS = (() => {
       onProgress({ phase: "init", current: 0, total: 1, message: "초기화 중…" });
       try {
         const cachedInit = resumeParts.get(0);
-        const initIdentity = `init:${parsed.mapUri}`;
+        const initIdentity = `init:${parsed.mapUri}${byteRangeSuffix(parsed.mapByteRange)}`;
         const reuseInit =
           streamOut &&
           cachedInit?.size > 0 &&
           (cachedInit.sourceId === initIdentity ||
-            (!parsed.isLive && cachedInit.sourceUrl === parsed.mapUri));
+            (!parsed.isLive &&
+              !parsed.mapByteRange &&
+              cachedInit.sourceUrl === parsed.mapUri));
         if (reuseInit) {
           streamedCount += 1;
           streamedBytes += cachedInit.size;
@@ -1081,7 +1175,11 @@ const HLS = (() => {
           sampleBytes += cachedInit.size;
           sampleCount += 1;
         } else {
-          const initBuf = await fetchBuffer(parsed.mapUri, requestInit);
+          const initBuf = await fetchBuffer(
+            parsed.mapUri,
+            requestInit,
+            parsed.mapByteRange
+          );
           if (streamOut) {
             await streamOut(0, initBuf, {
               sourceUrl: parsed.mapUri,
@@ -1190,6 +1288,9 @@ const HLS = (() => {
             (!parsed.isLive &&
               !audioParsed?.isLive &&
               !audioSegment &&
+              // URL-only legacy checkpoints are ambiguous for byte-range
+              // segments (every segment shares one URL).
+              !seg.byteRange &&
               cached.sourceUrl === seg.url))
         ) {
           return { byteLength: cached.size, resumed: true };
@@ -1203,7 +1304,7 @@ const HLS = (() => {
               // Space out after many 403s
               await new Promise((r) => setTimeout(r, 60 + (index % 5) * 30));
             }
-            let data = await fetchBuffer(seg.url, requestInit);
+            let data = await fetchBuffer(seg.url, requestInit, seg.byteRange);
             if (!data || data.byteLength < 32) {
               throw new Error("세그먼트 데이터 없음");
             }
@@ -1213,7 +1314,11 @@ const HLS = (() => {
               data = await decryptAes128(data, key, iv);
             }
             if (audioSegment) {
-              let audioData = await fetchBuffer(audioSegment.url, requestInit);
+              let audioData = await fetchBuffer(
+                audioSegment.url,
+                requestInit,
+                audioSegment.byteRange
+              );
               if (audioSegment.encryptionMethod === "AES-128" && audioSegment.keyUri) {
                 const audioKey = await getKey(audioSegment.keyUri);
                 const audioIv = parseIv(
@@ -1384,7 +1489,9 @@ const HLS = (() => {
     parsePlaylist,
     qualityFromHeight,
     heightFromString,
+    heightFromBandwidth,
     pickVariant,
+    parseByteRange,
     segmentIdentity,
     interleaveTs
   };
