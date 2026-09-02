@@ -353,6 +353,7 @@ def main() -> int:
         ("resume_unit.js", "resume contract"),
         ("recommendations_unit.js", "remaining recommendations"),
         ("popup_wiring_modules_unit.js", "popup wiring modules"),
+        ("injected_capture_unit.js", "injected capture opt-in"),
     ):
         r = subprocess.run(
             ["node", f"scripts/{script}"],
