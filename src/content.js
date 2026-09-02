@@ -7,6 +7,9 @@
 
   /** @type {Map<string, { hasThumb: boolean, title: string }>} */
   const REPORTED = new Map();
+  // Isolated-world only (not visible to the page): lets the background probe
+  // which frame actually saw a media URL before targeting SMART_DOWNLOAD.
+  window.__UVD_REPORTED__ = REPORTED;
   let scanTimer = null;
 
   function absUrl(src) {
