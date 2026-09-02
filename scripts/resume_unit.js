@@ -576,6 +576,185 @@ async function testNativeDirectPauseResume() {
   );
 }
 
+async function testInterruptedRunningJobsAreRestored() {
+  const durableWrites = [];
+  const history = [];
+  const notifications = [];
+  const chrome = {
+    runtime: { sendMessage: async () => {}, getURL: (p) => p },
+    storage: {
+      session: {
+        set: async () => {},
+        get: async () => ({
+          uvdActiveDownloads: [
+            {
+              id: "run-hls",
+              status: "running",
+              phase: "segments",
+              percent: 40,
+              title: "Episode 3",
+              pageUrl: "https://example.test/watch/3",
+              mediaUrl: "https://media.test/playlist.m3u8",
+              filename: "Episode 3.mp4",
+              progressVersion: 1,
+              progressAttempt: 1,
+              progressSeq: 20,
+              resumeState: {
+                kind: "hls",
+                url: "https://media.test/playlist.m3u8",
+                quality: "best",
+                partBase: "hls_run-hls",
+                parts: { 1: { size: 120_000, sourceUrl: "https://media.test/seg1.ts" } }
+              }
+            },
+            {
+              id: "run-direct-done",
+              status: "running",
+              title: "Finished while worker was dead",
+              pageUrl: "https://example.test/video.mp4",
+              filename: "Finished.mp4",
+              resumeState: { kind: "direct", downloadId: 501, url: "https://cdn.test/v.mp4" }
+            },
+            {
+              id: "run-helper",
+              status: "running",
+              title: "Helper job",
+              pageUrl: "",
+              filename: "Helper.mp4",
+              helperJobId: "h-1"
+            },
+            { id: "already-done", status: "done", title: "Done" }
+          ]
+        })
+      },
+      local: {
+        set: async (value) => durableWrites.push(value),
+        get: async () => ({})
+      }
+    },
+    tabs: { sendMessage: async () => {} },
+    downloads: {
+      search: async ({ id }) =>
+        id === 501
+          ? [{ id, state: "complete", filename: "/Downloads/Finished.mp4", fileSize: 3_000_000 }]
+          : [],
+      show() {},
+      showDefaultFolder() {}
+    },
+    notifications: {
+      onClicked: { addListener() {} },
+      create: async (_id, options) => notifications.push(options.title),
+      clear: async () => {}
+    },
+    action: { setBadgeText() {}, setBadgeBackgroundColor() {}, setTitle() {} }
+  };
+  const manager = createManager({
+    chrome,
+    UVD: {
+      classifyError: () => ({ code: "other" }),
+      formatSpeed: () => "",
+      isGenericSaveName: () => false,
+      getSettings: async () => ({ showBadge: false }),
+      appendHistory: async (entry) => history.push(entry),
+      siteFromUrl: () => "example"
+    },
+    UVDProgress,
+    Naming: { cleanPageTitle: (value) => value },
+    YtDlp: { cancelJob: async () => {} },
+    parseSpeedFromMessage: () => 0,
+    getTabMeta: () => ({}),
+    saveCompanionThumbnail: async () => {},
+    downloadPageFromUi: async () => {},
+    startKeepAlive: () => true,
+    stopKeepAlive: () => {},
+    setTimeout: () => 1
+  });
+  await manager.ready;
+
+  const hls = manager.activeDownloads.get("run-hls");
+  assert.equal(hls.status, "paused", "interrupted HLS job becomes resumable");
+  assert.equal(hls.message, "중단됨 · 이어받기 가능");
+  assert.equal(hls.resumeState.partBase, "hls_run-hls", "IDB checkpoint is kept");
+  assert.equal(hls.percent, 40, "progress is preserved for the resume attempt");
+
+  const done = manager.activeDownloads.get("run-direct-done");
+  assert.equal(done.status, "done");
+  assert.equal(done.result.path, "/Downloads/Finished.mp4");
+
+  const helper = manager.activeDownloads.get("run-helper");
+  assert.equal(helper.status, "error", "job with nothing to resume is a visible failure");
+  assert.match(helper.error, /재시작/);
+  assert.equal(manager.activeDownloads.has("already-done"), false);
+
+  assert.deepEqual(
+    history.map((entry) => [entry.id, entry.status]).sort(),
+    [["h_run-direct-done", "done"], ["h_run-helper", "error"]]
+  );
+  const last = durableWrites.at(-1);
+  assert.deepEqual(
+    last.uvdPausedDownloads.map((job) => job.id),
+    ["run-hls"],
+    "restored resumable job is now durable as paused"
+  );
+  assert.deepEqual(last.uvdRunningDownloads, []);
+
+  // Running jobs are mirrored to durable storage (debounced) so a later crash
+  // can restore them; a fake timer proves the write goes through schedule().
+  const timers = [];
+  const manager2 = createManager({
+    chrome: {
+      ...chrome,
+      storage: {
+        session: { set: async () => {}, get: async () => ({}) },
+        local: { set: async (value) => durableWrites.push(value), get: async () => ({}) }
+      }
+    },
+    UVD: {
+      classifyError: () => ({}),
+      formatSpeed: () => "",
+      isGenericSaveName: () => false,
+      getSettings: async () => ({ showBadge: false }),
+      appendHistory: async () => {},
+      siteFromUrl: () => "example"
+    },
+    UVDProgress,
+    Naming: { cleanPageTitle: (value) => value },
+    YtDlp: { cancelJob: async () => {} },
+    parseSpeedFromMessage: () => 0,
+    getTabMeta: () => ({}),
+    saveCompanionThumbnail: async () => {},
+    downloadPageFromUi: async () => {},
+    startKeepAlive: () => true,
+    stopKeepAlive: () => {},
+    setTimeout: (fn, ms) => {
+      timers.push({ fn, ms });
+      return timers.length;
+    }
+  });
+  await manager2.ready;
+  const jobId = manager2.createDownloadJob({
+    tabId: 1,
+    title: "Live",
+    pageUrl: "https://example.test/live",
+    mediaUrl: "https://media.test/live.m3u8"
+  });
+  manager2.activeDownloads.get(jobId).resumeState = {
+    kind: "hls",
+    url: "https://media.test/live.m3u8",
+    partBase: `hls_${jobId}`,
+    parts: {}
+  };
+  manager2.updateDownloadJob(jobId, { percent: 12, message: "받는 중…" });
+  const debounced = timers.filter((t) => t.ms === 1500);
+  assert.equal(debounced.length, 1, "one trailing debounce per burst of progress");
+  const before = durableWrites.length;
+  debounced[0].fn();
+  await new Promise((resolve) => setImmediate(resolve));
+  const snapshot = durableWrites.slice(before).at(-1);
+  assert.equal(snapshot.uvdRunningDownloads.length, 1);
+  assert.equal(snapshot.uvdRunningDownloads[0].resumeState.partBase, `hls_${jobId}`);
+}
+
 async function testDirectTransportRegistersCheckpoint() {
   const job = { id: "job-direct", tabId: 7 };
   const jobs = new Map([[job.id, job]]);
@@ -824,6 +1003,7 @@ async function main() {
   await testBrowserHlsAlternateAudio();
   await testFinalSavePublishesNativeCheckpoint();
   await testHlsRuntimePreservesPauseCheckpoint();
+  await testInterruptedRunningJobsAreRestored();
   await testDirectTransportRegistersCheckpoint();
   await testByteRangeSegmentsFetchSubRanges();
   await testStartChromeDownloadKeepsDottedTitles();

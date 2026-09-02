@@ -34,7 +34,10 @@
     let currentJobContext = null;
     let notificationListenerBound = false;
     let durableWrite = Promise.resolve();
+    let durableRunningTimer = null;
     const DURABLE_PAUSED_KEY = "uvdPausedDownloads";
+    const DURABLE_RUNNING_KEY = "uvdRunningDownloads";
+    const DURABLE_RUNNING_DEBOUNCE_MS = 1500;
 
     function publicJob(job) {
       if (!job) return null;
@@ -96,11 +99,101 @@
       };
     }
 
+    const INTERRUPTED_RESUMABLE_MESSAGE = "중단됨 · 이어받기 가능";
+    const INTERRUPTED_ERROR_MESSAGE =
+      "브라우저가 재시작되어 다운로드가 중단되었습니다";
+
+    async function lookupChromeDownload(downloadId) {
+      if (downloadId == null || !chrome.downloads?.search) return null;
+      const [download] = await chrome.downloads
+        .search({ id: downloadId })
+        .catch(() => []);
+      return download || null;
+    }
+
+    /**
+     * A job that was still running when the previous service worker died.
+     * Prefer the Chrome download it may have left behind, then a resumable
+     * paused row (HLS parts are still in IndexedDB), and only then a failed
+     * row so the loss is at least visible in the queue and history.
+     */
+    async function restoreInterruptedJob(item) {
+      const base = {
+        ...item,
+        cancelRequested: false,
+        helperJobId: null,
+        _restoredFromStorage: true,
+        _interrupted: true
+      };
+      if (
+        item.resumeState?.kind === "direct" &&
+        item.resumeState.downloadId != null
+      ) {
+        const download = await lookupChromeDownload(item.resumeState.downloadId);
+        if (download?.state === "complete") {
+          activeDownloads.set(item.id, {
+            ...base,
+            status: "running",
+            pauseRequested: false
+          });
+          finishDownloadJob(
+            item.id,
+            {
+              ok: true,
+              downloadId: download.id,
+              filename:
+                String(download.filename || "").split(/[/\\]/).pop() ||
+                item.filename,
+              path: download.filename || "",
+              size: download.fileSize || download.bytesReceived || 0,
+              method: "chrome-downloads"
+            },
+            null
+          );
+          return;
+        }
+        if (
+          download &&
+          (download.state === "in_progress" || download.canResume)
+        ) {
+          activeDownloads.set(item.id, {
+            ...base,
+            status: "paused",
+            phase: "paused",
+            message: INTERRUPTED_RESUMABLE_MESSAGE,
+            pauseRequested: true,
+            resumeState: item.resumeState
+          });
+          return;
+        }
+      }
+      if (/^https?:/i.test(String(item.pageUrl || ""))) {
+        const resumeState =
+          item.resumeState?.kind === "hls" ? item.resumeState : null;
+        activeDownloads.set(item.id, {
+          ...base,
+          status: "paused",
+          phase: "paused",
+          message: INTERRUPTED_RESUMABLE_MESSAGE,
+          pauseRequested: true,
+          resumeState
+        });
+        return;
+      }
+      activeDownloads.set(item.id, {
+        ...base,
+        status: "running",
+        pauseRequested: false,
+        resumeState: null
+      });
+      finishDownloadJob(item.id, null, new Error(INTERRUPTED_ERROR_MESSAGE));
+    }
+
     async function restorePausedJobs() {
       try {
         const [localData, sessionData] = await Promise.all([
           chrome.storage?.local?.get
-            ? chrome.storage.local.get(DURABLE_PAUSED_KEY)
+            ? chrome.storage.local.get([DURABLE_PAUSED_KEY, DURABLE_RUNNING_KEY])
             : Promise.resolve({}),
           chrome.storage?.session?.get
             ? chrome.storage.session.get("uvdActiveDownloads")
@@ -109,28 +202,40 @@
         const durable = Array.isArray(localData?.[DURABLE_PAUSED_KEY])
           ? localData[DURABLE_PAUSED_KEY]
           : [];
+        const durableRunning = Array.isArray(localData?.[DURABLE_RUNNING_KEY])
+          ? localData[DURABLE_RUNNING_KEY]
+          : [];
         const session = Array.isArray(sessionData?.uvdActiveDownloads)
           ? sessionData.uvdActiveDownloads
           : [];
         const savedById = new Map();
+        const runningById = new Map();
         for (const item of session) {
-          if (item?.id && item.status === "paused") savedById.set(item.id, item);
+          if (!item?.id) continue;
+          if (item.status === "paused") savedById.set(item.id, item);
+          else if (item.status === "running") runningById.set(item.id, item);
         }
         // Durable rows win because they survive a full browser restart and are
         // written only after a pause has completed.
         for (const item of durable) {
           if (item?.id && item.status === "paused") savedById.set(item.id, item);
         }
+        for (const item of durableRunning) {
+          if (item?.id && item.status === "running" && !savedById.has(item.id)) {
+            runningById.set(item.id, item);
+          }
+        }
         for (const item of savedById.values()) {
           if (!item?.id || item.status !== "paused") continue;
+          runningById.delete(item.id);
           if (
             item.resumeState?.kind === "direct" &&
             item.resumeState.downloadId != null &&
             chrome.downloads?.search
           ) {
-            const [download] = await chrome.downloads
-              .search({ id: item.resumeState.downloadId })
-              .catch(() => []);
+            const download = await lookupChromeDownload(
+              item.resumeState.downloadId
+            );
             if (
               !download ||
               (download.state !== "in_progress" && !download.canResume)
@@ -148,7 +253,11 @@
             _restoredFromStorage: true
           });
         }
+        for (const item of runningById.values()) {
+          await restoreInterruptedJob(item);
+        }
         await syncDurablePausedJobs();
+        if (runningById.size) updateDownloadBadge();
       } catch {
         // Session recovery is best-effort.
       }
@@ -156,17 +265,41 @@
 
     const ready = restorePausedJobs();
 
+    function durableSnapshot() {
+      const paused = [];
+      const running = [];
+      for (const job of activeDownloads.values()) {
+        if (job.status === "paused") paused.push(publicJob(job));
+        else if (job.status === "running") running.push(publicJob(job));
+      }
+      return { [DURABLE_PAUSED_KEY]: paused, [DURABLE_RUNNING_KEY]: running };
+    }
+
     function syncDurablePausedJobs() {
       if (!chrome.storage?.local?.set) return Promise.resolve();
+      if (durableRunningTimer) {
+        clearTimeout(durableRunningTimer);
+        durableRunningTimer = null;
+      }
       durableWrite = durableWrite
         .catch(() => {})
-        .then(() => {
-          const paused = [...activeDownloads.values()]
-            .filter((job) => job.status === "paused")
-            .map(publicJob);
-          return chrome.storage.local.set({ [DURABLE_PAUSED_KEY]: paused });
-        });
+        .then(() => chrome.storage.local.set(durableSnapshot()));
       return durableWrite;
+    }
+
+    /**
+     * Running jobs change on every progress tick; mirror them to durable
+     * storage on a short trailing debounce so a crash loses at most ~1.5 s
+     * of checkpoint metadata (the IDB parts themselves are already on disk).
+     */
+    function scheduleDurableRunningSync() {
+      if (!chrome.storage?.local?.set || durableRunningTimer) return;
+      durableRunningTimer = schedule(() => {
+        durableRunningTimer = null;
+        durableWrite = durableWrite
+          .catch(() => {})
+          .then(() => chrome.storage.local.set(durableSnapshot()));
+      }, DURABLE_RUNNING_DEBOUNCE_MS);
     }
 
     function throwIfJobStopped(jobId) {
@@ -508,6 +641,7 @@
         } else {
           chrome.storage?.local?.set?.({ uvdActiveDownloads: list });
         }
+        scheduleDurableRunningSync();
       } catch {
         // Storage is best-effort.
       }
