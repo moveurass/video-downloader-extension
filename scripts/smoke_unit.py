@@ -405,6 +405,33 @@ def main() -> int:
             )
         ),
     )
+    check(
+        "popup stylesheet is a single token-driven system",
+        # Exactly two token blocks: the light base and the dark override.
+        popup_css.count(":root {") == 2
+        and popup_css.count("prefers-color-scheme: dark") == 1
+        and all(
+            token in popup_css
+            for token in ("--accent:", "--ink:", "--surface:", "--pad-x:")
+        )
+        # Density is a token swap, so each mode declares its own scale.
+        and all(
+            f"body.{mode} {{" in popup_css
+            for mode in ("full-ui", "compact-ui", "ultra-ui")
+        ),
+    )
+    check(
+        "popup nav docks below the panels",
+        # Nav and footer are ordered after the scrolling panels by flex order.
+        all(
+            fragment in popup_css
+            for fragment in (
+                ".tabs {\n  order: 5;",
+                ".footer {\n  order: 4;",
+                ".tab-panel {\n  order: 3;",
+            )
+        ),
+    )
     popup_init_pos = popup_html.find('<script src="popup-init.js"></script>')
     popup_entry_pos = popup_html.find('<script src="popup.js"></script>')
     check(

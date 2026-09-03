@@ -1376,6 +1376,11 @@ input[type="radio"] {
   color: var(--warn);
 }
 
+.dl-job-status.cancelled {
+  background: var(--surface-2);
+  color: var(--ink-3);
+}
+
 .dl-job-meta {
   min-width: 0;
   display: grid;
@@ -1390,16 +1395,13 @@ input[type="radio"] {
   white-space: nowrap;
 }
 
-.dl-job-meta-line,
-.dl-job-tags {
+.dl-job-meta-line {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
 }
 
-.dl-job-chip,
-.dl-job-tag,
-.dl-job-speed {
+.dl-job-chip {
   padding: 0 5px;
   border-radius: var(--r-xs);
   background: var(--surface-2);
@@ -1418,8 +1420,7 @@ input[type="radio"] {
   white-space: nowrap;
 }
 
-.dl-job-file,
-.file-hint {
+.dl-job-file {
   font-size: 9px;
   color: var(--ink-3);
   overflow: hidden;
@@ -1756,6 +1757,9 @@ input[type="radio"] {
 
 .series-preview-item input[type="checkbox"] {
   flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 0;
 }
 
 .series-preview-thumb,
@@ -1924,8 +1928,7 @@ input[type="radio"] {
 
 .pl-count,
 .pl-hint,
-.pl-progress-text,
-.pl-max-label {
+.pl-progress-text {
   font-size: 9.5px;
   color: var(--ink-3);
 }
@@ -1952,40 +1955,6 @@ input[type="radio"] {
 .pl-hint {
   margin-top: 5px;
   line-height: 1.45;
-}
-
-.pl-list {
-  list-style: none;
-  max-height: 150px;
-  overflow-y: auto;
-  margin-top: 7px;
-}
-
-.pl-item {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 0;
-  border-top: 1px solid var(--line-soft);
-  font-size: var(--fs-micro);
-}
-
-.pl-item-num {
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
-}
-
-.pl-item-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pl-item-dur {
-  color: var(--ink-3);
-  font-variant-numeric: tabular-nums;
 }
 
 /* ── 14  Watchlist + library ───────────────────────────────────────────── */
@@ -2159,16 +2128,14 @@ input[type="radio"] {
   font-weight: 600;
 }
 
-.lib-tags,
-.tags {
+.lib-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
   margin-top: 3px;
 }
 
-.lib-tag,
-.tag {
+.lib-tag {
   padding: 0 5px;
   border-radius: var(--r-xs);
   background: var(--surface-2);
@@ -2724,11 +2691,15 @@ kbd {
 
 /* Nav moved to a dock so the top of the popup belongs to 받기, and the
    secondary destinations read as quiet chrome. */
+/* Footer caption and tab row are one frosted band, so scrolling content
+   fades under a single edge instead of being clipped by two backgrounds. */
 .footer {
   order: 4;
   flex: 0 0 auto;
-  padding: 5px var(--pad-x) 4px;
-  background: var(--canvas);
+  padding: 5px var(--pad-x) 1px;
+  background: var(--glass);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 -1px 0 var(--line-soft);
 }
 
 .note {
@@ -2745,10 +2716,9 @@ kbd {
   flex: 0 0 auto;
   display: flex;
   gap: 2px;
-  padding: 4px 6px 6px;
+  padding: 1px 6px 6px;
   background: var(--glass);
-  backdrop-filter: blur(12px);
-  box-shadow: 0 -1px 0 var(--line-soft);
+  backdrop-filter: blur(14px);
 }
 
 .tab {
@@ -2831,6 +2801,12 @@ body.full-ui .list {
 body.full-ui .card {
   gap: 12px;
   padding: 13px;
+}
+
+/* Full density is the only mode that shows the meta table. Its last two rows
+   (길이, 용량) are already the spec strip, so keep only what it adds. */
+body.full-ui .meta-row:nth-child(n + 4) {
+  display: none;
 }
 
 body.full-ui .empty {
