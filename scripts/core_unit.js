@@ -298,7 +298,7 @@ assert.ok(
     formatTimeAgo: () => "방금",
     escapeHtml: String,
     escapeAttr: String
-  }).includes("검색 결과가 없습니다")
+  }).includes("검색 결과가 없어요")
 );
 assert.equal(
   WatchlistUI.groupKey({ seriesId: "series:code:EP" }, UVD),
