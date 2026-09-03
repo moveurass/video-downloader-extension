@@ -10,12 +10,18 @@ const tabs = [
     getAttribute() {
       return this.value;
     },
+    setAttribute(name, value) {
+      this[name] = value;
+    },
     classList: { toggle(name, enabled) { this[name] = enabled; } }
   },
   {
     value: "history",
     getAttribute() {
       return this.value;
+    },
+    setAttribute(name, value) {
+      this[name] = value;
     },
     classList: { toggle(name, enabled) { this[name] = enabled; } }
   }
@@ -40,6 +46,10 @@ const navigation = Navigation.createController({
 navigation.switchTab("history");
 assert.deepEqual(calls, ["active:history", "history"]);
 assert.equal(tabs[1].classList.active, true);
+assert.equal(tabs[0]["aria-selected"], "false");
+assert.equal(tabs[0].tabIndex, -1);
+assert.equal(tabs[1]["aria-selected"], "true");
+assert.equal(tabs[1].tabIndex, 0);
 assert.equal(panels[0].classList.hidden, true);
 assert.equal(panels[1].classList.hidden, false);
 

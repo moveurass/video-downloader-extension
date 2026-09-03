@@ -70,24 +70,24 @@
         if (!items.length) {
           // No card — show global quality chips for link paste
           syncGlobalQualityBox(false);
-          let title = "받을 영상이 없습니다.";
-          let hint = "페이지를 열거나 위에 게시물 링크를 붙여 넣으세요.";
+          let title = "받을 영상을 찾지 못했어요";
+          let hint = "영상 페이지를 열거나 링크를 직접 붙여 넣으세요";
           if (isInstagramHost(currentTabUrl) && !isInstagramPostUrl(currentTabUrl)) {
-            title = "게시물·릴스 페이지를 열어 주세요.";
+            title = "게시물이나 릴스 페이지를 열어 주세요";
             hint =
-              "instagram.com 홈/프로필이 아니라, 받을 게시물(/p/) 또는 릴스(/reel/)를 연 뒤 다시 열어 주세요.";
+              "홈이나 프로필이 아닌 받을 게시물 또는 릴스에서 다시 열어 주세요";
           } else if (
             isYoutubeUrl(currentTabUrl) &&
             !isDownloadableSiteVideo(currentTabUrl)
           ) {
-            title = "영상 페이지를 열어 주세요.";
-            hint = "YouTube watch/shorts 페이지에서 다시 열어 주세요.";
+            title = "YouTube 영상 페이지를 열어 주세요";
+            hint = "일반 영상 또는 Shorts 페이지에서 다시 열어 주세요";
           } else if (
             isTiktokUrl(currentTabUrl) &&
             !isDownloadableSiteVideo(currentTabUrl)
           ) {
-            title = "영상 페이지를 열어 주세요.";
-            hint = "TikTok @유저/video/숫자 페이지에서 다시 열어 주세요.";
+            title = "TikTok 영상 페이지를 열어 주세요";
+            hint = "개별 영상 주소에서 다시 열어 주세요";
           } else if (
             /(?:^|\.)x\.com|(?:^|\.)twitter\.com/i.test(
               (() => {
@@ -100,29 +100,29 @@
             ) &&
             !isXUrl(currentTabUrl)
           ) {
-            title = "트윗 영상 페이지를 열어 주세요.";
-            hint = "x.com/…/status/숫자 주소에서 다시 열어 주세요.";
+            title = "X 영상 게시물을 열어 주세요";
+            hint = "개별 게시물 주소에서 다시 열어 주세요";
           } else if (
             /facebook\.com|fb\.watch|fb\.com/i.test(currentTabUrl || "") &&
             !isFacebookUrl(currentTabUrl)
           ) {
-            title = "Facebook 영상 페이지를 열어 주세요.";
-            hint = "Watch / Reel / 동영상 게시물 주소에서 다시 열어 주세요.";
+            title = "Facebook 영상 페이지를 열어 주세요";
+            hint = "Watch, Reel 또는 개별 동영상 게시물에서 다시 열어 주세요";
           } else if (
             /bilibili\.com|b23\.tv/i.test(currentTabUrl || "") &&
             !isBilibiliUrl(currentTabUrl)
           ) {
-            title = "Bilibili 영상 페이지를 열어 주세요.";
-            hint = "bilibili.com/video/BV… 주소에서 다시 열어 주세요.";
+            title = "Bilibili 영상 페이지를 열어 주세요";
+            hint = "개별 영상 주소에서 다시 열어 주세요";
           } else if (isDownloadableSiteVideo(currentTabUrl)) {
-            title = "목록을 불러오지 못했습니다.";
+            title = "영상 정보를 불러오지 못했어요";
             hint =
-              "확장 프로그램을 새로고침한 뒤 다시 열어 주세요. 또는 링크를 붙여 넣어 보세요.";
+              "확장 프로그램을 새로고침하거나 링크로 다시 시도해 보세요";
           }
           listEl.innerHTML = `
       <div class="empty" id="empty">
-        <div class="empty-icon">🎬</div>
-        <p>${escapeHtml(title)}</p>
+        <div class="empty-icon" aria-hidden="true">▶</div>
+        <p class="empty-title">${escapeHtml(title)}</p>
         <p class="hint">${escapeHtml(hint)}</p>
       </div>`;
           return;
@@ -136,7 +136,7 @@
         const file = downloadFilename(item);
         item._saveAs = file;
         const site = siteLabel(currentTabUrl, item);
-        const btnLabel = site ? `${site} 다운로드` : "다운로드";
+        const btnLabel = site ? `${site} 영상 받기` : "영상 받기";
 
         // Order: info → quality chips (always visible) → download CTA
         card.innerHTML = `
@@ -152,11 +152,11 @@
     ${trackPickerHtml()}
     <div class="card-actions card-actions-row">
       <button type="button" class="btn primary btn-dl">${escapeHtml(btnLabel)}</button>
-      <button type="button" class="btn btn-watch" title="나중에 받기">나중</button>
+      <button type="button" class="btn btn-watch" title="나중에 받기">나중에</button>
       <button type="button" class="btn btn-series" title="시리즈 완주">시리즈</button>
     </div>
     <details class="card-details">
-      <summary class="card-details-sum">저장 이름 · 상세</summary>
+      <summary class="card-details-sum">저장 이름과 상세 정보</summary>
       <div class="filename-box" title="${escapeAttr(file)}">
         <span class="filename-label">저장 이름</span>
         <span class="filename-value">${escapeHtml(file)}</span>
