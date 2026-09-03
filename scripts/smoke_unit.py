@@ -365,9 +365,9 @@ def main() -> int:
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     check(
         "popup release version is consistent",
-        manifest.get("version") == "1.24.0"
-        and "v1.24.0" in popup_html
-        and "v1.24.0" in popup_settings_source,
+        manifest.get("version") == "1.25.0"
+        and "v1.25.0" in popup_html
+        and "v1.25.0" in popup_settings_source,
     )
     check(
         "popup primary hierarchy and settings groups",

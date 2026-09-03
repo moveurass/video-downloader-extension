@@ -106,7 +106,7 @@
         const uvdSettings = getUvdSettings();
         const folder = uvdSettings.subfolder || "VideoDownloader";
         const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-        el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.24.0`;
+        el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.25.0`;
       }
 
       function fillSettingsForm() {
