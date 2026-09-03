@@ -11,6 +11,7 @@
       toastedJobIds, cleanTitleText, isUglyName, siteLabel, escapeHtml,
       escapeAttr, toast, userError
     } = deps;
+    const playCompletionSound = deps.playCompletionSound || (() => {});
     const setTimeoutFn = deps.setTimeout || setTimeout;
     const setIntervalFn = deps.setInterval || setInterval;
     const clearIntervalFn = deps.clearInterval || clearInterval;
@@ -251,6 +252,7 @@
           const name =
             info.title.length > 24 ? info.title.slice(0, 22) + "…" : info.title;
           toast(`저장 완료 · ${name}`, "ok");
+          playCompletionSound();
         } else if (status === "error" && !toastedJobIds.has(id)) {
           toastedJobIds.add(id);
           const name = shortJobTitle(next);

@@ -77,6 +77,7 @@ for (const name of [
   "UVDPopupHelperState",
   "UVDPopupQualityState",
   "UVDPopupProgressUI",
+  "UVDPopupSound",
   "UVDPopupRecoveryUI",
   "UVDPopupClipboardHistory",
   "UVDPopupSettingsUI",

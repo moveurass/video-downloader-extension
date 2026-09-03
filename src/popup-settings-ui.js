@@ -61,7 +61,18 @@
         applyUiLayout();
       }
 
+      function applyTheme() {
+        const theme = getUvdSettings().theme || "system";
+        const value = ["light", "dark", "system"].includes(theme)
+          ? theme
+          : "system";
+        for (const el of [document.documentElement, document.body]) {
+          el?.setAttribute?.("data-theme", value);
+        }
+      }
+
       function applyUiLayout() {
+        applyTheme();
         const uvdSettings = getUvdSettings();
         const width = uvdSettings.popupWidth || "normal";
         document.body.classList.remove(
@@ -106,7 +117,7 @@
         const uvdSettings = getUvdSettings();
         const folder = uvdSettings.subfolder || "VideoDownloader";
         const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-        el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.25.0`;
+        el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.26.0`;
       }
 
       function fillSettingsForm() {
@@ -151,6 +162,15 @@
         }
         const width = $("#setPopupWidth");
         if (width) width.value = uvdSettings.popupWidth || "normal";
+        const theme = $("#setTheme");
+        if (theme) {
+          const current = uvdSettings.theme || "system";
+          theme.value = ["system", "light", "dark"].includes(current)
+            ? current
+            : "system";
+        }
+        const completeSound = $("#setCompleteSound");
+        if (completeSound) completeSound.checked = !!uvdSettings.completionSound;
         const badge = $("#setShowBadge");
         if (badge) badge.checked = uvdSettings.showBadge !== false;
         const seriesComplete = $("#setSeriesComplete");
@@ -239,12 +259,14 @@
           maxHistory:
             parseInt($("#setMaxHistory")?.value || "50", 10) || 50,
           notifyOnComplete: $("#setNotify")?.checked !== false,
+          completionSound: !!$("#setCompleteSound")?.checked,
           clipboardWatch: !!$("#setClipboard")?.checked,
           warnDuplicates: $("#setWarnDup")?.checked !== false,
           saveThumbnail: $("#setSaveThumb")?.checked !== false,
           uiDensity,
           compactUi: uiDensity !== "full",
           popupWidth: $("#setPopupWidth")?.value || "normal",
+          theme: $("#setTheme")?.value || "system",
           showBadge: $("#setShowBadge")?.checked !== false,
           seriesComplete: $("#setSeriesComplete")?.checked !== false,
           seriesCompleteCount:
@@ -329,6 +351,7 @@
       return {
         loadSettings,
         applyCompactUi,
+        applyTheme,
         applyUiLayout,
         applyModeChips,
         updateFooterNote,

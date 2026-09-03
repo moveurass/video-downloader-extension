@@ -26,6 +26,17 @@ function classList() {
   };
 }
 
+function themed(extra = {}) {
+  const attrs = {};
+  return {
+    attrs,
+    setAttribute(name, value) {
+      attrs[name] = value;
+    },
+    ...extra
+  };
+}
+
 function select(values, value = "") {
   return {
     value,
@@ -48,6 +59,8 @@ function makeHarness(overrides = {}) {
       uiDensity: "ultra",
       compactUi: true,
       popupWidth: "wide",
+      theme: "dark",
+      completionSound: true,
       showBadge: false,
       seriesComplete: false,
       seriesCompleteCount: 10,
@@ -75,11 +88,13 @@ function makeHarness(overrides = {}) {
     "#setMediaMode": select(["video", "audio", "video_subs"]),
     "#setMaxHistory": select(["10", "25", "50", "100"]),
     "#setNotify": {},
+    "#setCompleteSound": {},
     "#setClipboard": {},
     "#setWarnDup": {},
     "#setSaveThumb": {},
     "#setUiDensity": select(["full", "compact", "ultra"]),
     "#setPopupWidth": select(["narrow", "normal", "wide"]),
+    "#setTheme": select(["system", "light", "dark"]),
     "#setShowBadge": {},
     "#setSeriesComplete": {},
     "#setSeriesCount": select(["3", "5", "10"]),
@@ -103,7 +118,8 @@ function makeHarness(overrides = {}) {
     }
   }));
   const document = {
-    body: { classList: classList() },
+    documentElement: themed(),
+    body: themed({ classList: classList() }),
     querySelectorAll(selector) {
       return selector === ".mode-chip" ? chips : [];
     }
@@ -177,6 +193,7 @@ async function main() {
     check(Object.keys(harness.controller), [
       "loadSettings",
       "applyCompactUi",
+      "applyTheme",
       "applyUiLayout",
       "applyModeChips",
       "updateFooterNote",
@@ -196,9 +213,26 @@ async function main() {
       [false, true, false]
     );
     check(
-      harness.elements["#footerNote"].textContent,
-      "저장: 다운로드/Saved · mode:audio · v1.25.0"
+      [
+        harness.document.documentElement.attrs["data-theme"],
+        harness.document.body.attrs["data-theme"]
+      ],
+      ["dark", "dark"]
     );
+    check(
+      harness.elements["#footerNote"].textContent,
+      "저장: 다운로드/Saved · mode:audio · v1.26.0"
+    );
+  }
+
+  {
+    const harness = makeHarness();
+    harness.state.settings = { ...harness.state.settings, theme: "hotpink" };
+    harness.controller.applyTheme();
+    check(harness.document.documentElement.attrs["data-theme"], "system");
+    harness.state.settings = { ...harness.state.settings, theme: "light" };
+    harness.controller.applyUiLayout();
+    check(harness.document.documentElement.attrs["data-theme"], "light");
   }
 
   {
@@ -218,6 +252,8 @@ async function main() {
       ],
       ["720p", "1080p", "720p", "480p", "1080p", "720p", "4K"]
     );
+    check(harness.elements["#setTheme"].value, "dark");
+    check(harness.elements["#setCompleteSound"].checked, true);
     check(harness.state.helperOutDir, "/new");
     check(
       harness.elements["#setPreview"].textContent,
@@ -247,11 +283,13 @@ async function main() {
     harness.elements["#setMediaMode"].value = "video_subs";
     harness.elements["#setMaxHistory"].value = "25";
     harness.elements["#setNotify"].checked = true;
+    harness.elements["#setCompleteSound"].checked = true;
     harness.elements["#setClipboard"].checked = false;
     harness.elements["#setWarnDup"].checked = true;
     harness.elements["#setSaveThumb"].checked = true;
     harness.elements["#setUiDensity"].value = "full";
     harness.elements["#setPopupWidth"].value = "narrow";
+    harness.elements["#setTheme"].value = "light";
     harness.elements["#setShowBadge"].checked = true;
     harness.elements["#setSeriesComplete"].checked = true;
     harness.elements["#setSeriesCount"].value = "3";
@@ -278,12 +316,14 @@ async function main() {
       mediaMode: "video_subs",
       maxHistory: 25,
       notifyOnComplete: true,
+      completionSound: true,
       clipboardWatch: false,
       warnDuplicates: true,
       saveThumbnail: true,
       uiDensity: "full",
       compactUi: false,
       popupWidth: "narrow",
+      theme: "light",
       showBadge: true,
       seriesComplete: true,
       seriesCompleteCount: 3,
@@ -346,12 +386,14 @@ async function main() {
       mediaMode: "video",
       maxHistory: 50,
       notifyOnComplete: true,
+      completionSound: false,
       clipboardWatch: false,
       warnDuplicates: true,
       saveThumbnail: true,
       uiDensity: "compact",
       compactUi: true,
       popupWidth: "normal",
+      theme: "system",
       showBadge: true,
       seriesComplete: true,
       seriesCompleteCount: 5,
