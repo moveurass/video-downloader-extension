@@ -469,7 +469,10 @@ def main() -> int:
                 "clean:N.extractProductCode('https://123av.com/ko/v/snos-309'),"
                 "fallback:P.downloadFilename("
                 "{filename:'동영상_720p.mp4',pageUrl:url,quality:'720p'},"
-                "{Naming:N,UVD:U,selectedQuality:'720p'})"
+                "{Naming:N,UVD:U,selectedQuality:'720p'}),"
+                "human:N.buildFilename({"
+                "title:'실제 제목',existing:'동영상_720p.mp4',"
+                "pageUrl:url,quality:'720p'})"
                 "}));"
             ),
         ],
@@ -495,6 +498,11 @@ def main() -> int:
     check(
         "generic quality title falls back to readable filename",
         naming_result.get("fallback") == "CAWB-035_720p.mp4",
+        str(naming_result)[:120],
+    )
+    check(
+        "short human title stays ahead of URL fallback",
+        naming_result.get("human") == "실제 제목_720p.mp4",
         str(naming_result)[:120],
     )
     check(

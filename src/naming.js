@@ -412,24 +412,28 @@ const Naming = (() => {
           extFromUrl(url, "mp4")
         );
 
-    // Bind title to the page/url being saved so we never use another video's name
+    // A usable page/video title is authoritative. Existing filenames are a
+    // secondary hint, and a URL code is considered only after both are empty.
     const pageRef = pageUrl || url || "";
-    const boundTitle = pageRef
-      ? bindTitleToPage(pageRef, title || pageTitle || existing)
+    const humanTitle = pickBestTitle(title, pageTitle);
+    let base = humanTitle
+      ? pageRef
+        ? bindTitleToPage(pageRef, humanTitle)
+        : humanTitle
       : "";
-    const boundPage = pageRef
-      ? bindTitleToPage(pageRef, pageTitle || title || "")
-      : "";
-    const boundExisting = pageRef
-      ? bindTitleToPage(
-          pageRef,
-          String(existing || "").replace(/\.[a-z0-9]{2,5}$/i, "")
-        )
-      : String(existing || "").replace(/\.[a-z0-9]{2,5}$/i, "");
 
-    let base =
-      pickBestTitle(boundTitle, boundPage, boundExisting, title, pageTitle) ||
-      "";
+    if (!base) {
+      const existingBase = String(existing || "").replace(
+        /\.[a-z0-9]{2,5}$/i,
+        ""
+      );
+      const humanExisting = pickBestTitle(existingBase);
+      base = humanExisting
+        ? pageRef
+          ? bindTitleToPage(pageRef, humanExisting)
+          : humanExisting
+        : "";
+    }
 
     // Product codes are only a no-title fallback on sites where they are the
     // authoritative page identity.

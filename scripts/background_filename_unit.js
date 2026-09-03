@@ -237,6 +237,24 @@ async function main() {
     "CAWB-035 실제 영상 제목_720p.mp4",
     "real page title remains authoritative over the URL fallback"
   );
+  equal(
+    Naming.buildFilename({
+      title: "실제 제목",
+      existing: "동영상_720p.mp4",
+      pageUrl: descriptorUrl,
+      quality: "720p"
+    }),
+    "실제 제목_720p.mp4",
+    "short human title beats generic existing name and URL code"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "대규모 정전",
+      pageUrl: "https://123av.com/ja/v/snos-309"
+    }),
+    "대규모 정전.mp4",
+    "short code-less page title stays authoritative"
+  );
   equal(Naming.extractProductCode("https://example.com/watch/ep-05"), "");
   equal(Naming.extractProductCode("https://example.com/ssis-001"), "SSIS-001");
   equal(
