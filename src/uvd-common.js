@@ -49,7 +49,7 @@ const UVD = (() => {
     uiDensity: "compact",
     /** Popup width: narrow 320 · normal 380 · wide 440 */
     popupWidth: "normal",
-    /** Popup colour theme: system (follow OS) | light | dark */
+    /** Popup color theme: system (follow OS) | light | dark */
     theme: "system",
     /** Play a short chime in the popup when a download finishes */
     completionSound: false,
