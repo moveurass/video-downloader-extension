@@ -53,7 +53,8 @@
             playlistTitle: playlistTitle || "",
             index: seriesIndex || 0,
             total: seriesTotal || 0,
-            url: mediaUrl || ""
+            url: mediaUrl || "",
+            pageUrl: pageUrl || ""
           });
           if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
             return safeDownloadName(full, mime);
@@ -150,12 +151,14 @@
     } = {}) {
       const mime = mediaMode === "audio" ? "audio/mp3" : "video/mp4";
       // Always bind titles to THIS pageUrl so another video's name can't leak in
+      const rawTitle = title || pageTitle || "";
+      const cleanedTitle = Naming.cleanPageTitle?.(rawTitle) || rawTitle || "";
       const bound =
-        Naming.bindTitleToPage?.(pageUrl, title || pageTitle || filenameHint) ||
-        Naming.cleanPageTitle?.(title || pageTitle || "") ||
-        title ||
-        pageTitle ||
-        "";
+        cleanedTitle &&
+        !UVD.isGenericSaveName(cleanedTitle) &&
+        !Naming.isUglyBase?.(cleanedTitle)
+          ? Naming.bindTitleToPage?.(pageUrl, cleanedTitle) || cleanedTitle
+          : "";
       const boundHint = filenameHint
         ? Naming.bindTitleToPage?.(pageUrl, filenameHint) ||
           Naming.cleanPageTitle?.(
@@ -164,23 +167,18 @@
           filenameHint
         : "";
 
-      // 1) Explicit filename from popup/job — re-bind to pageUrl identity
-      if (boundHint && !UVD.isGenericSaveName(boundHint)) {
-        const full = Naming.buildFilename({
-          title: boundHint,
-          pageTitle: bound || boundHint,
-          quality: quality || "",
-          type: mediaMode === "audio" ? "audio" : "video",
-          pageUrl: pageUrl || "",
-          existing: boundHint,
-          url: mediaUrl || ""
-        });
-        if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
-          return safeDownloadName(full, mime);
-        }
-      }
-      // 2) Build from the title that belongs to THIS job only
-      if (bound && !UVD.isGenericSaveName(bound)) {
+      const usableTitle =
+        bound &&
+        !UVD.isGenericSaveName(bound) &&
+        !Naming.isUglyBase?.(bound);
+      const usableHint =
+        boundHint &&
+        !UVD.isGenericSaveName(boundHint) &&
+        !Naming.isUglyBase?.(boundHint);
+
+      // 1) The page/video title is authoritative, even when an older filename
+      // hint contains a URL basename, CDN id, product code, or generic label.
+      if (usableTitle) {
         if (
           (playlistTitle || seriesKey || seriesIndex > 0) &&
           Naming.buildSeriesFilename
@@ -190,16 +188,13 @@
             pageTitle: bound,
             quality,
             type: mediaMode === "audio" ? "audio" : "video",
-            seriesKey:
-              seriesKey ||
-              Naming.extractProductCode?.(pageUrl) ||
-              Naming.extractProductCode?.(bound) ||
-              "",
+            seriesKey: seriesKey || "",
             playlistTitle: playlistTitle || "",
             index: seriesIndex || 0,
             total: seriesTotal || 0,
             existing: filenameHint || "",
-            url: mediaUrl || ""
+            url: mediaUrl || "",
+            pageUrl: pageUrl || ""
           });
           if (full) return safeDownloadName(full, mime);
         }
@@ -213,11 +208,34 @@
         });
         if (full) return safeDownloadName(full, mime);
       }
+
+      // 2) A human filename hint is useful only when no better title exists.
+      if (usableHint) {
+        const full = Naming.buildFilename({
+          title: boundHint,
+          pageTitle: boundHint,
+          quality: quality || "",
+          type: mediaMode === "audio" ? "audio" : "video",
+          pageUrl: pageUrl || "",
+          existing: boundHint,
+          url: mediaUrl || ""
+        });
+        if (full && !UVD.isGenericSaveName(full.replace(/\.[a-z0-9]+$/i, ""))) {
+          return safeDownloadName(full, mime);
+        }
+      }
       // 3) Product code from the page URL of THIS job (not current tab)
-      const code =
-        Naming.extractProductCode?.(pageUrl || "") ||
-        Naming.extractProductCode?.(seriesKey || "") ||
-        "";
+      let pageHost = "";
+      try {
+        pageHost = new URL(pageUrl).hostname;
+      } catch {
+        pageHost = "";
+      }
+      const code = Naming.isKnownCodeSite?.(pageHost)
+        ? Naming.extractProductCode?.(pageUrl || "") ||
+          Naming.extractProductCode?.(seriesKey || "") ||
+          ""
+        : "";
       if (code) {
         return safeDownloadName(
           Naming.buildFilename({
@@ -258,10 +276,15 @@
 
     /** Only pass a forced name to yt-dlp when it's a real human title */
     function ytdlpFilenameHint(filename, title) {
-      const candidates = [filename, title].filter(Boolean);
+      const candidates = [title, filename].filter(Boolean);
       for (const c of candidates) {
         const base = String(c).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
-        if (base && !UVD.isGenericSaveName(base) && base.length >= 2) {
+        if (
+          base &&
+          !UVD.isGenericSaveName(base) &&
+          !Naming.isUglyBase?.(base) &&
+          base.length >= 2
+        ) {
           // Always re-clean (popup may still send dirty names)
           return normalizeIncomingFilename(
             /\.[a-z0-9]{2,5}$/i.test(c) ? c : `${base}.mp4`,

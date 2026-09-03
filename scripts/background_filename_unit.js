@@ -30,7 +30,7 @@ async function main() {
   // Construction must not read settings or mutate external state.
   equal(settingsCalls, 0);
 
-  // A stale popup title must be rebound to the identity in this job's page URL.
+  // A real page/video title always wins over URL codes and old filename hints.
   equal(
     manager.lockSaveName({
       filenameHint: "ABP-123 Old video.mp4",
@@ -38,7 +38,7 @@ async function main() {
       pageUrl: "https://example.test/watch/ssis-001",
       quality: "1080p"
     }),
-    "SSIS-001_1080p.mp4"
+    "ABP-123 Old video_1080p.mp4"
   );
   equal(
     manager.lockSaveName({
@@ -65,12 +65,30 @@ async function main() {
   equal(
     manager.lockSaveName({
       title: "Episode title",
+      seriesKey: "SSIS-003",
       playlistTitle: "My Playlist",
       seriesIndex: 3,
       seriesTotal: 12,
       quality: "720p"
     }),
     "My Playlist 03. Episode title_720p.mp4"
+  );
+  equal(
+    manager.lockSaveName({
+      filenameHint: "host_784923.mp4",
+      title: "Actual page title",
+      pageUrl: "https://ordinary.test/watch/abc-123",
+      mediaUrl: "https://cdn.test/9f8e7d6c5b4a3210.webm"
+    }),
+    "Actual page title.webm"
+  );
+  equal(
+    manager.lockSaveName({
+      filenameHint: "SSIS-001.mp4",
+      title: "Human title without a code",
+      pageUrl: "https://123av.com/watch/ssis-001"
+    }),
+    "Human title without a code.mp4"
   );
   equal(
     manager.lockSaveName({
@@ -97,9 +115,15 @@ async function main() {
 
   equal(manager.ytdlpFilenameHint("video.mp4"), undefined);
   equal(manager.ytdlpFilenameHint("dQw4w9WgXcQ.mp4"), undefined);
+  equal(manager.ytdlpFilenameHint("host_12891.mp4"), undefined);
+  equal(manager.ytdlpFilenameHint("9f8e7d6c5b4a3210.mp4"), undefined);
   equal(
     manager.ytdlpFilenameHint("video.mp4", "A human title"),
     "A human title.mp4"
+  );
+  equal(
+    manager.ytdlpFilenameHint("Old URL basename.mp4", "Actual extractor title"),
+    "Actual extractor title.mp4"
   );
   equal(
     manager.filenameFromUrl("https://example.test/media/My%20Clip.webm"),
@@ -160,16 +184,21 @@ async function main() {
     "Some show",
     "unknown host: URL code needs the title to confirm it"
   );
-  equal(Naming.bindTitleToPage("https://site.test/abcd-123/", ""), "ABCD-123");
+  equal(Naming.bindTitleToPage("https://site.test/abcd-123/", ""), "");
   equal(
     Naming.bindTitleToPage("https://123av.com/ja/v/snos-309", "대규모 정전"),
-    "SNOS-309 대규모 정전",
-    "known code site: URL code is authoritative"
+    "대규모 정전",
+    "known code site: a usable title remains authoritative"
   );
   equal(
     Naming.bindTitleToPage("https://example.test/watch/ssis-001", "ABP-123 Old video"),
-    "SSIS-001",
-    "conflicting explicit codes: title is stale for this page"
+    "ABP-123 Old video",
+    "a real title is never replaced by a URL code"
+  );
+  equal(
+    Naming.bindTitleToPage("https://123av.com/ja/v/snos-309", ""),
+    "SNOS-309",
+    "known code site may use its code only when no title exists"
   );
   equal(Naming.extractProductCode("https://example.com/watch/ep-05"), "");
   equal(Naming.extractProductCode("https://example.com/ssis-001"), "SSIS-001");
