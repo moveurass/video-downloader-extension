@@ -222,8 +222,8 @@
                     ...i,
                     // Prefer fresh page meta thumb; drop mismatched old thumbs
                     thumbnail: same
-                      ? meta.thumbnail || i.thumbnail || undefined
-                      : meta.thumbnail || undefined,
+                      ? meta?.thumbnail || i.thumbnail || undefined
+                      : meta?.thumbnail || undefined,
                     title:
                       freshTitle ||
                       (i.title &&
@@ -237,10 +237,10 @@
                 })
               );
               const pageMeta = {
-                ...meta,
+                ...(meta || {}),
                 lastUrl: currentTabUrl,
                 // Clear if page has no thumb yet — don't leave previous
-                thumbnail: meta.thumbnail || undefined
+                thumbnail: meta?.thumbnail || undefined
               };
               if (freshTitle) pageMeta.title = freshTitle;
               else delete pageMeta.title;
