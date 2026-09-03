@@ -20,13 +20,15 @@
       function switchTab(name) {
         setActiveTabName(name);
         document.querySelectorAll(".tab").forEach((tab) => {
-          tab.classList.toggle(
-            "active",
-            tab.getAttribute("data-tab") === name
-          );
+          const active = tab.getAttribute("data-tab") === name;
+          tab.classList.toggle("active", active);
+          tab.setAttribute?.("aria-selected", active ? "true" : "false");
+          tab.tabIndex = active ? 0 : -1;
         });
         document.querySelectorAll(".tab-panel").forEach((panel) => {
-          panel.classList.toggle("hidden", panel.id !== `tab-${name}`);
+          const hidden = panel.id !== `tab-${name}`;
+          panel.classList.toggle("hidden", hidden);
+          panel.setAttribute?.("aria-hidden", hidden ? "true" : "false");
         });
         if (name === "history") loadHistoryUi();
         if (name === "watch") loadWatchlistUi();

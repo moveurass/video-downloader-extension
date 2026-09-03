@@ -564,4 +564,4 @@ UVDBackgroundScheduledJobs.createScheduler({
   console
 }).bind();
 
-console.log("[VideoDownloader] ready v1.23.3");
+console.log("[VideoDownloader] ready v1.24.0");

@@ -27,7 +27,7 @@
     const escape = deps.escapeHtml;
     const attr = deps.escapeAttr;
     if (!items?.length) {
-      return `<div class="empty small"><p>검색 결과가 없습니다.</p><p class="hint">필터를 바꾸거나 영상을 받아 보세요</p></div>`;
+      return `<div class="empty small"><div class="empty-icon" aria-hidden="true">⌕</div><p class="empty-title">검색 결과가 없어요</p><p class="hint">필터를 바꾸거나 새 영상을 받아 보세요</p></div>`;
     }
     return items.map((item) => {
       const ok = item.status === "done";

@@ -358,6 +358,53 @@ def main() -> int:
         ),
     )
     popup_html = (ROOT / "src/popup.html").read_text(encoding="utf-8")
+    popup_css = (ROOT / "src/popup.css").read_text(encoding="utf-8")
+    popup_settings_source = (ROOT / "src/popup-settings-ui.js").read_text(
+        encoding="utf-8"
+    )
+    manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
+    check(
+        "popup release version is consistent",
+        manifest.get("version") == "1.24.0"
+        and "v1.24.0" in popup_html
+        and "v1.24.0" in popup_settings_source,
+    )
+    check(
+        "popup primary hierarchy and settings groups",
+        'class="tab tab-primary active"' in popup_html
+        and 'class="download-options"' in popup_html
+        and popup_html.count('class="settings-section"') == 5,
+    )
+    check(
+        "popup tab semantics",
+        all(
+            f'aria-labelledby="tabButton{name}"' in popup_html
+            for name in ("Main", "Watch", "History", "Settings")
+        )
+        and popup_html.count('role="tabpanel"') == 4,
+    )
+    check(
+        "popup density styles preserved",
+        all(
+            selector in popup_css
+            for selector in (
+                "body.full-ui .list",
+                "body.compact-ui .download-options",
+                "body.ultra-ui .download-options",
+            )
+        ),
+    )
+    check(
+        "popup width styles preserved",
+        all(
+            selector in popup_css
+            for selector in (
+                "body.width-narrow",
+                "body.width-normal",
+                "body.width-wide",
+            )
+        ),
+    )
     popup_init_pos = popup_html.find('<script src="popup-init.js"></script>')
     popup_entry_pos = popup_html.find('<script src="popup.js"></script>')
     check(

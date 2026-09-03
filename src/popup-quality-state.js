@@ -106,7 +106,7 @@
         if (qualitiesLoading) {
           return `
       <div class="quality-picker" id="qualityPicker">
-        <span class="quality-label">화질 선택</span>
+        <span class="quality-label">화질</span>
         <p class="quality-hint">이 영상에서 받을 수 있는 화질 확인 중…</p>
         <div class="quality-chips" role="group" aria-label="화질 선택">
           <button type="button" class="q-chip active" data-quality="best" disabled>최고</button>
@@ -125,7 +125,7 @@
           !(Number(opts[0].height) >= 240);
         return `
     <div class="quality-picker" id="qualityPicker">
-      <span class="quality-label">화질 선택${
+      <span class="quality-label">화질${
         singleConcrete
           ? ` <span class="quality-hint-inline">이 영상 화질</span>`
           : opts.length > 1
@@ -136,7 +136,7 @@
       }</span>
       ${
         bareBestOnly
-          ? `<p class="quality-hint quality-hint-warn">화질을 특정하지 못했습니다. 페이지에서 <strong>재생</strong>한 뒤 「다시 확인」을 누르세요.</p>`
+          ? `<p class="quality-hint quality-hint-warn">화질을 확인하지 못했어요. 페이지에서 <strong>재생</strong>한 뒤 다시 확인해 주세요.</p>`
           : ""
       }
       <div class="quality-chips" role="group" aria-label="화질 선택">

@@ -112,9 +112,9 @@
         if (!tab?.id) {
           listEl.innerHTML = `
       <div class="empty">
-        <div class="empty-icon">🎬</div>
-        <p>탭을 찾지 못했습니다.</p>
-        <p class="hint">YouTube 영상 탭을 연 뒤 확장을 다시 열어 주세요.</p>
+        <div class="empty-icon" aria-hidden="true">▶</div>
+        <p class="empty-title">현재 탭을 찾지 못했어요</p>
+        <p class="hint">영상 탭을 연 뒤 확장 프로그램을 다시 열어 주세요</p>
       </div>`;
           return;
         }

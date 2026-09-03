@@ -99,7 +99,7 @@
 
   function render(items, deps) {
     if (!items?.length) {
-      return `<div class="empty small"><p>비어 있습니다.</p><p class="hint">링크 옆 「나중」또는 카드에서 추가 · 드래그로 순서 · 예약 가능</p></div>`;
+      return `<div class="empty small"><div class="empty-icon" aria-hidden="true">＋</div><p class="empty-title">나중에 받을 영상이 없어요</p><p class="hint">링크나 영상 카드에서 나중에 받기를 선택하세요</p></div>`;
     }
     const groups = new Map();
     const order = [];

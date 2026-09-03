@@ -197,7 +197,7 @@ async function main() {
     );
     check(
       harness.elements["#footerNote"].textContent,
-      "저장: 다운로드/Saved · mode:audio · v1.23.3"
+      "저장: 다운로드/Saved · mode:audio · v1.24.0"
     );
   }
 

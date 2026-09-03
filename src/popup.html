@@ -6,29 +6,33 @@
   <title>동영상 다운로더</title>
   <link rel="stylesheet" href="popup.css" />
 </head>
-<body>
+<body class="width-normal compact-ui">
   <header class="header">
     <div class="brand">
-      <span class="logo">▶</span>
-      <div>
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M12 3v11m0 0 4-4m-4 4-4-4M5 17v2h14v-2" />
+        </svg>
+      </span>
+      <div class="brand-copy">
         <h1>동영상 다운로더</h1>
         <p class="sub" id="pageHost">—</p>
       </div>
     </div>
-    <div class="actions">
-      <button type="button" id="btnScan" class="btn ghost" title="다시 찾기">↻</button>
-      <button type="button" id="btnClear" class="btn ghost" title="목록 비우기">✕</button>
+    <div class="actions" role="group" aria-label="현재 페이지 도구">
+      <button type="button" id="btnScan" class="btn ghost icon-btn" title="다시 찾기" aria-label="현재 페이지에서 영상 다시 찾기">↻</button>
+      <button type="button" id="btnClear" class="btn ghost icon-btn" title="목록 비우기" aria-label="찾은 영상 목록 비우기">✕</button>
     </div>
   </header>
 
-  <nav class="tabs" role="tablist">
-    <button type="button" class="tab active" data-tab="main" role="tab">받기</button>
-    <button type="button" class="tab" data-tab="watch" role="tab">나중</button>
-    <button type="button" class="tab" data-tab="history" role="tab">서재</button>
-    <button type="button" class="tab" data-tab="settings" role="tab">설정</button>
+  <nav class="tabs" role="tablist" aria-label="주요 메뉴">
+    <button type="button" id="tabButtonMain" class="tab tab-primary active" data-tab="main" role="tab" aria-selected="true" aria-controls="tab-main">받기</button>
+    <button type="button" id="tabButtonWatch" class="tab" data-tab="watch" role="tab" aria-selected="false" aria-controls="tab-watch" tabindex="-1">나중</button>
+    <button type="button" id="tabButtonHistory" class="tab" data-tab="history" role="tab" aria-selected="false" aria-controls="tab-history" tabindex="-1">서재</button>
+    <button type="button" id="tabButtonSettings" class="tab" data-tab="settings" role="tab" aria-selected="false" aria-controls="tab-settings" tabindex="-1">설정</button>
   </nav>
 
-  <div id="helperBar" class="helper-bar hidden">
+  <div id="helperBar" class="helper-bar hidden" role="status" aria-live="polite">
     <span class="helper-dot" id="helperDot"></span>
     <span class="helper-text" id="helperText">도우미 확인 중…</span>
     <button type="button" id="btnHelperRecheck" class="btn tiny hidden" title="상태 다시 확인">↻</button>
@@ -38,8 +42,8 @@
 
   <!-- ═══════ MAIN TAB ═══════ -->
   <!-- Order: primary CTA (card/quick) first — no scroll needed to download -->
-  <div id="tab-main" class="tab-panel">
-    <section id="dlQueue" class="dl-queue hidden" aria-live="polite">
+  <div id="tab-main" class="tab-panel" role="tabpanel" aria-labelledby="tabButtonMain" aria-hidden="false">
+    <section id="dlQueue" class="dl-queue hidden" aria-label="다운로드 현황" aria-live="polite">
       <div class="dl-queue-header">
         <div class="dl-queue-title-row">
           <span class="dl-queue-icon" aria-hidden="true">↓</span>
@@ -114,11 +118,11 @@
     </section>
 
     <!-- Video card first so Download is above the fold -->
-    <main id="list" class="list">
+    <main id="list" class="list" aria-label="현재 페이지 영상">
       <div class="empty" id="empty">
-        <div class="empty-icon">🎬</div>
-        <p>받을 영상이 없습니다.</p>
-        <p class="hint">페이지를 열거나 아래 링크를 붙여 넣으세요.</p>
+        <div class="empty-icon" aria-hidden="true">▶</div>
+        <p class="empty-title">받을 영상을 찾지 못했어요</p>
+        <p class="hint">영상 페이지를 열거나 링크를 직접 붙여 넣으세요</p>
       </div>
     </main>
 
@@ -129,24 +133,34 @@
       <p class="quick-hint" id="quickHint">현재 탭 영상을 바로 저장합니다</p>
     </section>
 
-    <section class="mode-box compact" id="modeBox">
-      <div class="mode-chips" role="group" aria-label="받기 형식">
-        <button type="button" class="mode-chip active" data-mode="video">영상</button>
-        <button type="button" class="mode-chip" data-mode="audio">오디오</button>
-        <button type="button" class="mode-chip" data-mode="video_subs">+자막</button>
+    <section class="download-options" aria-labelledby="downloadOptionsTitle">
+      <div class="section-heading">
+        <div>
+          <span class="section-kicker">받기 옵션</span>
+          <h2 id="downloadOptionsTitle">파일 형식과 화질</h2>
+        </div>
+        <span class="section-meta">현재 받기에 적용</span>
       </div>
-    </section>
+      <section class="mode-box compact" id="modeBox" aria-label="파일 형식">
+        <span class="option-label">파일 형식</span>
+        <div class="mode-chips" role="group" aria-label="받기 형식">
+          <button type="button" class="mode-chip active" data-mode="video">영상</button>
+          <button type="button" class="mode-chip" data-mode="audio">오디오</button>
+          <button type="button" class="mode-chip" data-mode="video_subs">영상 + 자막</button>
+        </div>
+      </section>
 
-    <!-- Global quality chips (link paste / when card has no picker yet) -->
-    <section class="quality-box" id="qualityBox" aria-label="화질 선택">
-      <span class="quality-label">화질 선택</span>
-      <div class="quality-chips" id="globalQualityChips" role="group">
-        <button type="button" class="q-chip active" data-quality="best">최고</button>
-        <button type="button" class="q-chip" data-quality="4K">4K</button>
-        <button type="button" class="q-chip" data-quality="1080p">1080p</button>
-        <button type="button" class="q-chip" data-quality="720p">720p</button>
-        <button type="button" class="q-chip" data-quality="480p">480p</button>
-      </div>
+      <!-- Global quality chips (link paste / when card has no picker yet) -->
+      <section class="quality-box" id="qualityBox" aria-label="화질 선택">
+        <span class="quality-label">화질</span>
+        <div class="quality-chips" id="globalQualityChips" role="group">
+          <button type="button" class="q-chip active" data-quality="best">최고</button>
+          <button type="button" class="q-chip" data-quality="4K">4K</button>
+          <button type="button" class="q-chip" data-quality="1080p">1080p</button>
+          <button type="button" class="q-chip" data-quality="720p">720p</button>
+          <button type="button" class="q-chip" data-quality="480p">480p</button>
+        </div>
+      </section>
     </section>
 
     <!-- YouTube playlist panel (selection happens in series banner) -->
@@ -167,59 +181,71 @@
         <button type="button" id="btnPlSelect" class="btn primary tiny">선택해서 받기</button>
         <button type="button" id="btnPlDownload" class="btn ghost tiny">바로 받기</button>
       </div>
-      <p id="plHint" class="pl-hint">위 시리즈 패널에서 체크 후 받거나 · 「바로 받기」로 상위 항목을 큐에 넣습니다</p>
+      <p id="plHint" class="pl-hint">시리즈 패널에서 고르거나 바로 받기로 상위 항목을 큐에 넣으세요</p>
     </section>
 
     <section class="link-box compact" id="linkBox">
+      <div class="link-box-head">
+        <span class="link-box-title">링크로 받기</span>
+        <span class="link-shortcut">Ctrl/⌘ + Enter</span>
+      </div>
       <div class="link-row">
         <textarea
           id="linkInput"
           class="link-input link-textarea"
           rows="2"
-          placeholder="링크 붙여넣기 (여러 줄 OK)"
+          placeholder="영상 링크를 붙여 넣으세요"
           spellcheck="false"
           aria-label="영상 링크"
         ></textarea>
-        <button type="button" id="btnLinkDl" class="btn primary link-btn">받기</button>
+        <button type="button" id="btnLinkDl" class="btn primary link-btn">링크 받기</button>
       </div>
       <div class="link-row link-row-actions">
         <span id="linkCount" class="link-count">0개 링크</span>
-        <button type="button" id="btnAddWatch" class="btn ghost tiny">나중</button>
-        <span class="link-hint inline">재생목록·여러 링크</span>
+        <span class="link-hint inline">재생목록과 여러 링크 지원</span>
+        <button type="button" id="btnAddWatch" class="btn ghost tiny">나중에 받기</button>
       </div>
     </section>
 
     <!-- Recent successful downloads -->
     <section id="recentStrip" class="recent-strip hidden">
       <div class="recent-head">
-        <span class="recent-title">최근 파일</span>
+        <span class="recent-title">최근 받은 파일</span>
+        <span class="recent-sub">최대 3개</span>
       </div>
       <div id="recentList" class="recent-list"></div>
     </section>
   </div>
 
   <!-- ═══════ WATCHLIST TAB ═══════ -->
-  <div id="tab-watch" class="tab-panel hidden">
+  <div id="tab-watch" class="tab-panel hidden" role="tabpanel" aria-labelledby="tabButtonWatch" aria-hidden="true">
     <div class="panel-toolbar">
-      <span class="panel-title">나중에 받기</span>
+      <div class="panel-heading">
+        <span class="panel-title">나중에 받기</span>
+        <span class="panel-subtitle">저장해 둔 영상을 순서대로 관리해요</span>
+      </div>
       <div class="panel-toolbar-actions">
         <button type="button" id="btnWatchDlAll" class="btn primary tiny">모두 받기</button>
         <button type="button" id="btnClearWatch" class="btn ghost tiny">비우기</button>
       </div>
     </div>
-    <p class="watch-hint">⋮⋮ 드래그로 순서 · 예약으로 나중에 자동 받기</p>
+    <p class="watch-hint">항목을 끌어 순서를 바꾸고 예약 시간을 지정할 수 있어요</p>
     <div id="watchList" class="history-list">
       <div class="empty small">
-        <p>비어 있습니다.</p>
-        <p class="hint">링크 옆 「나중」또는 카드에서 추가하세요.</p>
+        <div class="empty-icon" aria-hidden="true">＋</div>
+        <p class="empty-title">나중에 받을 영상이 없어요</p>
+        <p class="hint">링크나 영상 카드에서 나중에 받기를 선택하세요</p>
       </div>
     </div>
   </div>
 
   <!-- ═══════ LIBRARY / HISTORY TAB ═══════ -->
-  <div id="tab-history" class="tab-panel hidden">
+  <div id="tab-history" class="tab-panel hidden" role="tabpanel" aria-labelledby="tabButtonHistory" aria-hidden="true">
     <div class="panel-toolbar history-toolbar">
-      <span class="panel-title">로컬 서재</span>
+      <div class="panel-heading">
+        <span class="panel-title">로컬 서재</span>
+        <span class="panel-subtitle">받은 파일과 실패 기록을 찾아보세요</span>
+      </div>
       <div class="panel-toolbar-actions">
         <button type="button" id="btnRetryFailed" class="btn ghost tiny" title="실패한 항목만 다시 받기">
           실패 재시도
@@ -253,16 +279,17 @@
     </div>
     <div id="historyList" class="history-list">
       <div class="empty small">
-        <p>서재가 비어 있습니다.</p>
-        <p class="hint">받은 영상이 제목·품번·태그로 자동 분류됩니다</p>
+        <div class="empty-icon" aria-hidden="true">✓</div>
+        <p class="empty-title">아직 받은 파일이 없어요</p>
+        <p class="hint">받은 영상은 제목, 품번, 태그로 자동 정리돼요</p>
       </div>
     </div>
   </div>
 
   <!-- Duplicate confirm modal -->
-  <div id="dupModal" class="modal hidden" role="dialog" aria-modal="true">
+  <div id="dupModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="dupModalTitle">
     <div class="modal-card">
-      <h2 class="modal-title">이미 받은 영상</h2>
+      <h2 class="modal-title" id="dupModalTitle">이미 받은 영상</h2>
       <p id="dupModalText" class="modal-text">이 링크는 이전에 저장한 적이 있습니다.</p>
       <p id="dupModalMeta" class="modal-meta"></p>
       <div class="modal-actions">
@@ -274,17 +301,31 @@
   </div>
 
   <!-- ═══════ SETTINGS TAB ═══════ -->
-  <div id="tab-settings" class="tab-panel hidden">
+  <div id="tab-settings" class="tab-panel hidden" role="tabpanel" aria-labelledby="tabButtonSettings" aria-hidden="true">
+    <div class="panel-toolbar settings-toolbar">
+      <div class="panel-heading">
+        <span class="panel-title">설정</span>
+        <span class="panel-subtitle">저장 방식과 화면 표시를 조정해요</span>
+      </div>
+    </div>
     <div class="settings-form">
+      <section class="settings-section" aria-labelledby="settingsStorageTitle">
+        <div class="settings-section-head">
+          <span class="settings-section-index" aria-hidden="true">01</span>
+          <div>
+            <h2 id="settingsStorageTitle">저장 및 파일</h2>
+            <p>파일을 저장할 위치와 이름을 정해요</p>
+          </div>
+        </div>
       <label class="field">
-        <span class="field-label">저장 폴더 (다운로드 아래)</span>
+        <span class="field-label">저장 폴더</span>
         <input id="setSubfolder" class="field-input" type="text" placeholder="VideoDownloader" />
-        <span class="field-hint">예: VideoDownloader 또는 VideoDownloader/YouTube · 브라우저 저장</span>
+        <span class="field-hint">다운로드 폴더 아래 경로예요. 예: VideoDownloader/YouTube</span>
       </label>
       <div class="field">
         <span class="field-label">도우미 저장 위치 (yt-dlp)</span>
         <code id="setHelperOutDir" class="field-preview">확인 중…</code>
-        <span class="field-hint">로컬 도우미가 실제로 쓰는 폴더 · 연결 시 자동 표시</span>
+        <span class="field-hint">도우미가 연결되면 실제 저장 위치를 자동으로 표시해요</span>
       </div>
       <label class="field">
         <span class="field-label">파일명 템플릿</span>
@@ -294,17 +335,27 @@
           type="text"
           placeholder="{title}_{quality}"
         />
-        <span class="field-hint">기본: 영상 제목_화질 (예: SSIS-001 이야기_1080p) · 읽기 쉬운 이름</span>
+        <span class="field-hint">영상 제목과 화질을 조합해 읽기 쉬운 이름을 만들어요</span>
       </label>
       <label class="field">
         <span class="field-label">미리보기</span>
         <code id="setPreview" class="field-preview">영상_1080p.mp4</code>
       </label>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsBehaviorTitle">
+        <div class="settings-section-head">
+          <span class="settings-section-index" aria-hidden="true">02</span>
+          <div>
+            <h2 id="settingsBehaviorTitle">받기 기본값</h2>
+            <p>다운로드 방식과 편의 기능을 선택해요</p>
+          </div>
+        </div>
       <label class="field">
         <span class="field-label">기본 받기 형식</span>
         <select id="setMediaMode" class="field-input">
-          <option value="video">영상 (MP4)</option>
-          <option value="audio">오디오만 (MP3)</option>
+          <option value="video">영상 · MP4</option>
+          <option value="audio">오디오만 · MP3</option>
           <option value="video_subs">영상 + 자막</option>
         </select>
       </label>
@@ -312,7 +363,7 @@
         <input type="checkbox" id="setNotify" checked />
         <span>
           <span class="field-label">완료 시 알림</span>
-          <span class="field-hint">팝업을 닫아도 OS 알림 · 클릭 시 폴더</span>
+          <span class="field-hint">팝업을 닫아도 알림을 보내고, 클릭하면 폴더를 열어요</span>
         </span>
       </label>
       <label class="field">
@@ -324,7 +375,7 @@
         <input type="checkbox" id="setClipboard" />
         <span>
           <span class="field-label">클립보드 링크 감시</span>
-          <span class="field-hint">팝업이 열린 동안 복사한 YT/TT/IG/X/FB/B站 링크 제안 (선택)</span>
+          <span class="field-hint">팝업이 열린 동안 복사한 지원 사이트 링크를 제안해요</span>
         </span>
       </label>
       <label class="field check-field">
@@ -338,24 +389,34 @@
         <input type="checkbox" id="setSaveThumb" checked />
         <span>
           <span class="field-label">썸네일 같이 저장</span>
-          <span class="field-hint">영상과 같은 이름으로 .jpg 저장</span>
+          <span class="field-hint">영상과 같은 이름의 JPG 파일로 저장해요</span>
         </span>
       </label>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsDisplayTitle">
+        <div class="settings-section-head">
+          <span class="settings-section-index" aria-hidden="true">03</span>
+          <div>
+            <h2 id="settingsDisplayTitle">화면</h2>
+            <p>정보 밀도와 팝업 크기를 맞춰요</p>
+          </div>
+        </div>
       <label class="field">
         <span class="field-label">화면 밀도</span>
         <select id="setUiDensity" class="field-input">
-          <option value="full">넓게 (여백·정보 많음)</option>
-          <option value="compact" selected>컴팩트 (기본)</option>
-          <option value="ultra">초컴팩트 (최소 UI)</option>
+          <option value="full">넓게 · 여백과 정보 많음</option>
+          <option value="compact" selected>컴팩트 · 기본</option>
+          <option value="ultra">초컴팩트 · 최소 UI</option>
         </select>
-        <span class="field-hint">받기 버튼·화질 칩 배치 밀도</span>
+        <span class="field-hint">받기 버튼과 화질 선택 영역의 간격을 조절해요</span>
       </label>
       <label class="field">
         <span class="field-label">팝업 너비</span>
         <select id="setPopupWidth" class="field-input">
-          <option value="narrow">좁게 (320)</option>
-          <option value="normal" selected>보통 (380)</option>
-          <option value="wide">넓게 (440)</option>
+          <option value="narrow">좁게 · 320px</option>
+          <option value="normal" selected>보통 · 380px</option>
+          <option value="wide">넓게 · 440px</option>
         </select>
       </label>
       <label class="field check-field">
@@ -365,6 +426,16 @@
           <span class="field-hint">받는 중 개수를 확장 아이콘에 표시</span>
         </span>
       </label>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsSeriesTitle">
+        <div class="settings-section-head">
+          <span class="settings-section-index" aria-hidden="true">04</span>
+          <div>
+            <h2 id="settingsSeriesTitle">시리즈</h2>
+            <p>다음 편과 재생목록 제안 범위를 정해요</p>
+          </div>
+        </div>
       <label class="field check-field">
         <input type="checkbox" id="setSeriesComplete" checked />
         <span>
@@ -380,10 +451,20 @@
           <option value="10">10편</option>
         </select>
       </label>
+      </section>
+
+      <section class="settings-section" aria-labelledby="settingsAdvancedTitle">
+        <div class="settings-section-head">
+          <span class="settings-section-index" aria-hidden="true">05</span>
+          <div>
+            <h2 id="settingsAdvancedTitle">사이트 및 성능</h2>
+            <p>사이트별 규칙, 화질, 속도를 세밀하게 조정해요</p>
+          </div>
+        </div>
       <div class="field">
         <span class="field-label">사이트 팩 (적응형 규칙)</span>
         <div id="sitePackList" class="site-pack-list"></div>
-        <span class="field-hint">사이트별 403·쿠키·시리즈 힌트 · 체크 해제 시 비활성</span>
+        <span class="field-hint">사이트별 연결, 쿠키, 시리즈 규칙을 사용해요</span>
       </div>
       <label class="field check-field hidden" id="setCompactWrap">
         <input type="checkbox" id="setCompact" checked />
@@ -394,23 +475,23 @@
       <label class="field">
         <span class="field-label">코덱 우선</span>
         <select id="setCodecPref" class="field-input">
-          <option value="best">최고 화질 (VP9/AV1 허용 · 종종 MKV)</option>
-          <option value="h264">H.264 우선 (넓은 재생 호환)</option>
-          <option value="compat">호환 모드 (H.264+AAC · MP4)</option>
+          <option value="best">최고 화질 · VP9/AV1 허용</option>
+          <option value="h264">H.264 우선 · 넓은 재생 호환</option>
+          <option value="compat">호환 모드 · H.264 + AAC</option>
         </select>
-        <span class="field-hint">재생 안 되면 호환 모드를 쓰세요 · 최고는 용량·품질 우선</span>
+        <span class="field-hint">재생되지 않으면 호환 모드를 사용해 보세요</span>
       </label>
       <label class="field">
         <span class="field-label">다운로드 속도</span>
         <select id="setDownloadSpeed" class="field-input">
-          <option value="fast" selected>빠름 (동시 조각↑ · 화질 동일)</option>
+          <option value="fast" selected>빠름 · 동시 조각 사용</option>
           <option value="normal">보통</option>
-          <option value="safe">안정 (403 많은 사이트용)</option>
+          <option value="safe">안정 · 연결 제한 사이트용</option>
         </select>
-        <span class="field-hint">화질은 그대로 · 막히면 「안정」으로 · aria2c 있으면 헬퍼가 자동 활용</span>
+        <span class="field-hint">문제가 생기면 안정 모드로 바꿔 보세요. 화질은 같아요</span>
       </label>
       <div class="field">
-        <span class="field-label">단축키 (chrome://extensions/shortcuts)</span>
+        <span class="field-label">단축키</span>
         <ul class="shortcut-list">
           <li><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> 현재 탭 영상</li>
           <li><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>A</kbd> 오디오만</li>
@@ -489,17 +570,18 @@
             </select>
           </label>
         </div>
-        <span class="field-hint">기본은 항상 최고 화질 · 받기 전 화질 칩으로 바꿀 수 있습니다</span>
+        <span class="field-hint">받기 전에 화질 버튼으로 언제든 바꿀 수 있어요</span>
       </div>
+      </section>
       <button type="button" id="btnSaveSettings" class="btn primary settings-save">
         설정 저장
       </button>
-      <p class="field-hint center">YT · TT · IG · X · Facebook · Bilibili · 자막·오디오는 도우미 사이트에서 가장 잘 됩니다</p>
+      <p class="field-hint center">YouTube, TikTok, Instagram, X, Facebook, Bilibili를 지원해요</p>
     </div>
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.23.3</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.24.0</p>
   </footer>
 
   <script src="history-model.js"></script>
