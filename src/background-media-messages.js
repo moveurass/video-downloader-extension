@@ -6,6 +6,9 @@
   "use strict";
 
   function createHandler(deps) {
+    const isTopFrame = (sender) =>
+      sender?.frameId == null || sender.frameId === 0;
+
     return function handleMediaMessage(msg, tabId, sender, sendResponse) {
       switch (msg?.type) {
         case "HLS_PROGRESS": {
@@ -58,13 +61,22 @@
           if (tabId != null && msg.pageMeta) {
             const pageUrl =
               msg.pageMeta.lastUrl || sender.tab?.url || msg.pageUrl || "";
-            deps.setTabMeta(tabId, {
-              ...msg.pageMeta,
-              lastUrl: pageUrl || msg.pageMeta.lastUrl,
-              pageKey: pageUrl
-                ? deps.pageIdentityKey(pageUrl)
-                : msg.pageMeta.pageKey
-            });
+            if (isTopFrame(sender)) {
+              deps.setTabMeta(tabId, {
+                ...msg.pageMeta,
+                lastUrl: pageUrl || msg.pageMeta.lastUrl,
+                pageKey: pageUrl
+                  ? deps.pageIdentityKey(pageUrl)
+                  : msg.pageMeta.pageKey
+              });
+            } else if (pageUrl) {
+              // all_frames content scripts may report an empty player title.
+              // Keep the top-page identity without clearing its real metadata.
+              deps.setTabMeta(tabId, {
+                lastUrl: pageUrl,
+                pageKey: deps.pageIdentityKey(pageUrl)
+              });
+            }
           }
           sendResponse({ ok: true });
           return { handled: true, keepChannel: false };
@@ -74,7 +86,7 @@
             return { handled: true, keepChannel: false };
           }
           const pageUrl = sender.tab?.url || msg.pageUrl || "";
-          if (msg.pageMeta) {
+          if (msg.pageMeta && isTopFrame(sender)) {
             deps.setTabMeta(tabId, {
               ...msg.pageMeta,
               lastUrl: pageUrl || msg.pageMeta.lastUrl,
@@ -97,9 +109,21 @@
           return { handled: true, keepChannel: false };
         }
         case "GET_MEDIA": {
+          const pageUrl = msg.pageUrl || "";
+          if (msg.tabId != null && (pageUrl || msg.title)) {
+            const meta = {};
+            if (pageUrl) {
+              meta.lastUrl = pageUrl;
+              meta.pageKey = deps.pageIdentityKey(pageUrl);
+            }
+            // The active tab query is a reliable fallback when a service
+            // worker started after tabs.onUpdated already fired.
+            if (msg.title) meta.title = msg.title;
+            deps.setTabMeta(msg.tabId, meta);
+          }
           deps
             .getMediaForTabAsync(msg.tabId, {
-              pageUrl: msg.pageUrl || "",
+              pageUrl,
               title: msg.title || ""
             })
             .then((items) => sendResponse({ items: items || [] }))

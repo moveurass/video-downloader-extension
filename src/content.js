@@ -78,6 +78,16 @@
     if (/\.(com|cc|net|tv|io|me|app|xyz)(\s|$)/i.test(t) && t.length < 28) {
       return "";
     }
+    if (
+      /^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(
+        t
+      ) ||
+      /^(?:영상|동영상|video|media|audio)(?:[\s_-]*(?:4k|\d{3,4}p|best|all|unknown|highest|default))?$/i.test(
+        t
+      )
+    ) {
+      return "";
+    }
     // Tab counters
     t = t.replace(/^\(\d{1,4}\)\s*/, "").replace(/^\[\d{1,4}\]\s*/, "");
     // Product code at start → uppercase
@@ -86,7 +96,10 @@
       (_, p, n) => `${p.toUpperCase()}-${n} `
     );
     // Strip leak / marketing tags (123av etc.; may be glued as Leaked_720p)
-    t = t.replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ");
+    t = t.replace(
+      /[-–—|·•:_\s]*Uncensore(?:d)?(?:[-–—_\s]*Leaked)?/gi,
+      " "
+    );
     t = t.replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ");
     t = t.replace(
       /[-–—|·•:_\s]*(No\s*Mosaic|Demosaic|Uncut|Raw)(?=[_\s\-–—.]|$)/gi,
@@ -109,11 +122,23 @@
       .slice(0, 80);
   }
 
+  function stripCodeDescriptorSuffix(token) {
+    let value = String(token || "").trim();
+    const suffix =
+      /[-_](?:uncensore(?:d)?|leaked|no[-_]?mosaic|demosaic|uncut|raw|chinese[-_]?subtitles?)$/i;
+    let previous = "";
+    while (value && value !== previous) {
+      previous = value;
+      value = value.replace(suffix, "");
+    }
+    return value;
+  }
+
   function titleFromLocation() {
     try {
       const segs = (location.pathname || "").split("/").filter(Boolean);
       for (let i = segs.length - 1; i >= 0; i--) {
-        const s = decodeURIComponent(segs[i]);
+        const s = stripCodeDescriptorSuffix(decodeURIComponent(segs[i]));
         // SSIS-001, START-123, abc-123
         if (/^[a-z]{2,12}-\d{2,5}$/i.test(s)) return s.toUpperCase();
         if (/^[a-z]{2,10}\d{2,5}[a-z]?$/i.test(s) && s.length >= 5 && s.length <= 16) {
@@ -122,7 +147,7 @@
       }
       const u = new URL(location.href);
       for (const k of ["v", "id", "code", "video", "no"]) {
-        const val = u.searchParams.get(k);
+        const val = stripCodeDescriptorSuffix(u.searchParams.get(k));
         if (val && /^[a-z]{2,12}-\d{2,5}$/i.test(val)) return val.toUpperCase();
       }
     } catch {
@@ -765,12 +790,21 @@
 
   // Skip MutationObserver on TikTok/Instagram — DOM churn lags players
   if (!isTikTokHost() && !isInstagramHost()) {
-    const mo = new MutationObserver(() => scheduleScan());
+    const mo = new MutationObserver((records) => {
+      const relevant = records.some((record) => {
+        if (record.type !== "characterData") return true;
+        return !!record.target?.parentElement?.closest?.(
+          "title, h1, h2, [itemprop='name'], [class*='title' i]"
+        );
+      });
+      if (relevant) scheduleScan();
+    });
     mo.observe(document.documentElement, {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["src", "href", "poster"]
+      attributeFilter: ["src", "href", "poster", "content"],
+      characterData: true
     });
   }
 

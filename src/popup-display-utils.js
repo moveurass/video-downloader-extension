@@ -37,7 +37,10 @@
             deps.pageHost?.textContent &&
             deps.pageHost.textContent !== "—"
           ) {
-            return deps.pageHost.textContent.replace(/^www\./, "");
+            return deps.pageHost.textContent
+              .replace(/^https?:\/\//i, "")
+              .replace(/^www\./, "")
+              .split("/")[0];
           }
         } catch {
           /* ignore */

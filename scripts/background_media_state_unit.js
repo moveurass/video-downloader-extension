@@ -81,8 +81,12 @@ function makeHarness() {
     classifyMedia: DownloadEngine.classifyMedia,
     qualityLabel: (height) => (height ? `${height}p` : null),
     hashUrl: (url) => `hash-${url.length}`,
-    titlesMatchVideo: (a, b) =>
-      Naming.cleanPageTitle(a) === Naming.cleanPageTitle(b),
+    titlesMatchVideo: (a, b) => {
+      const codeA = Naming.extractProductCode(a);
+      const codeB = Naming.extractProductCode(b);
+      if (codeA && codeB) return codeA === codeB;
+      return Naming.cleanPageTitle(a) === Naming.cleanPageTitle(b);
+    },
     withTabReferer: async (_tabId, operation) => operation(),
     detachJobsFromTab: (tabId) => detached.push(tabId),
     now: () => 1234,
@@ -120,7 +124,17 @@ async function main() {
   );
   equal(
     store.pageIdentityKey("https://missav.example/dm14/v/snos-309"),
-    "missav.example:code:DM-14"
+    "missav.example:code:SNOS-309"
+  );
+  equal(
+    store.pageIdentityKey(
+      "https://123av.com/ko/v/cawb-035-uncensore"
+    ),
+    "123av.com:code:CAWB-035"
+  );
+  equal(
+    store.pageIdentityKey("https://123av.com/ko/v/snos-309"),
+    "123av.com:code:SNOS-309"
   );
   equal(store.pageIdentityKey("file:///tmp/video.mp4"), "");
 
@@ -188,6 +202,28 @@ async function main() {
   equal(displayable[0].quality, "1080p");
   equal(displayable[0].foundAt, 1234);
   ok(store.probedUrls.has("https://cdn.example.com/master.m3u8"));
+
+  const descriptorUrl = "https://123av.com/ko/v/cawb-035-uncensore";
+  store.setTabMeta(10, { lastUrl: descriptorUrl });
+  store.addMedia(10, {
+    url: "https://cdn.example.com/cawb-035.mp4",
+    pageUrl: descriptorUrl,
+    filename: "동영상_720p.mp4",
+    quality: "720p",
+    type: "video",
+    duration: 120
+  });
+  equal(store.getMediaForTab(10)[0].title, "CAWB-035");
+  equal(store.getMediaForTab(10)[0].filename, "CAWB-035_720p.mp4");
+  store.setTabMeta(10, {
+    lastUrl: descriptorUrl,
+    title: "CAWB-035 실제 영상 제목 - 123AV"
+  });
+  equal(store.getMediaForTab(10)[0].title, "CAWB-035 실제 영상 제목");
+  equal(
+    store.getMediaForTab(10)[0].filename,
+    "CAWB-035 실제 영상 제목_720p.mp4"
+  );
 
   store.bind();
   store.bind();

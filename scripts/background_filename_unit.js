@@ -200,6 +200,61 @@ async function main() {
     "SNOS-309",
     "known code site may use its code only when no title exists"
   );
+  const descriptorUrl =
+    "https://123av.com/ko/v/cawb-035-uncensore";
+  equal(
+    Naming.extractProductCode(descriptorUrl),
+    "CAWB-035",
+    "descriptor-suffixed path keeps its product code"
+  );
+  equal(
+    Naming.extractProductCode(
+      "https://123av.com/en/v/cawd-952-uncensored-leaked"
+    ),
+    "CAWD-952",
+    "multiple known descriptor suffixes are stripped from the right"
+  );
+  equal(
+    Naming.extractProductCode("https://123av.com/ko/v/snos-309"),
+    "SNOS-309",
+    "clean hyphenated code paths still match"
+  );
+  equal(
+    manager.lockSaveName({
+      filenameHint: "동영상_720p.mp4",
+      pageUrl: descriptorUrl,
+      quality: "720p"
+    }),
+    "CAWB-035_720p.mp4",
+    "generic quality filename falls back to the page code"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "CAWB-035 실제 영상 제목 - 123AV",
+      pageUrl: descriptorUrl,
+      quality: "720p"
+    }),
+    "CAWB-035 실제 영상 제목_720p.mp4",
+    "real page title remains authoritative over the URL fallback"
+  );
+  equal(
+    Naming.buildFilename({
+      title: "실제 제목",
+      existing: "동영상_720p.mp4",
+      pageUrl: descriptorUrl,
+      quality: "720p"
+    }),
+    "실제 제목_720p.mp4",
+    "short human title beats generic existing name and URL code"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "대규모 정전",
+      pageUrl: "https://123av.com/ja/v/snos-309"
+    }),
+    "대규모 정전.mp4",
+    "short code-less page title stays authoritative"
+  );
   equal(Naming.extractProductCode("https://example.com/watch/ep-05"), "");
   equal(Naming.extractProductCode("https://example.com/ssis-001"), "SSIS-001");
   equal(

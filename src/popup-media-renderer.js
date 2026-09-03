@@ -7,6 +7,18 @@
   function makePopupMediaRenderer() {
     "use strict";
 
+    function primaryDownloadLabel(name, site) {
+      const title = String(name || "").trim();
+      if (title && !/^(?:영상|동영상|video|media|audio)$/i.test(title)) {
+        return `${title} 받기`;
+      }
+      const siteName = String(site || "")
+        .replace(/^https?:\/\//i, "")
+        .split("/")[0]
+        .trim();
+      return siteName ? `${siteName} 영상 받기` : "영상 받기";
+    }
+
     function createRenderer(deps) {
       const {
         listEl,
@@ -136,7 +148,7 @@
         const file = downloadFilename(item);
         item._saveAs = file;
         const site = siteLabel(currentTabUrl, item);
-        const btnLabel = site ? `${site} 영상 받기` : "영상 받기";
+        const btnLabel = primaryDownloadLabel(name, site);
 
         // Order: info → quality chips (always visible) → download CTA
         card.innerHTML = `
@@ -303,6 +315,6 @@
       return { render };
     }
 
-    return { createRenderer };
+    return { createRenderer, primaryDownloadLabel };
   }
 );

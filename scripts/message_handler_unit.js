@@ -429,10 +429,18 @@ async function main() {
 
   const mediaMeta = [];
   const pageMedia = [];
+  const mediaRequests = [];
   const mediaHandler = createMediaMessageHandler({
     setTabMeta: (tabId, meta) => mediaMeta.push([tabId, meta]),
     pageIdentityKey: (url) => `key:${url}`,
-    addMedia: (tabId, item) => pageMedia.push([tabId, item])
+    addMedia: (tabId, item) => pageMedia.push([tabId, item]),
+    getMediaForTabAsync: async (tabId, hint) => {
+      mediaRequests.push([tabId, hint]);
+      return [{ title: hint.title, pageUrl: hint.pageUrl }];
+    },
+    getMediaForTab: () => [],
+    needsYtDlpHelper: () => false,
+    makeSitePlaceholder: () => null
   });
   response = null;
   assert.deepEqual(
@@ -458,6 +466,32 @@ async function main() {
   ]);
 
   response = null;
+  mediaHandler(
+    {
+      type: "PAGE_META",
+      pageMeta: { title: "", host: "javplayer.example" }
+    },
+    7,
+    {
+      frameId: 4,
+      tab: { url: "https://example.com/watch/1" }
+    },
+    (value) => { response = value; }
+  );
+  assert.deepEqual(response, { ok: true });
+  assert.deepEqual(
+    mediaMeta[1],
+    [
+      7,
+      {
+        lastUrl: "https://example.com/watch/1",
+        pageKey: "key:https://example.com/watch/1"
+      }
+    ],
+    "subframe metadata must not clear the top-page title"
+  );
+
+  response = null;
   assert.deepEqual(
     mediaHandler(
       {
@@ -472,7 +506,7 @@ async function main() {
     { handled: true, keepChannel: false }
   );
   assert.deepEqual(response, { ok: true });
-  assert.deepEqual(mediaMeta[1], [
+  assert.deepEqual(mediaMeta[2], [
     7,
     {
       title: "영상 페이지",
@@ -488,6 +522,64 @@ async function main() {
       pageUrl: "https://example.com/watch/2"
     }
   ]);
+
+  response = null;
+  mediaHandler(
+    {
+      type: "PAGE_MEDIA",
+      pageMeta: { title: "", host: "javplayer.example" },
+      items: [{ url: "https://cdn.example.com/frame.m3u8" }]
+    },
+    7,
+    {
+      frameId: 9,
+      tab: { url: "https://example.com/watch/2" }
+    },
+    (value) => { response = value; }
+  );
+  assert.deepEqual(response, { ok: true });
+  assert.deepEqual(mediaMeta[3], [
+    7,
+    {
+      lastUrl: "https://example.com/watch/2",
+      pageKey: "key:https://example.com/watch/2"
+    }
+  ]);
+  assert.equal(pageMedia[1][1].url, "https://cdn.example.com/frame.m3u8");
+
+  const descriptorUrl = "https://123av.com/ko/v/cawb-035-uncensore";
+  response = null;
+  assert.deepEqual(
+    mediaHandler(
+      {
+        type: "GET_MEDIA",
+        tabId: 7,
+        pageUrl: descriptorUrl,
+        title: "CAWB-035 실제 영상 제목 - 123AV"
+      },
+      7,
+      {},
+      (value) => { response = value; }
+    ),
+    { handled: true, keepChannel: true }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(mediaMeta[4], [
+    7,
+    {
+      lastUrl: descriptorUrl,
+      pageKey: `key:${descriptorUrl}`,
+      title: "CAWB-035 실제 영상 제목 - 123AV"
+    }
+  ]);
+  assert.deepEqual(mediaRequests[0], [
+    7,
+    {
+      pageUrl: descriptorUrl,
+      title: "CAWB-035 실제 영상 제목 - 123AV"
+    }
+  ]);
+  assert.equal(response.items[0].title, "CAWB-035 실제 영상 제목 - 123AV");
 
   const healthCalls = [];
   const helperHandler = createHelperMessageHandler({

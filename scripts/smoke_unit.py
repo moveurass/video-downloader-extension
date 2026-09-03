@@ -455,6 +455,56 @@ def main() -> int:
         "(?:m3u8|mpd|mp4)" in content_source
         and "[data-src*='.mpd']" in content_source,
     )
+    naming_probe = subprocess.run(
+        [
+            "node",
+            "-e",
+            (
+                "const N=require('./src/naming.js');"
+                "const P=require('./src/popup-media.js');"
+                "const U=require('./src/uvd-common.js');"
+                "const url='https://123av.com/ko/v/cawb-035-uncensore';"
+                "console.log(JSON.stringify({"
+                "descriptor:N.extractProductCode(url),"
+                "clean:N.extractProductCode('https://123av.com/ko/v/snos-309'),"
+                "fallback:P.downloadFilename("
+                "{filename:'동영상_720p.mp4',pageUrl:url,quality:'720p'},"
+                "{Naming:N,UVD:U,selectedQuality:'720p'}),"
+                "human:N.buildFilename({"
+                "title:'실제 제목',existing:'동영상_720p.mp4',"
+                "pageUrl:url,quality:'720p'})"
+                "}));"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    try:
+        naming_result = json.loads(naming_probe.stdout)
+    except (json.JSONDecodeError, TypeError):
+        naming_result = {}
+    check(
+        "descriptor-suffixed 123av URL keeps its code",
+        naming_probe.returncode == 0
+        and naming_result.get("descriptor") == "CAWB-035",
+        (naming_probe.stderr or naming_probe.stdout or "")[:120],
+    )
+    check(
+        "clean hyphenated code URL still matches",
+        naming_result.get("clean") == "SNOS-309",
+        str(naming_result)[:120],
+    )
+    check(
+        "generic quality title falls back to readable filename",
+        naming_result.get("fallback") == "CAWB-035_720p.mp4",
+        str(naming_result)[:120],
+    )
+    check(
+        "short human title stays ahead of URL fallback",
+        naming_result.get("human") == "실제 제목_720p.mp4",
+        str(naming_result)[:120],
+    )
     check(
         "DASH quality probing uses helper",
         "isRealDash(url, \"stream\") || needsYtDlpHelper" in background_source,
@@ -609,6 +659,7 @@ def main() -> int:
         ("resume_unit.js", "resume contract"),
         ("recommendations_unit.js", "remaining recommendations"),
         ("popup_wiring_modules_unit.js", "popup wiring modules"),
+        ("popup_media_loader_unit.js", "popup media title loader"),
         ("injected_capture_unit.js", "injected capture opt-in"),
     ):
         r = subprocess.run(

@@ -74,7 +74,9 @@ function makeHarness() {
     }
   };
   const Naming = { marker: "naming" };
-  const pageHost = { textContent: "www.youtube.com" };
+  const pageHost = {
+    textContent: "www.youtube.com/watch?v=current"
+  };
 
   const utils = DisplayUtils.createUtils({
     $: (selector) => elements[selector.slice(1)] || null,
@@ -305,7 +307,11 @@ function main() {
   check(u.formatDurShort(65.9), "1:05", "minute short duration");
   check(u.formatDurShort(3661), "1:01:01", "hour short duration");
 
-  check(u.siteLabel(), "youtube.com", "site label removes www");
+  check(
+    u.siteLabel(),
+    "youtube.com",
+    "site label removes www and raw page paths"
+  );
   check(u.cleanTitleText(" Raw "), "clean: Raw ", "clean title wrapper");
   check(h.mediaCalls.at(-1)[2], h.Naming, "clean title passes Naming");
   h.setCurrentTabUrl("https://www.youtube.com/watch?v=later");
