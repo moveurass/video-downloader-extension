@@ -65,6 +65,7 @@
         getCurrentTabId,
         setCurrentTabId
       } = deps;
+      const previewCompletionSound = deps.previewCompletionSound || (() => {});
 
       $("#btnScan").addEventListener("click", async () => {
         $("#btnScan").textContent = "…";
@@ -136,6 +137,11 @@
         updateSettingsPreview();
       });
       $("#setMediaMode")?.addEventListener("change", updateSettingsPreview);
+      const completeSound = $("#setCompleteSound");
+      completeSound?.addEventListener("change", () => {
+        // Let the user hear what they just switched on.
+        if (completeSound.checked) previewCompletionSound();
+      });
       $("#btnClearHistory")?.addEventListener("click", async () => {
         await sendMessage({ type: "CLEAR_HISTORY" }).catch(() => {});
         setHistoryItems([]);

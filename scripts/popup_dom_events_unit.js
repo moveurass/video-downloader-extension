@@ -41,6 +41,7 @@ function makeHarness(options = {}) {
     "setTemplate",
     "setSubfolder",
     "setMediaMode",
+    "setCompleteSound",
     "btnClearHistory",
     "btnRetryFailed",
     "btnHelperFix",
@@ -123,6 +124,7 @@ function makeHarness(options = {}) {
     toast: fn("toast"),
     saveSettingsFromForm: fn("saveSettingsFromForm"),
     updateSettingsPreview: fn("updateSettingsPreview"),
+    previewCompletionSound: fn("previewCompletionSound"),
     renderHistory: fn("renderHistory"),
     updateRetryFailedButton: fn("updateRetryFailedButton"),
     retryFailedDownloads: fn("retryFailedDownloads"),
@@ -185,7 +187,7 @@ async function main() {
           handlers.length
         ])
       );
-    check(registered.length, 34);
+    check(registered.length, 35);
     check(
       registered.filter(([id]) => id === "linkInput"),
       [["linkInput", "input", 1], ["linkInput", "keydown", 1]]
@@ -293,6 +295,14 @@ async function main() {
       ["updateSettingsPreview"],
       ["updateSettingsPreview", {}]
     ]);
+
+    h.calls.length = 0;
+    h.elements.setCompleteSound.checked = false;
+    await h.elements.setCompleteSound.emit("change");
+    check(h.calls, [], "switching the chime off stays silent");
+    h.elements.setCompleteSound.checked = true;
+    await h.elements.setCompleteSound.emit("change");
+    check(h.calls, [["previewCompletionSound"]], "switching it on previews it");
 
     h.calls.length = 0;
     h.state.historyItems = [{ id: "new-at-event-time" }];

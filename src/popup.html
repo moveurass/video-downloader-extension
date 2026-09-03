@@ -363,6 +363,13 @@
           <span class="field-hint">팝업을 닫아도 알림을 보내고, 클릭하면 폴더를 열어요</span>
         </span>
       </label>
+      <label class="field check-field">
+        <input type="checkbox" id="setCompleteSound" />
+        <span>
+          <span class="field-label">완료 소리</span>
+          <span class="field-hint">받기가 끝나면 짧은 알림음을 재생해요 (팝업이 열려 있을 때)</span>
+        </span>
+      </label>
       <label class="field">
         <span class="field-label">서재 기록 개수</span>
         <input id="setMaxHistory" class="field-input" type="number" min="10" max="100" step="1" value="50" />
@@ -399,6 +406,15 @@
             <p>정보 밀도와 팝업 크기를 맞춰요</p>
           </div>
         </div>
+      <label class="field">
+        <span class="field-label">테마</span>
+        <select id="setTheme" class="field-input">
+          <option value="system" selected>시스템 설정 따르기</option>
+          <option value="light">라이트</option>
+          <option value="dark">다크</option>
+        </select>
+        <span class="field-hint">기본값은 시스템 설정이며, 원하면 항상 밝게 또는 어둡게 고정해요</span>
+      </label>
       <label class="field">
         <span class="field-label">화면 밀도</span>
         <select id="setUiDensity" class="field-input">
@@ -578,7 +594,7 @@
   </div>
 
   <footer class="footer">
-    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.25.0</p>
+    <p class="note" id="footerNote">저장: 다운로드/VideoDownloader · v1.26.0</p>
   </footer>
 
   <script src="history-model.js"></script>
@@ -591,6 +607,7 @@
   <script src="popup-media.js"></script>
   <script src="popup-display-utils.js"></script>
   <script src="popup-queue-ui.js"></script>
+  <script src="popup-sound.js"></script>
   <script src="popup-progress-ui.js"></script>
   <script src="popup-series-ui.js"></script>
   <script src="popup-series-network.js"></script>

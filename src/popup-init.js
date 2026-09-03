@@ -30,6 +30,7 @@
         UVDPopupQualityState,
         UVDQuality,
         UVDPopupProgressUI,
+        UVDPopupSound,
         UVDQueueState,
         UVDPopupQueueUI,
         UVDPopupRecoveryUI,
@@ -228,6 +229,9 @@
       let bindRecoveryButtons;
       let downloadHelperStarter;
       let showHelperHelp;
+      const soundController = UVDPopupSound.createController({
+        getSettings: () => uvdSettings
+      });
       const progressController = UVDPopupProgressUI.createController({
         $,
         UVD,
@@ -244,6 +248,7 @@
         toast,
         userError,
         maxConcurrentStarts: MAX_CONCURRENT_STARTS,
+        playCompletionSound: () => soundController.playCompletion(),
         sendMessage: (message) => chrome.runtime.sendMessage(message),
         recoveryActionsHtml: (...args) => recoveryActionsHtml(...args),
         bindRecoveryButtons: (...args) => bindRecoveryButtons(...args),
@@ -843,6 +848,7 @@
         toast,
         saveSettingsFromForm,
         updateSettingsPreview,
+        previewCompletionSound: () => soundController.playChime(),
         renderHistory,
         updateRetryFailedButton,
         retryFailedDownloads,

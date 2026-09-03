@@ -365,9 +365,9 @@ def main() -> int:
     manifest = json.loads((ROOT / "manifest.json").read_text(encoding="utf-8"))
     check(
         "popup release version is consistent",
-        manifest.get("version") == "1.25.0"
-        and "v1.25.0" in popup_html
-        and "v1.25.0" in popup_settings_source,
+        manifest.get("version") == "1.26.0"
+        and "v1.26.0" in popup_html
+        and "v1.26.0" in popup_settings_source,
     )
     check(
         "popup primary hierarchy and settings groups",
@@ -406,9 +406,31 @@ def main() -> int:
         ),
     )
     check(
+        "popup theme choice overrides the OS preference",
+        # 시스템 (default) still follows the OS; 라이트/다크 pin the palette.
+        ':root:not([data-theme="light"])' in popup_css
+        and ':root[data-theme="dark"]' in popup_css
+        and 'id="setTheme"' in popup_html
+        and popup_html.count('<option value="system" selected>') == 1
+        and 'setAttribute?.("data-theme", value)' in popup_settings_source
+        and '$("#setTheme")?.value || "system"' in popup_settings_source,
+    )
+    check(
+        "download completion sound is opt-in and separate from notifications",
+        # No `checked` on the sound switch, still `checked` on the notification one.
+        '<input type="checkbox" id="setCompleteSound" />' in popup_html
+        and '<input type="checkbox" id="setNotify" checked />' in popup_html
+        and "completionSound: false"
+        in (ROOT / "src/uvd-common.js").read_text(encoding="utf-8")
+        and 'completionSound: !!$("#setCompleteSound")?.checked'
+        in popup_settings_source
+        and "playCompletionSound()"
+        in (ROOT / "src/popup-progress-ui.js").read_text(encoding="utf-8"),
+    )
+    check(
         "popup stylesheet is a single token-driven system",
-        # Exactly two token blocks: the light base and the dark override.
-        popup_css.count(":root {") == 2
+        # One light base plus the two dark blocks (OS-resolved and pinned).
+        popup_css.count(":root {") == 1
         and popup_css.count("prefers-color-scheme: dark") == 1
         and all(
             token in popup_css
@@ -583,6 +605,7 @@ def main() -> int:
         "src/popup-dom-events.js",
         "src/popup-clipboard-history.js",
         "src/popup-queue-ui.js",
+        "src/popup-sound.js",
         "src/popup-progress-ui.js",
         "src/popup-series-ui.js",
         "src/popup-series-network.js",
@@ -850,6 +873,18 @@ def main() -> int:
     )
     check(
         "popup progress UI",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
+        ["node", "scripts/popup_sound_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup completion sound",
         r.returncode == 0,
         (r.stderr or r.stdout or "").strip()[:120],
     )

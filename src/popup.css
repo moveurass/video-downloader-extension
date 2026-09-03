@@ -1,8 +1,8 @@
 /* =============================================================================
-   Universal Video Downloader — popup visual system (v1.25.0)
+   Universal Video Downloader — popup visual system (v1.26.0)
 
    One stylesheet, one system. Structure:
-     01  Tokens (light + dark)
+     01  Tokens (light + dark, theme choice)
      02  Reset, base, Korean typography
      03  Utilities
      04  Buttons
@@ -79,8 +79,12 @@
     "Consolas", monospace;
 }
 
+/* Dark palette. `data-theme` on <html> carries the saved preference:
+   시스템 (default) follows the OS, 라이트/다크 pin it. The two blocks below
+   hold the same tokens because a declaration block cannot straddle a media
+   query — keep them in sync when a token changes. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
 
     --canvas: #101218;
@@ -118,6 +122,45 @@
     --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%237b8291' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6.5 4 4 4-4'/%3E%3C/svg%3E");
     --glass: rgba(26, 29, 37, 0.8);
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --canvas: #101218;
+  --canvas-tint: #161922;
+  --surface: #1a1d25;
+  --surface-2: #22262f;
+  --surface-3: #2b303a;
+  --line: #2d323d;
+  --line-soft: #262a33;
+
+  --ink: #f2f4f8;
+  --ink-2: #b4bac9;
+  --ink-3: #7b8291;
+
+  --accent: #7d74ff;
+  --accent-hover: #918aff;
+  --accent-ink: #14121f;
+  --accent-soft: rgba(125, 116, 255, 0.16);
+  --accent-line: rgba(125, 116, 255, 0.38);
+
+  --ok: #3ddc84;
+  --ok-soft: rgba(61, 220, 132, 0.14);
+  --warn: #f5b544;
+  --warn-soft: rgba(245, 181, 68, 0.14);
+  --err: #ff7070;
+  --err-soft: rgba(255, 112, 112, 0.14);
+  --focus: #918aff;
+
+  --sh-1: 0 1px 2px rgba(0, 0, 0, 0.34);
+  --sh-2: 0 1px 2px rgba(0, 0, 0, 0.34), 0 10px 24px -12px rgba(0, 0, 0, 0.7);
+  --sh-3: 0 20px 48px -16px rgba(0, 0, 0, 0.8), 0 2px 8px rgba(0, 0, 0, 0.5);
+  --sh-accent: 0 6px 18px -8px rgba(125, 116, 255, 0.7);
+  --sh-inset: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+
+  --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%237b8291' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m4 6.5 4 4 4-4'/%3E%3C/svg%3E");
+  --glass: rgba(26, 29, 37, 0.8);
 }
 
 /* ── 02  Reset, base, Korean typography ─────────────────────────────────── */

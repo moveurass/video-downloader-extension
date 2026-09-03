@@ -87,6 +87,7 @@ function makeHarness(responses = []) {
       calls.push(["sendMessage", message]);
       return responses[responseIndex++] || { jobs: [] };
     },
+    playCompletionSound: () => calls.push(["chime"]),
     recoveryActionsHtml: () => '<button data-act="retry">다시 받기</button>',
     bindRecoveryButtons: (root) => calls.push(["bindRecoveryButtons", root]),
     getPlaylistDl: () => ({ jobIds: new Set() }),
@@ -199,6 +200,37 @@ function makeHarness(responses = []) {
   await refresh.controller.refreshJobsFromBackground();
   await refresh.controller.refreshJobsFromBackground();
   check(refresh.uiJobs.get("ordered").percent, 70, "poll rejects older sequence");
+
+  const chime = makeHarness();
+  chime.controller.applyJobProgress({ id: "ok", status: "done", title: "완료" });
+  chime.controller.applyJobProgress({ id: "ok", status: "done", title: "완료" });
+  check(
+    chime.calls.filter((call) => call[0] === "chime").length,
+    1,
+    "completion chimes once per job"
+  );
+  chime.controller.applyJobProgress({
+    id: "bad", status: "error", title: "실패", error: "network"
+  });
+  chime.controller.applyJobProgress({ id: "held", status: "paused", title: "정지" });
+  chime.controller.applyJobProgress({
+    id: "quiet", status: "done", title: "조용히", _silentDone: true
+  });
+  check(
+    chime.calls.filter((call) => call[0] === "chime").length,
+    1,
+    "failure, pause, and silent completion stay quiet"
+  );
+
+  const restored = makeHarness([{
+    jobs: [{ id: "old", status: "done", title: "이전에 끝난 영상", percent: 100 }]
+  }]);
+  await restored.controller.restoreActiveDownloads();
+  check(
+    restored.calls.some((call) => call[0] === "chime"),
+    false,
+    "jobs finished before the popup opened do not chime"
+  );
 
   console.log(`popup progress UI: ${assertions} assertions passed`);
 })().catch((error) => {
