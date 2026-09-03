@@ -81,8 +81,12 @@ function makeHarness() {
     classifyMedia: DownloadEngine.classifyMedia,
     qualityLabel: (height) => (height ? `${height}p` : null),
     hashUrl: (url) => `hash-${url.length}`,
-    titlesMatchVideo: (a, b) =>
-      Naming.cleanPageTitle(a) === Naming.cleanPageTitle(b),
+    titlesMatchVideo: (a, b) => {
+      const codeA = Naming.extractProductCode(a);
+      const codeB = Naming.extractProductCode(b);
+      if (codeA && codeB) return codeA === codeB;
+      return Naming.cleanPageTitle(a) === Naming.cleanPageTitle(b);
+    },
     withTabReferer: async (_tabId, operation) => operation(),
     detachJobsFromTab: (tabId) => detached.push(tabId),
     now: () => 1234,
