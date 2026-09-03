@@ -2020,8 +2020,9 @@ input[type="radio"] {
     center / contain no-repeat;
 }
 
-.lib-search {
-  padding-left: 30px !important;
+/* Scoped so it outranks the shared .field-input padding on its own. */
+.lib-filters .lib-search {
+  padding-left: 30px;
 }
 
 .lib-search::-webkit-search-cancel-button {
