@@ -140,7 +140,8 @@
       (/\.(com|cc|net|tv)\b/i.test(value) && value.length < 28 && !/[가-힣]/.test(value)) ||
       /\d+x\d+/i.test(value) ||
       /^\d+[_-]\d+/i.test(value) ||
-      /^(영상|동영상|video|media|audio|다운로드|가능)$/i.test(value) ||
+      /^(?:영상|동영상|video|media|audio|file|download|다운로드|가능)(?:[\s_-]*(?:4k|\d{3,4}p|best|all|unknown|highest|default))?(?:[\s_-]*\d{1,3})?$/i.test(value) ||
+      /^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(value) ||
       /^[a-f0-9]{12,}$/i.test(value);
   }
 
@@ -154,7 +155,7 @@
       .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
       .replace(/[\u{2600}-\u{27BF}]/gu, "")
       .replace(/[♥❤💕💗💖💘⭐✨♡]/g, "")
-      .replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ")
+      .replace(/[-–—|·•:_\s]*Uncensore(?:d)?(?:[-–—_\s]*Leaked)?/gi, " ")
       .replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ")
       .replace(/\s*[\-|–—|·•:]\s*(YouTube|123AV|123av|MissAV|Jable|Netflix|Twitch|Bilibili).*$/i, "")
       .replace(/[\u2010-\u2015\u2212|·•]+/g, " ")

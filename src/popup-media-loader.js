@@ -24,6 +24,8 @@
         isBilibiliUrl,
         isSitePage,
         isHlsItem,
+        cleanTitleText,
+        isUglyName,
         refreshHelperStatus,
         render,
         loadAvailableQualities,
@@ -40,6 +42,16 @@
         getQualitiesLoading,
         setQualitiesLoading
       } = deps;
+
+      function usablePageTitle(raw) {
+        const value =
+          typeof cleanTitleText === "function"
+            ? cleanTitleText(raw || "")
+            : String(raw || "").trim();
+        if (!value || value.length < 2) return "";
+        if (typeof isUglyName === "function" && isUglyName(value)) return "";
+        return value;
+      }
 
       async function resolveActiveTab() {
         const queries = [
@@ -195,8 +207,10 @@
           try {
             const meta = await chrome.tabs.sendMessage(tab.id, {
               type: "GET_PAGE_META"
-            });
-            if (meta?.thumbnail || meta?.title) {
+            }, { frameId: 0 });
+            const freshTitle =
+              usablePageTitle(meta?.title) || usablePageTitle(tab.title);
+            if (meta?.thumbnail || freshTitle) {
               const curKey = pageKey(currentTabUrl);
               setAllItems(
                 getAllItems().map((i) => {
@@ -211,27 +225,31 @@
                       ? meta.thumbnail || i.thumbnail || undefined
                       : meta.thumbnail || undefined,
                     title:
-                      meta.title ||
+                      freshTitle ||
                       (i.title &&
                       !/^YouTube|TikTok|Instagram/i.test(i.title)
                         ? i.title
                         : "") ||
                       i.title,
-                    pageTitle: meta.title || i.pageTitle
+                    pageTitle: freshTitle || i.pageTitle,
+                    displayName: freshTitle || i.displayName
                   };
                 })
               );
+              const pageMeta = {
+                ...meta,
+                lastUrl: currentTabUrl,
+                // Clear if page has no thumb yet — don't leave previous
+                thumbnail: meta.thumbnail || undefined
+              };
+              if (freshTitle) pageMeta.title = freshTitle;
+              else delete pageMeta.title;
               chrome.runtime
                 .sendMessage({
                   type: "PAGE_META",
                   tabId: getCurrentTabId(),
                   pageUrl: currentTabUrl,
-                  pageMeta: {
-                    ...meta,
-                    lastUrl: currentTabUrl,
-                    // Clear if page has no thumb yet — don't leave previous
-                    thumbnail: meta.thumbnail || undefined
-                  }
+                  pageMeta
                 })
                 .catch(() => {});
             } else {
@@ -260,7 +278,7 @@
               }
             }
             if (tab.title && allItems[0]) {
-              const t = tab.title.replace(/\s*[-–—|].*$/, "").trim();
+              const t = usablePageTitle(tab.title);
               if (t && t.length > 2) {
                 allItems[0].title = t;
                 allItems[0].pageTitle = t;
@@ -336,7 +354,8 @@
         loadMedia,
         siteDisplayName,
         updateQuickPageUi,
-        autofillLinkFromCurrentTab
+        autofillLinkFromCurrentTab,
+        usablePageTitle
       };
     }
 

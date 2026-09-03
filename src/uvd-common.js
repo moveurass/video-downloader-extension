@@ -703,7 +703,13 @@ const UVD = (() => {
       .replace(/\.(mp4|webm|mkv|mp3|m4a|ts)$/i, "")
       .trim();
     if (!s || s.length < 2) return true;
-    if (/^(영상|동영상|video|media|audio|file|download)$/i.test(s)) return true;
+    if (
+      /^(?:영상|동영상|video|media|audio|file|download)(?:[\s_-]*(?:4k|\d{3,4}p|best|all|unknown|highest|default))?(?:[\s_-]*\d{1,3})?$/i.test(
+        s
+      )
+    ) {
+      return true;
+    }
     // Site_id junk: YouTube_xxxx, TikTok_123, X_123, Bilibili_BVxx …
     if (
       /^(YouTube|TikTok|Instagram|Facebook|Bilibili|Vimeo|Dailymotion|Twitch|Naver|X|Twitter|YT|TT|IG|FB)([_-][A-Za-z0-9_-]+)?$/i.test(
@@ -746,7 +752,7 @@ const UVD = (() => {
     let title = String(ctx.title || "").trim();
     // Strip common leak/site noise before templating (defense in depth)
     title = title
-      .replace(/[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi, " ")
+      .replace(/[-–—|·•:_\s]*Uncensore(?:d)?(?:[-–—_\s]*Leaked)?/gi, " ")
       .replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ")
       .replace(/[\u2010-\u2015\u2212|·•]+/g, " ")
       .replace(/\s+-\s+/g, " ")

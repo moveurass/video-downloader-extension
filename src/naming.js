@@ -49,11 +49,29 @@ const Naming = (() => {
   }
 
   /**
+   * Known marketing descriptors appended to otherwise clean code slugs.
+   * Strip from the right so combinations such as
+   * "CAWD-952-uncensored-leaked" still reduce to one code token. 123av also
+   * emits the truncated "uncensore" spelling used by older routes.
+   */
+  function stripCodeDescriptorSuffix(token) {
+    let value = String(token || "").trim();
+    const suffix =
+      /[-_](?:uncensore(?:d)?|leaked|no[-_]?mosaic|demosaic|uncut|raw|chinese[-_]?subtitles?)$/i;
+    let previous = "";
+    while (value && value !== previous) {
+      previous = value;
+      value = value.replace(suffix, "");
+    }
+    return value;
+  }
+
+  /**
    * Match product code in a single path/token.
    * Prefer hyphenated "SNOS-309". Reject site folders like "dm14".
    */
   function matchCodeToken(token) {
-    const seg = String(token || "").trim();
+    const seg = stripCodeDescriptorSuffix(token);
     if (!seg) return "";
     // Hyphen / underscore form: SNOS-309, sone_791
     let m = seg.match(/^([A-Za-z]{2,12})[-_](\d{2,5})(?:[a-z])?$/i);
@@ -177,7 +195,7 @@ const Naming = (() => {
     // Remove English leak / marketing tags (anywhere, common on 123av titles)
     // Note: no \b after Leaked — titles often continue as Leaked_720p
     t = t.replace(
-      /[-–—|·•:_\s]*Uncensored(?:[-–—_\s]*Leaked)?/gi,
+      /[-–—|·•:_\s]*Uncensore(?:d)?(?:[-–—_\s]*Leaked)?/gi,
       " "
     );
     t = t.replace(/[-–—|·•:_\s]*Leaked(?=[_\s\-–—.]|$|\d)/gi, " ");
@@ -229,6 +247,18 @@ const Naming = (() => {
     if (!base || base.length < 2) return true;
     const b = String(base).trim();
 
+    // A generated fallback plus quality is still generic, not a page title.
+    if (
+      /^(?:영상|동영상|video|media|audio|file|download)(?:[\s_-]*(?:4k|\d{3,4}p|best|all|unknown|highest|default))?(?:[\s_-]*\d{1,3})?$/i.test(
+        b
+      )
+    ) {
+      return true;
+    }
+    if (/^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(b)) {
+      return true;
+    }
+
     // Player / CDN hostnames (javplayer.cc etc.) — not a video name
     if (/javplayer|surrit|cloudfront|akamai|fastly|cloudflare/i.test(b)) return true;
     if (/^(www\.)?[a-z0-9-]+\.(com|cc|net|tv|io|me|app|xyz|co|to|site)$/i.test(b)) {
@@ -274,8 +304,6 @@ const Naming = (() => {
     }
 
     if (/^(4k|2160p|1440p|1080p|720p|480p|360p|240p|hd|sd|fhd|uhd)$/i.test(b)) return true;
-    if (/^동영상$|^영상$|^video$|^media$|^audio$/i.test(b)) return true;
-
     return false;
   }
 

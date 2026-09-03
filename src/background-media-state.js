@@ -67,16 +67,9 @@
           return `ig:${path.replace(/\/+$/, "") || "/"}`;
         }
 
-        const codeInPath = path.match(
-          /(?:^|\/)([a-z]{2,12})-?(\d{2,5})(?:\/|$|\.)/i
-        );
-        if (
-          codeInPath &&
-          /123av|missav|jable|avgle|netflav|supjav|njav|javdb|thisav|hanime/i.test(
-            host
-          )
-        ) {
-          return `${host}:code:${codeInPath[1].toUpperCase()}-${codeInPath[2]}`;
+        if (Naming.isKnownCodeSite?.(host)) {
+          const codeInPath = Naming.extractProductCode?.(u.href) || "";
+          if (codeInPath) return `${host}:code:${codeInPath}`;
         }
 
         const keep = [];

@@ -753,6 +753,8 @@
         isBilibiliUrl,
         isSitePage,
         isHlsItem,
+        cleanTitleText,
+        isUglyName,
         refreshHelperStatus,
         render,
         loadAvailableQualities,
