@@ -37,7 +37,7 @@
           const previousTabUrl = getCurrentTabUrl();
           const previousKey = pageKey(previousTabUrl);
           const reportedUrl = msg.pageUrl || "";
-          const reportedKey = pageKey(reportedUrl);
+          const reportedKey = reportedUrl ? pageKey(reportedUrl) : "";
           if (
             reportedUrl &&
             reportedUrl !== previousTabUrl &&
