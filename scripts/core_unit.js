@@ -202,6 +202,26 @@ assert.equal(DownloadEngine.safeDownloadName("nul"), "nul_.mp4");
 assert.equal(DownloadEngine.safeDownloadName("com1.webm"), "com1_.webm");
 assert.equal(DownloadEngine.safeDownloadName("Console log.mp4"), "Console log.mp4");
 assert.equal(
+  DownloadEngine.safeDownloadName("poster.jpeg", "image/jpeg"),
+  "poster.jpg"
+);
+assert.equal(
+  DownloadEngine.safeDownloadName("poster.jpg.jpeg", "image/jpeg"),
+  "poster.jpg"
+);
+assert.equal(
+  DownloadEngine.safeDownloadName("poster.jpg", "image/png"),
+  "poster.png"
+);
+assert.equal(
+  DownloadEngine.safeDownloadName("poster.jpg", "image/webp"),
+  "poster.webp"
+);
+assert.equal(
+  DownloadEngine.safeDownloadName("poster", "image/webp; charset=binary"),
+  "poster.webp"
+);
+assert.equal(
   Naming.buildFilename({
     title: "Readable page title",
     url: "https://cdn.example/media/source.webm"

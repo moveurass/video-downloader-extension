@@ -128,7 +128,9 @@
         path: result.path || result.outDir || "",
         outDir: result.outDir || "",
         filename: result.filename || nameHint || filename,
-        size: result.size || 0
+        size: result.size || 0,
+        writeThumbnail: result.writeThumbnail === true,
+        thumbnailPath: result.thumbnailPath || ""
       };
     }
 
@@ -197,7 +199,9 @@
         path: result.path || result.outDir || "",
         outDir: result.outDir || "",
         filename: result.filename || nameHint || filename,
-        size: result.size || 0
+        size: result.size || 0,
+        writeThumbnail: result.writeThumbnail === true,
+        thumbnailPath: result.thumbnailPath || ""
       };
     }
 

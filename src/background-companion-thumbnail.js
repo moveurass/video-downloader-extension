@@ -5,9 +5,30 @@
 })(typeof globalThis !== "undefined" ? globalThis : self, function makeCompanionThumbnail() {
   "use strict";
 
+  function helperHandledThumbnail(result) {
+    const helperSaved =
+      result?.ytdlp === true ||
+      (result?.downloadId == null && String(result?.path || "").trim());
+    return !!(
+      helperSaved &&
+      (result?.writeThumbnail === true ||
+        String(result?.thumbnailPath || "").trim())
+    );
+  }
+
+  function imageMimeFromUrl(url) {
+    const clean = String(url || "").split(/[?#]/, 1)[0].toLowerCase();
+    if (clean.endsWith(".png")) return "image/png";
+    if (clean.endsWith(".webp")) return "image/webp";
+    return "image/jpeg";
+  }
+
   function createSaver(deps) {
     async function saveCompanionThumbnail(job, result) {
       try {
+        // The helper publishes its yt-dlp thumbnail beside the media. Starting
+        // a Chrome download as well creates a duplicate image-only shelf entry.
+        if (helperHandledThumbnail(result)) return;
         const settings = await deps.UVD.getSettings();
         if (settings.saveThumbnail === false) return;
         if ((job?.mediaMode || settings.mediaMode) === "audio") return;
@@ -32,8 +53,9 @@
               .trim()
               .slice(0, 60) || "영상";
         }
-        const jpgName = deps.safeDownloadName(`${base}.jpg`, "image/jpeg");
-        const relativePath = await deps.relDownloadPath(jpgName);
+        const directMime = imageMimeFromUrl(thumbnailUrl);
+        const directName = deps.safeDownloadName(base, directMime);
+        const relativePath = await deps.relDownloadPath(directName);
 
         try {
           await deps.startChromeDownload(thumbnailUrl, relativePath);
@@ -65,7 +87,9 @@
               ? blob.type
               : "image/jpeg";
           const dataUrl = `data:${mime};base64,${deps.btoa(binary)}`;
-          await deps.startChromeDownload(dataUrl, relativePath);
+          const fetchedName = deps.safeDownloadName(base, mime);
+          const fetchedPath = await deps.relDownloadPath(fetchedName);
+          await deps.startChromeDownload(dataUrl, fetchedPath);
         } catch (error) {
           deps.console.warn("[UVD] thumb save", error);
         }
@@ -77,5 +101,5 @@
     return { saveCompanionThumbnail };
   }
 
-  return { createSaver };
+  return { createSaver, helperHandledThumbnail, imageMimeFromUrl };
 });

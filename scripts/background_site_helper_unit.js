@@ -87,6 +87,19 @@ async function main() {
   equal(lazyRunner.getCookieHeader, lazyRunner.getCookieHeaderForUrl);
   equal(lazyRunner.collectCookies, lazyRunner.collectCookiesForUrl);
   equal(lazyRunner.downloadDirect, lazyRunner.downloadDirectMediaUrl);
+  equal(
+    (await lazyRunner.ytdlpExtraFromSettings("https://example.test/video"))
+      .writeThumbnail,
+    true
+  );
+  equal(
+    (
+      await lazyRunner.ytdlpExtraFromSettings("https://example.test/video", {
+        mediaMode: "audio"
+      })
+    ).writeThumbnail,
+    false
+  );
 
   const cookieQueries = [];
   const original = {
@@ -271,7 +284,12 @@ async function main() {
         helperTimeout = timeout;
         onProgress({ percent: 120, message: "Merging formats", helperJobId: "helper-1" });
         onProgress({ percent: -4, message: "[download] bytes", status: "download" });
-        return { path: "/tmp/video.mp4", filename: "final.mp4", size: 42 };
+        return {
+          path: "/tmp/video.mp4",
+          filename: "final.mp4",
+          size: 42,
+          thumbnailPath: "/tmp/video.jpg"
+        };
       }
     },
     getActiveDownload: (id) => id === "job-1" ? job : null,
@@ -297,6 +315,7 @@ async function main() {
   equal(helperPayload.filename, "Readable.mp4");
   equal(helperPayload.quality, "1080p");
   equal(helperPayload.writeSubs, true);
+  equal(helperPayload.writeThumbnail, true);
   equal(helperPayload.audioTrackId, "251");
   deepEqual(helperPayload.subtitleLanguages, ["ko", "ja"]);
   equal(helperPayload.yesPlaylist, true);
@@ -312,7 +331,9 @@ async function main() {
     path: "/tmp/video.mp4",
     outDir: "",
     filename: "final.mp4",
-    size: 42
+    size: 42,
+    writeThumbnail: true,
+    thumbnailPath: "/tmp/video.jpg"
   });
 
   console.log(`background_site_helper_unit: ${assertions} assertions passed`);
