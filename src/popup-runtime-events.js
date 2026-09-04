@@ -7,6 +7,19 @@
   function makePopupRuntimeEvents() {
     "use strict";
 
+    function isYoutubePageUrl(rawUrl) {
+      try {
+        const host = new URL(rawUrl).hostname.replace(/^www\./i, "");
+        return (
+          host === "youtu.be" ||
+          host.includes("youtube.com") ||
+          host.includes("youtube-nocookie.com")
+        );
+      } catch {
+        return false;
+      }
+    }
+
     function createHandler(deps) {
       const {
         $,
@@ -63,7 +76,7 @@
           const currentTabUrl = reportedUrl || previousTabUrl;
           const curKey = pageKey(currentTabUrl);
           const identityReady =
-            !String(curKey || "").startsWith("yt:") ||
+            !isYoutubePageUrl(currentTabUrl) ||
             msg.identityConfirmed === true;
           const items = (msg.items || []).flatMap((i) => {
             const k = pageKey(i.pageUrl || i.url || "");
