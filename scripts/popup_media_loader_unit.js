@@ -229,7 +229,7 @@ async function main() {
             pageUrl: newWatchUrl,
             videoId: "current",
             identityConfirmed: true,
-            title: "Current video",
+            title: "",
             thumbnail: "https://i.ytimg.com/vi/current/hqdefault.jpg"
           };
         }
@@ -250,6 +250,17 @@ async function main() {
                 thumbnail:
                   "https://i.ytimg.com/vi/previous/hqdefault.jpg"
               }]
+            };
+          }
+          if (message.type === "PROBE_PAGE_META") {
+            return {
+              ok: true,
+              source: "youtube-oembed",
+              finalUrl: newWatchUrl,
+              videoId: "current",
+              identityConfirmed: true,
+              title: "Current video",
+              thumbnail: "https://i.ytimg.com/vi/current/hqdefault.jpg"
             };
           }
           return { ok: true };
@@ -308,7 +319,16 @@ async function main() {
     "",
     "a lagging YouTube browser-tab title is not cached under the new watch id"
   );
-  check(spaMetaReads, 2, "page metadata is retried until player identity is current");
+  check(spaMetaReads, 3, "page metadata is retried while the player title is empty");
+  check(
+    spaRuntimeMessages.some(
+      (message) =>
+        message.type === "PROBE_PAGE_META" &&
+        message.expectedKey === "current"
+    ),
+    true,
+    "an empty SPA player title falls back to current-id page metadata"
+  );
   check(spaItems[0].title, "Current video", "the new player title replaces stale state");
   check(
     spaItems[0].thumbnail,

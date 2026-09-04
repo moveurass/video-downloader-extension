@@ -125,9 +125,48 @@
             (!youtubeId || !meta?.videoId || meta.videoId === youtubeId);
           if (samePage) {
             lastMatching = meta;
-            if (!youtubeId || meta.identityConfirmed === true) return meta;
+            if (
+              !youtubeId ||
+              (meta.identityConfirmed === true &&
+                usablePageTitle(meta.title))
+            ) {
+              return meta;
+            }
           }
           if (attempt + 1 < attempts) await delay(attempt === 0 ? 150 : 350);
+        }
+        if (youtubeId) {
+          try {
+            const probe = await chrome.runtime.sendMessage({
+              type: "PROBE_PAGE_META",
+              tabId,
+              url: pageUrl,
+              pageUrl,
+              expectedKey: youtubeId
+            });
+            const probeIdentity =
+              probe?.videoId ||
+              youtubeThumbnailVideoId(probe?.thumbnail) ||
+              youtubeVideoId(probe?.finalUrl || "");
+            if (
+              probe?.ok &&
+              probeIdentity === youtubeId &&
+              usablePageTitle(probe.title)
+            ) {
+              return {
+                ...(lastMatching || {}),
+                ...probe,
+                pageUrl,
+                videoId: youtubeId,
+                identityConfirmed: true,
+                thumbnail: thumbnailMatchesPage(probe.thumbnail, pageUrl)
+                  ? probe.thumbnail
+                  : youtubeThumbnailForPage(pageUrl)
+              };
+            }
+          } catch {
+            /* current-id thumbnail fallback remains available below */
+          }
         }
         return lastMatching;
       }
@@ -354,7 +393,8 @@
               (meta?.identityConfirmed === true &&
                 (!meta?.videoId || meta.videoId === youtubeId)));
           const freshTitle = identityConfirmed
-            ? usablePageTitle(meta?.title) || usablePageTitle(tab.title)
+            ? usablePageTitle(meta?.title) ||
+              (!youtubeId ? usablePageTitle(tab.title) : "")
             : !youtubeId
               ? usablePageTitle(tab.title)
               : "";

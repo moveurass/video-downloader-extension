@@ -5,6 +5,24 @@
 })(typeof globalThis !== "undefined" ? globalThis : self, function makeMediaMessages() {
   "use strict";
 
+  function youtubeVideoId(rawUrl) {
+    try {
+      const url = new URL(rawUrl);
+      const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+      if (host === "youtu.be") {
+        return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+      }
+      if (!host.includes("youtube") && !host.includes("youtube-nocookie")) {
+        return "";
+      }
+      const watchId = url.searchParams.get("v");
+      if (watchId) return watchId;
+      return url.pathname.match(/\/(?:shorts|embed|live)\/([^/?#]+)/i)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
   function createHandler(deps) {
     const isTopFrame = (sender) =>
       sender?.frameId == null || sender.frameId === 0;
@@ -153,6 +171,62 @@
               if (!url || !/^https?:/i.test(url)) {
                 sendResponse({ ok: false, exists: false, error: "url 없음" });
                 return;
+              }
+              const youtubeId = youtubeVideoId(url);
+              if (youtubeId) {
+                try {
+                  const canonicalUrl =
+                    `https://www.youtube.com/watch?v=${encodeURIComponent(
+                      youtubeId
+                    )}`;
+                  const ctrl = new AbortController();
+                  const timer = setTimeout(() => ctrl.abort(), 6000);
+                  let oembedResponse;
+                  try {
+                    oembedResponse = await deps.fetch(
+                      `https://www.youtube.com/oembed?url=${encodeURIComponent(
+                        canonicalUrl
+                      )}&format=json`,
+                      {
+                        method: "GET",
+                        signal: ctrl.signal,
+                        credentials: "omit",
+                        redirect: "follow",
+                        headers: { Accept: "application/json" }
+                      }
+                    );
+                  } finally {
+                    clearTimeout(timer);
+                  }
+                  if (oembedResponse?.ok) {
+                    const payload = await oembedResponse.json();
+                    const title = String(payload?.title || "").trim();
+                    const thumbnail = String(
+                      payload?.thumbnail_url ||
+                        `https://i.ytimg.com/vi/${encodeURIComponent(
+                          youtubeId
+                        )}/hqdefault.jpg`
+                    ).trim();
+                    if (title) {
+                      sendResponse({
+                        ok: true,
+                        exists: true,
+                        status: oembedResponse.status || 200,
+                        url,
+                        finalUrl: canonicalUrl,
+                        title,
+                        thumbnail,
+                        videoId: youtubeId,
+                        identityConfirmed: true,
+                        source: "youtube-oembed"
+                      });
+                      return;
+                    }
+                  }
+                } catch {
+                  // Private, removed, or temporarily unavailable videos fall
+                  // through to the existing live-page/HTML metadata probes.
+                }
               }
               const probeTabId = tabId;
               if (probeTabId != null && probeTabId >= 0) {
@@ -511,5 +585,5 @@
     };
   }
 
-  return { createHandler };
+  return { createHandler, youtubeVideoId };
 });
