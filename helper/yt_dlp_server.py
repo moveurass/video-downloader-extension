@@ -1459,12 +1459,6 @@ def run_download(job_id: str, payload: dict) -> None:
 
     try:
         for attempt_i, (fmt_try, merge_try, extra) in enumerate(attempts):
-            # Do not let a failed format attempt's reported path win over the
-            # successful attempt that follows it.
-            try:
-                path_file.unlink(missing_ok=True)
-            except OSError:
-                pass
             cmd = build_cmd(fmt_try, merge_try, extra)
             with jobs_lock:
                 jobs[job_id]["cmd"] = " ".join(cmd[:8]) + " …"
