@@ -164,6 +164,164 @@ async function main() {
   );
   check(renderCount, 2, "loader renders before and after quality discovery");
 
+  check(
+    MediaLoader.youtubeVideoId(
+      "https://www.youtube.com/watch?v=current&t=30"
+    ),
+    "current",
+    "YouTube watch identity ignores navigation-only parameters"
+  );
+  check(
+    MediaLoader.thumbnailMatchesPage(
+      "https://i.ytimg.com/vi/previous/hqdefault.jpg",
+      "https://www.youtube.com/watch?v=current"
+    ),
+    false,
+    "a previous watch thumbnail is rejected"
+  );
+  check(
+    MediaLoader.youtubeThumbnailForPage(
+      "https://www.youtube.com/watch?v=current"
+    ),
+    "https://i.ytimg.com/vi/current/hqdefault.jpg",
+    "the current watch id provides a safe thumbnail fallback"
+  );
+
+  const oldWatchUrl = "https://www.youtube.com/watch?v=previous";
+  const newWatchUrl = "https://www.youtube.com/watch?v=current";
+  const spaTab = { id: 8, url: newWatchUrl, title: "Previous video - YouTube" };
+  let spaCurrentTabId = null;
+  let spaCurrentTabUrl = oldWatchUrl;
+  let spaItems = [{
+    pageUrl: oldWatchUrl,
+    title: "Previous video",
+    thumbnail: "https://i.ytimg.com/vi/previous/hqdefault.jpg"
+  }];
+  let spaMetaReads = 0;
+  const spaRenders = [];
+  const spaRuntimeMessages = [];
+  const spaPageKey = (url) => {
+    try {
+      return new URL(url).searchParams.get("v") || new URL(url).pathname;
+    } catch {
+      return "";
+    }
+  };
+  const spaLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [spaTab],
+        get: async () => spaTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type !== "GET_PAGE_META") return { ok: true };
+          spaMetaReads += 1;
+          if (spaMetaReads === 1) {
+            return {
+              pageUrl: newWatchUrl,
+              videoId: "current",
+              identityConfirmed: false,
+              title: "Previous video",
+              thumbnail:
+                "https://i.ytimg.com/vi/previous/hqdefault.jpg"
+            };
+          }
+          return {
+            pageUrl: newWatchUrl,
+            videoId: "current",
+            identityConfirmed: true,
+            title: "Current video",
+            thumbnail: "https://i.ytimg.com/vi/current/hqdefault.jpg"
+          };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          spaRuntimeMessages.push(message);
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: newWatchUrl,
+                pageUrl: newWatchUrl,
+                isSiteDownload: true,
+                title: "Previous video",
+                pageTitle: "Previous video",
+                displayName: "Previous video",
+                filename: "Previous video.mp4",
+                thumbnail:
+                  "https://i.ytimg.com/vi/previous/hqdefault.jpg"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => elements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items) => items,
+    pageKey: spaPageKey,
+    isInstagramUrl: () => false,
+    isTiktokUrl: () => false,
+    isYoutubeUrl: () => true,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: () => true,
+    isHlsItem: () => false,
+    cleanTitleText: (value) => String(value || "").trim(),
+    isUglyName: () => false,
+    refreshHelperStatus: async () => {},
+    render: () => {
+      spaRenders.push(spaItems.map((item) => ({ ...item })));
+    },
+    loadAvailableQualities: async () => {},
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => spaItems,
+    setAllItems: (items) => {
+      spaItems = items;
+    },
+    getCurrentTabId: () => spaCurrentTabId,
+    setCurrentTabId: (value) => {
+      spaCurrentTabId = value;
+    },
+    getCurrentTabUrl: () => spaCurrentTabUrl,
+    setCurrentTabUrl: (value) => {
+      spaCurrentTabUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {},
+    setTimeout: (callback) => callback()
+  });
+
+  await spaLoader.loadMedia();
+  check(spaRenders[0], [], "the old card is cleared before SPA metadata loads");
+  check(
+    spaRuntimeMessages.find((message) => message.type === "GET_MEDIA")?.title,
+    "",
+    "a lagging YouTube browser-tab title is not cached under the new watch id"
+  );
+  check(spaMetaReads, 2, "page metadata is retried until player identity is current");
+  check(spaItems[0].title, "Current video", "the new player title replaces stale state");
+  check(
+    spaItems[0].thumbnail,
+    "https://i.ytimg.com/vi/current/hqdefault.jpg",
+    "the new watch thumbnail replaces stale state"
+  );
+  check(spaItems[0].filename, undefined, "the old title-based filename is cleared");
+  check(
+    spaRuntimeMessages.find((message) => message.type === "PAGE_META")?.pageUrl,
+    newWatchUrl,
+    "refetched metadata is bound to the current watch URL"
+  );
+
   const genericItem = {
     filename: "동영상_720p.mp4",
     pageUrl,

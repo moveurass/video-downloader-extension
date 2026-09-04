@@ -115,6 +115,20 @@ async function main() {
   equal(store.pageIdentityKey("https://youtube.com/watch?v=alpha&t=3"), "yt:alpha");
   equal(store.pageIdentityKey("https://youtu.be/bravo?t=1"), "yt:bravo");
   equal(
+    store.thumbnailMatchesPageKey(
+      "https://i.ytimg.com/vi/old/hqdefault.jpg",
+      "yt:new"
+    ),
+    false
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "https://i.ytimg.com/vi_webp/new/maxresdefault.webp",
+      "yt:new"
+    ),
+    true
+  );
+  equal(
     store.pageIdentityKey("https://www.tiktok.com/@name/video/123456"),
     "tt:123456"
   );
@@ -276,7 +290,9 @@ async function main() {
   store.setTabMeta(12, {
     lastUrl: "https://youtube.com/watch?v=old",
     title: "Old video",
-    thumbnail: "https://example.com/old.jpg"
+    thumbnail: "https://i.ytimg.com/vi/old/hqdefault.jpg",
+    videoId: "old",
+    identityConfirmed: true
   });
   store.addMedia(12, {
     url: "https://cdn.example.com/old.mp4",
@@ -299,7 +315,36 @@ async function main() {
   );
   equal(store.getTabItems(12).length, 0);
   equal(store.getTabMeta(12).title, undefined);
+  equal(store.getTabMeta(12).identityConfirmed, false);
   deepEqual(detached, [12]);
+  store.setTabMeta(12, {
+    lastUrl: "https://youtube.com/watch?v=new",
+    thumbnail: "https://i.ytimg.com/vi/old/hqdefault.jpg"
+  });
+  equal(
+    store.getTabMeta(12).thumbnail,
+    undefined,
+    "old YouTube thumbnails cannot re-enter current tab metadata"
+  );
+  store.setTabMeta(12, {
+    lastUrl: "https://youtube.com/watch?v=new",
+    thumbnail: "https://i.ytimg.com/vi/new/hqdefault.jpg",
+    videoId: "new",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(12).thumbnail,
+    "https://i.ytimg.com/vi/new/hqdefault.jpg"
+  );
+  await flush();
+  const navigationUpdate = harness.messages
+    .filter((message) => message.type === "MEDIA_UPDATED" && message.tabId === 12)
+    .at(-1);
+  equal(
+    navigationUpdate?.pageUrl,
+    "https://youtube.com/watch?v=new",
+    "media updates identify the SPA page they belong to"
+  );
 
   store.addMedia(12, {
     url: "https://cdn.example.com/new.mp4",

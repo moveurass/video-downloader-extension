@@ -7,6 +7,45 @@
   function makePopupMediaLoader() {
     "use strict";
 
+    function youtubeVideoId(rawUrl) {
+      try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (host === "youtu.be") {
+          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+        }
+        if (!host.includes("youtube") && !host.includes("youtube-nocookie")) {
+          return "";
+        }
+        const watchId = url.searchParams.get("v");
+        if (watchId) return watchId;
+        return url.pathname.match(/\/(?:shorts|embed|live)\/([^/?#]+)/i)?.[1] || "";
+      } catch {
+        return "";
+      }
+    }
+
+    function youtubeThumbnailVideoId(rawUrl) {
+      return (
+        String(rawUrl || "").match(
+          /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
+        )?.[1] || ""
+      );
+    }
+
+    function youtubeThumbnailForPage(pageUrl) {
+      const videoId = youtubeVideoId(pageUrl);
+      return videoId
+        ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`
+        : "";
+    }
+
+    function thumbnailMatchesPage(thumbnail, pageUrl) {
+      const expected = youtubeVideoId(pageUrl);
+      if (!expected) return true;
+      return youtubeThumbnailVideoId(thumbnail) === expected;
+    }
+
     function createLoader(deps) {
       const {
         chrome,
@@ -42,6 +81,11 @@
         getQualitiesLoading,
         setQualitiesLoading
       } = deps;
+      const delay = (ms) =>
+        new Promise((resolve) =>
+          (deps.setTimeout || setTimeout)(resolve, ms)
+        );
+      let loadSequence = 0;
 
       function usablePageTitle(raw) {
         const value =
@@ -51,6 +95,41 @@
         if (!value || value.length < 2) return "";
         if (typeof isUglyName === "function" && isUglyName(value)) return "";
         return value;
+      }
+
+      async function loadCurrentPageMeta(tabId, pageUrl) {
+        const expectedKey = pageKey(pageUrl);
+        const youtubeId = youtubeVideoId(pageUrl);
+        const attempts = youtubeId ? 3 : 1;
+        let lastMatching = null;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          let meta = null;
+          try {
+            meta = await chrome.tabs.sendMessage(
+              tabId,
+              {
+                type: "GET_PAGE_META",
+                pageUrl,
+                expectedKey
+              },
+              { frameId: 0 }
+            );
+          } catch {
+            meta = null;
+          }
+          const metaUrl = meta?.pageUrl || meta?.lastUrl || "";
+          const metaKey = pageKey(metaUrl);
+          const samePage =
+            !!meta &&
+            (!expectedKey || !metaKey || expectedKey === metaKey) &&
+            (!youtubeId || !meta?.videoId || meta.videoId === youtubeId);
+          if (samePage) {
+            lastMatching = meta;
+            if (!youtubeId || meta.identityConfirmed === true) return meta;
+          }
+          if (attempt + 1 < attempts) await delay(attempt === 0 ? 150 : 350);
+        }
+        return lastMatching;
       }
 
       async function resolveActiveTab() {
@@ -120,7 +199,9 @@
       }
 
       async function loadMedia() {
+        const requestId = ++loadSequence;
         let tab = await resolveActiveTab();
+        if (requestId !== loadSequence) return;
         if (!tab?.id) {
           listEl.innerHTML = `
       <div class="empty">
@@ -137,12 +218,26 @@
         } catch {
           /* keep query result */
         }
+        if (requestId !== loadSequence) return;
 
+        const previousTabUrl = getCurrentTabUrl();
+        const nextTabUrl =
+          tab.url || tab.pendingUrl || previousTabUrl || null;
+        const previousKey = pageKey(previousTabUrl);
+        const nextKey = pageKey(nextTabUrl);
         setCurrentTabId(tab.id);
-        setCurrentTabUrl(
-          tab.url || tab.pendingUrl || getCurrentTabUrl() || null
-        );
+        setCurrentTabUrl(nextTabUrl);
         let currentTabUrl = getCurrentTabUrl();
+        if (
+          previousKey &&
+          nextKey &&
+          previousKey !== nextKey
+        ) {
+          setAllItems([]);
+          setAvailableQualities([{ id: "best", label: "최고" }]);
+          setQualitiesLoading(false);
+          render();
+        }
 
         try {
           pageHost.textContent = currentTabUrl
@@ -171,6 +266,7 @@
         } catch {
           /* restricted / not injected */
         }
+        if (requestId !== loadSequence) return;
 
         // TikTok: SnapTik-style page JSON extract (playAddr / downloadAddr)
         if (isTiktokUrl(currentTabUrl)) {
@@ -186,6 +282,7 @@
             /* ignore */
           }
         }
+        if (requestId !== loadSequence) return;
 
         let res = null;
         try {
@@ -193,99 +290,129 @@
             type: "GET_MEDIA",
             tabId: getCurrentTabId(),
             pageUrl: currentTabUrl,
-            title: tab.title || ""
+            // Browser tab titles can lag behind a YouTube pushState URL.
+            title: youtubeVideoId(currentTabUrl) ? "" : tab.title || ""
           });
         } catch {
           res = null;
         }
-        setAllItems(
-          ensureSiteItems(Array.isArray(res?.items) ? res.items : [], tab)
-        );
+        if (requestId !== loadSequence) return;
 
-        // Ensure thumbnail / title from *current* page only (never keep previous video thumb)
+        const curKey = pageKey(currentTabUrl);
+        const youtubeId = youtubeVideoId(currentTabUrl);
+        const rawItems = (Array.isArray(res?.items) ? res.items : [])
+          .filter((item) => {
+            const itemKey = pageKey(item.pageUrl || item.url || "");
+            return !itemKey || !curKey || itemKey === curKey;
+          })
+          .map((item) => {
+            if (!youtubeId) return item;
+            return {
+              ...item,
+              // A helper placeholder can be stamped with the new URL while
+              // still carrying title/cover data from the previous SPA page.
+              title: undefined,
+              pageTitle: undefined,
+              displayName: undefined,
+              filename: undefined,
+              thumbnail: thumbnailMatchesPage(
+                item.thumbnail,
+                currentTabUrl
+              )
+                ? item.thumbnail
+                : undefined
+            };
+          });
+        const siteTab = youtubeId ? { ...tab, title: "" } : tab;
+        setAllItems(ensureSiteItems(rawItems, siteTab));
+
+        // Ask the live top frame again after SCAN_NOW. YouTube can update the
+        // URL before its player/title DOM; retry until both identities agree.
         if (getAllItems()[0]) {
+          const meta = await loadCurrentPageMeta(tab.id, currentTabUrl);
+          if (requestId !== loadSequence) return;
+
           try {
-            const meta = await chrome.tabs.sendMessage(tab.id, {
-              type: "GET_PAGE_META"
-            }, { frameId: 0 });
-            const freshTitle =
-              usablePageTitle(meta?.title) || usablePageTitle(tab.title);
-            if (meta?.thumbnail || freshTitle) {
-              const curKey = pageKey(currentTabUrl);
-              setAllItems(
-                getAllItems().map((i) => {
-                  const itemKey = pageKey(
-                    i.pageUrl || i.url || currentTabUrl
-                  );
-                  const same = !itemKey || !curKey || itemKey === curKey;
-                  return {
-                    ...i,
-                    // Prefer fresh page meta thumb; drop mismatched old thumbs
-                    thumbnail: same
-                      ? meta?.thumbnail || i.thumbnail || undefined
-                      : meta?.thumbnail || undefined,
-                    title:
-                      freshTitle ||
-                      (i.title &&
-                      !/^YouTube|TikTok|Instagram/i.test(i.title)
-                        ? i.title
-                        : "") ||
-                      i.title,
-                    pageTitle: freshTitle || i.pageTitle,
-                    displayName: freshTitle || i.displayName
-                  };
-                })
-              );
-              const pageMeta = {
-                ...(meta || {}),
-                lastUrl: currentTabUrl,
-                // Clear if page has no thumb yet — don't leave previous
-                thumbnail: meta?.thumbnail || undefined
-              };
-              if (freshTitle) pageMeta.title = freshTitle;
-              else delete pageMeta.title;
-              chrome.runtime
-                .sendMessage({
-                  type: "PAGE_META",
-                  tabId: getCurrentTabId(),
-                  pageUrl: currentTabUrl,
-                  pageMeta
-                })
-                .catch(() => {});
-            } else {
-              // No meta from page — strip thumbs that don't match current URL
-              const curKey = pageKey(currentTabUrl);
-              setAllItems(
-                getAllItems().map((i) => {
-                  const itemKey = pageKey(i.pageUrl || i.url || "");
-                  if (itemKey && curKey && itemKey !== curKey) {
-                    return { ...i, thumbnail: undefined };
-                  }
-                  return i;
-                })
-              );
+            const latestTab = await chrome.tabs.get(tab.id);
+            const latestUrl = latestTab?.url || latestTab?.pendingUrl || "";
+            const latestKey = pageKey(latestUrl);
+            if (latestKey && curKey && latestKey !== curKey) {
+              return loadMedia();
             }
           } catch {
-            /* YouTube often blocks CS — use tab title; clear foreign thumbs */
-            const curKey = pageKey(currentTabUrl);
-            const allItems = getAllItems();
-            if (allItems[0]) {
+            /* keep the URL captured at the start of this request */
+          }
+          if (requestId !== loadSequence) return;
+
+          const metaUrl = meta?.pageUrl || meta?.lastUrl || "";
+          const metaKey = pageKey(metaUrl);
+          const metaSamePage =
+            !!meta && (!curKey || !metaKey || curKey === metaKey);
+          const identityConfirmed =
+            metaSamePage &&
+            (!youtubeId ||
+              (meta?.identityConfirmed === true &&
+                (!meta?.videoId || meta.videoId === youtubeId)));
+          const freshTitle = identityConfirmed
+            ? usablePageTitle(meta?.title) || usablePageTitle(tab.title)
+            : !youtubeId
+              ? usablePageTitle(tab.title)
+              : "";
+          const freshThumbnail = youtubeId
+            ? metaSamePage &&
+              thumbnailMatchesPage(meta?.thumbnail, currentTabUrl)
+              ? meta.thumbnail
+              : youtubeThumbnailForPage(currentTabUrl)
+            : metaSamePage
+              ? meta?.thumbnail || ""
+              : "";
+
+          setAllItems(
+            getAllItems().map((item) => {
               const itemKey = pageKey(
-                allItems[0].pageUrl || allItems[0].url || ""
+                item.pageUrl || item.url || currentTabUrl
               );
-              if (itemKey && curKey && itemKey !== curKey) {
-                allItems[0].thumbnail = undefined;
-              }
-            }
-            if (tab.title && allItems[0]) {
-              const t = usablePageTitle(tab.title);
-              if (t && t.length > 2) {
-                allItems[0].title = t;
-                allItems[0].pageTitle = t;
-                allItems[0].displayName = t;
-              }
-            }
-            setAllItems(allItems);
+              const samePage = !itemKey || !curKey || itemKey === curKey;
+              const keepExisting = samePage && !youtubeId;
+              return {
+                ...item,
+                thumbnail:
+                  freshThumbnail ||
+                  (keepExisting ? item.thumbnail : undefined) ||
+                  undefined,
+                title:
+                  freshTitle ||
+                  (keepExisting ? item.title : undefined) ||
+                  undefined,
+                pageTitle:
+                  freshTitle ||
+                  (keepExisting ? item.pageTitle : undefined) ||
+                  undefined,
+                displayName:
+                  freshTitle ||
+                  (keepExisting ? item.displayName : undefined) ||
+                  undefined,
+                filename: keepExisting ? item.filename : undefined
+              };
+            })
+          );
+
+          if (freshThumbnail || freshTitle || youtubeId) {
+            chrome.runtime
+              .sendMessage({
+                type: "PAGE_META",
+                tabId: getCurrentTabId(),
+                pageUrl: currentTabUrl,
+                pageMeta: {
+                  ...(metaSamePage ? meta : {}),
+                  lastUrl: currentTabUrl,
+                  pageUrl: currentTabUrl,
+                  videoId: youtubeId || meta?.videoId,
+                  title: freshTitle || "",
+                  thumbnail: freshThumbnail || ""
+                }
+              })
+              .catch(() => {});
           }
         }
 
@@ -314,8 +441,10 @@
             /* ignore */
           }
         }
+        if (requestId !== loadSequence) return;
 
         await refreshHelperStatus();
+        if (requestId !== loadSequence) return;
         updateQuickPageUi();
         // Auto-fill link input with current social page URL
         autofillLinkFromCurrentTab();
@@ -330,6 +459,7 @@
           setAvailableQualities([{ id: "best", label: "최고" }]);
           setQualitiesLoading(false);
         }
+        if (requestId !== loadSequence) return;
         render();
 
         currentTabUrl = getCurrentTabUrl();
@@ -355,10 +485,17 @@
         siteDisplayName,
         updateQuickPageUi,
         autofillLinkFromCurrentTab,
-        usablePageTitle
+        usablePageTitle,
+        loadCurrentPageMeta
       };
     }
 
-    return { createLoader };
+    return {
+      createLoader,
+      thumbnailMatchesPage,
+      youtubeThumbnailForPage,
+      youtubeThumbnailVideoId,
+      youtubeVideoId
+    };
   }
 );

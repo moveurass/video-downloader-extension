@@ -23,28 +23,76 @@
         renderWatchlist,
         getCurrentTabId,
         getCurrentTabUrl,
+        setCurrentTabUrl,
         setAllItems,
         setHistoryItems,
         setWatchlistItems,
         getActiveTabName,
-        getTrackedJobIds
+        getTrackedJobIds,
+        loadMedia
       } = deps;
 
       return function handleRuntimeMessage(msg) {
         if (msg.type === "MEDIA_UPDATED" && msg.tabId === getCurrentTabId()) {
-          // Do NOT wipe YT/TT card with empty network updates
-          // Filter out items whose pageUrl identity doesn't match current tab
-          const currentTabUrl = getCurrentTabUrl();
+          const previousTabUrl = getCurrentTabUrl();
+          const previousKey = pageKey(previousTabUrl);
+          const reportedUrl = msg.pageUrl || "";
+          const reportedKey = pageKey(reportedUrl);
+          if (
+            reportedUrl &&
+            reportedUrl !== previousTabUrl &&
+            typeof setCurrentTabUrl === "function"
+          ) {
+            setCurrentTabUrl(reportedUrl);
+          }
+          if (
+            previousKey &&
+            reportedKey &&
+            previousKey !== reportedKey
+          ) {
+            // Clear the old card before any async metadata request can paint.
+            setAllItems([]);
+            render();
+            if (typeof loadMedia === "function") {
+              Promise.resolve(loadMedia()).catch(() => {});
+            }
+            return;
+          }
+
+          // Never carry identity-bound fields from another watch page.
+          const currentTabUrl = reportedUrl || previousTabUrl;
           const curKey = pageKey(currentTabUrl);
-          const items = (msg.items || []).map((i) => {
+          const identityReady =
+            !String(curKey || "").startsWith("yt:") ||
+            msg.identityConfirmed === true;
+          const items = (msg.items || []).flatMap((i) => {
             const k = pageKey(i.pageUrl || i.url || "");
             if (curKey && k && k !== curKey && i.isSiteDownload) {
-              return { ...i, thumbnail: undefined, url: currentTabUrl, pageUrl: currentTabUrl };
+              return [{
+                ...i,
+                url: currentTabUrl,
+                pageUrl: currentTabUrl,
+                thumbnail: undefined,
+                title: undefined,
+                pageTitle: undefined,
+                displayName: undefined,
+                filename: undefined
+              }];
             }
             if (curKey && k && k !== curKey) {
-              return { ...i, thumbnail: undefined };
+              return [];
             }
-            return i;
+            if (!identityReady) {
+              return [{
+                ...i,
+                thumbnail: undefined,
+                title: undefined,
+                pageTitle: undefined,
+                displayName: undefined,
+                filename: undefined
+              }];
+            }
+            return [i];
           });
           setAllItems(ensureSiteItems(items, {
             url: currentTabUrl,
