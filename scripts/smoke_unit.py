@@ -122,6 +122,28 @@ def main() -> int:
             "/usr/local/bin/aria2c", "fast", True
         ),
     )
+    original_which = helper_server.shutil.which
+    try:
+        helper_server.shutil.which = lambda name: {
+            "deno": "/opt/homebrew/bin/deno",
+            "node": "/opt/homebrew/bin/node",
+        }.get(name)
+        js_runtime_args = helper_server.ytdlp_js_runtime_args()
+        helper_server.shutil.which = lambda _name: None
+        no_js_runtime_args = helper_server.ytdlp_js_runtime_args()
+    finally:
+        helper_server.shutil.which = original_which
+    check(
+        "yt-dlp receives each detected JavaScript runtime",
+        js_runtime_args
+        == [
+            "--js-runtimes",
+            "deno:/opt/homebrew/bin/deno",
+            "--js-runtimes",
+            "node:/opt/homebrew/bin/node",
+        ]
+        and not no_js_runtime_args,
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
@@ -231,6 +253,13 @@ def main() -> int:
         "payload cannot point yt-dlp at local cookie jars / browser profiles",
         "cookiesFromBrowser" not in helper_source
         and 'payload.get("cookies")\n            if isinstance(cookies, str)' not in helper_source,
+    )
+    check(
+        "YouTube download and format commands attach JavaScript runtimes",
+        "youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []"
+        in helper_source
+        and "c.extend(youtube_js_args)" in helper_source
+        and "cmd.extend(ytdlp_js_runtime_args())" in helper_source,
     )
     # Pause → resume must share one work_dir so yt-dlp --continue applies.
     key_a = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")

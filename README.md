@@ -44,9 +44,13 @@ Chrome(Chromium) 확장 프로그램 — 페이지 미디어 감지, HLS 병합,
 ```bash
 # macOS
 brew install yt-dlp
+# YouTube 화질 조회·다운로드용 JavaScript 런타임
+brew install deno
 # 또는
 pip3 install -U yt-dlp
 ```
+
+YouTube 추출에는 `deno` 같은 지원 JavaScript 런타임이 필요합니다. 헬퍼는 설치된 Deno 또는 Node.js를 자동으로 yt-dlp에 연결하며, macOS에서는 `brew install deno`를 권장합니다.
 
 ### 2) 헬퍼 실행
 

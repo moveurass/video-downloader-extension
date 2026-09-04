@@ -777,6 +777,16 @@ def is_youtube_download(site: str, *urls: str) -> bool:
     return False
 
 
+def ytdlp_js_runtime_args() -> list[str]:
+    """Enable installed JS runtimes explicitly, including their absolute paths."""
+    args: list[str] = []
+    for runtime in ("deno", "node"):
+        runtime_path = shutil.which(runtime)
+        if runtime_path:
+            args.extend(["--js-runtimes", f"{runtime}:{runtime_path}"])
+    return args
+
+
 def should_use_aria2(
     aria2_path: str | None, speed_profile: str, is_youtube: bool
 ) -> bool:
@@ -1079,6 +1089,7 @@ def run_download(job_id: str, payload: dict) -> None:
         host = ""
 
     is_youtube = is_youtube_download(site, target, page_url)
+    youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []
     is_tiktok = site == "tiktok" or "tiktok" in host
     is_instagram = (
         site == "instagram"
@@ -1337,6 +1348,7 @@ def run_download(job_id: str, payload: dict) -> None:
             "--socket-timeout",
             "30",
         ]
+        c.extend(youtube_js_args)
         # External multi-connection downloader when allowed for this attempt.
         if use_aria2:
             # -x connections/server, -s splits, -j parallel jobs
@@ -1972,6 +1984,8 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 send_json(self, 400, {"ok": False, "error": "url required"})
                 return
+            site = (payload.get("site") or "").lower()
+            is_youtube = is_youtube_download(site, url)
             is_tt = "tiktok" in url.lower()
             cookies_file = None
             try:
@@ -1988,6 +2002,8 @@ class Handler(BaseHTTPRequestHandler):
                     "--ignore-config",
                     "-J",
                 ]
+                if is_youtube:
+                    cmd.extend(ytdlp_js_runtime_args())
                 if is_tt:
                     cmd.extend(["--impersonate", "chrome"])
                 if cookies_file:
