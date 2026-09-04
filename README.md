@@ -62,6 +62,7 @@ open helper/start.command
 - 주소: `http://127.0.0.1:8787`  
 - 기본 저장: `~/Downloads/VideoDownloader/`  
 - 백그라운드/로그인 시 자동 실행: `helper/install_autostart.command`
+- YouTube는 `aria2c`가 설치되어 있어도 안정적인 yt-dlp 기본 다운로더를 우선 사용합니다. 코드를 `git pull`로 업데이트했다면 실행 중인 헬퍼를 종료하고 다시 시작하세요.
 
 ### 보안
 
