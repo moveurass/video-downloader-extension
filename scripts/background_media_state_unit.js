@@ -519,6 +519,51 @@ async function main() {
     Naming.compareMediaCandidates(sniffPreview, networkFeature) > 0,
     "duration-first compare ranks the feature ahead of the sniff"
   );
+  ok(
+    Naming.isKnownCodeVideoPage("https://supjav.com/455636.html"),
+    "numeric Supjav article URLs are known-code video pages"
+  );
+  equal(
+    Naming.isKnownCodeVideoPage("https://supjav.com/"),
+    false,
+    "known-code homepages are not video pages"
+  );
+
+  const unprobedFeature = {
+    url: "https://cdn.example.com/feature/unprobed/index.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "network",
+    pageUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  };
+  ok(
+    Naming.compareMediaCandidates(sniffPreview, unprobedFeature) > 0,
+    "unknown duration is incomparable: 30s sniff must not beat unprobed feature"
+  );
+  ok(
+    Naming.mediaScore(unprobedFeature) > Naming.mediaScore(sniffPreview),
+    "mediaScore also prefers the unprobed feature over a short sniff"
+  );
+  ok(
+    Naming.compareMediaCandidates(
+      {
+        url: "https://cdn.example.com/a/playlist.m3u8",
+        type: "stream",
+        isHls: true,
+        source: "script-sniff",
+        duration: 30,
+        height: 480
+      },
+      {
+        url: "https://cdn.example.com/b/index.m3u8",
+        type: "stream",
+        isHls: true,
+        source: "network"
+      }
+    ) > 0,
+    "unprobed network feature beats a 30s sniff even without preview URL tokens"
+  );
 
   store.setTabMeta(20, {
     lastUrl: "https://supjav.com/455636.html",
@@ -546,6 +591,102 @@ async function main() {
     "known-code pages stay on the HLS capture path (not a yt-dlp placeholder)"
   );
   equal(asyncKnownCode[0]?.isSiteDownload, undefined);
+
+  store.setTabMeta(25, {
+    lastUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  });
+  store.addMedia(25, {
+    ...sniffPreview,
+    url: "https://cdn.example.com/race/preview/playlist.m3u8"
+  });
+  store.addMedia(25, unprobedFeature);
+  await flush();
+  const raced = store.getMediaForTab(25);
+  equal(raced.length, 1, "race: single primary item");
+  equal(
+    raced[0].url,
+    unprobedFeature.url,
+    "race: sniff duration=30 + feature no duration ? feature wins"
+  );
+  store.addMedia(25, {
+    ...sniffPreview,
+    url: "https://cdn.example.com/race/preview/playlist.m3u8",
+    duration: 30,
+    height: 720,
+    segmentCount: 8
+  });
+  await flush();
+  equal(
+    store.getMediaForTab(25)[0].url,
+    unprobedFeature.url,
+    "no oscillation: probing the sniff later still leaves the feature winning"
+  );
+  equal(
+    store.getMediaForTab(25)[0].url,
+    store.getMediaForTab(25)[0].url,
+    "two candidates updating keep a stable winner"
+  );
+
+  const emptySupjav = store.makeSitePlaceholder({
+    id: 31,
+    url: "https://supjav.com/455636.html",
+    title: "Supjav title"
+  });
+  ok(emptySupjav, "numeric known-code host gets a placeholder");
+  equal(emptySupjav.isPagePlaceholder, true);
+  equal(
+    emptySupjav.isSiteDownload,
+    false,
+    "Supjav placeholder stays on the HLS path (not yt-dlp)"
+  );
+  const asyncEmptySupjav = await store.getMediaForTabAsync(32, {
+    pageUrl: "https://supjav.com/455636.html",
+    title: "Supjav title"
+  });
+  equal(asyncEmptySupjav.length, 1, "empty Supjav tab still paints a card");
+  equal(asyncEmptySupjav[0].isPagePlaceholder, true);
+  equal(asyncEmptySupjav[0].isSiteDownload, false);
+
+  store.setTabMeta(30, {
+    lastUrl: "https://123av.com/ko/v/snos-341",
+    host: "123av.com",
+    title: "SNOS-341",
+    thumbnail: "https://img.test/snos-341.jpg"
+  });
+  store.addMedia(30, {
+    url: "https://cdn.example.com/341.m3u8",
+    type: "stream",
+    duration: 100,
+    thumbnail: "https://img.test/snos-341.jpg",
+    pageUrl: "https://123av.com/ko/v/snos-341",
+    host: "123av.com"
+  });
+  equal(store.getTabMeta(30).thumbnail, "https://img.test/snos-341.jpg");
+  store.setTabMeta(30, {
+    lastUrl: "https://123av.com/ko/v/snos-342",
+    host: "123av.com",
+    title: "SNOS-342",
+    thumbnail: "https://img.test/snos-341.jpg"
+  });
+  equal(store.getTabItems(30).length, 0, "known-code page change clears other-id media");
+  equal(
+    store.getTabMeta(30).thumbnail,
+    undefined,
+    "known-code page change clears other-id thumbs"
+  );
+  store.addMedia(30, {
+    url: "https://cdn.example.com/341-stale.m3u8",
+    type: "stream",
+    duration: 100,
+    thumbnail: "https://img.test/snos-341.jpg",
+    pageUrl: "https://123av.com/ko/v/snos-341"
+  });
+  equal(
+    store.getTabItems(30).length,
+    0,
+    "stale PAGE_MEDIA from the previous code is ignored"
+  );
 
   store.setTabMeta(21, {
     lastUrl: "https://supjav.com/only-preview.html",

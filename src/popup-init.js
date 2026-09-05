@@ -113,15 +113,7 @@
       const isSitePage = isDownloadableSiteVideo;
       const isKnownDownloadablePage = (url) => {
         if (isDownloadableSiteVideo(url)) return true;
-        try {
-          const host = new URL(url).hostname.replace(/^www\./i, "");
-          return !!(
-            Naming.isKnownCodeSite?.(host) &&
-            Naming.extractProductCode?.(url)
-          );
-        } catch {
-          return false;
-        }
+        return !!Naming.isKnownCodeVideoPage?.(url);
       };
       const { formatSize, formatDuration, formatKind, estimateSize } =
         UVDPopupMedia;
@@ -929,6 +921,7 @@
         chrome,
         $,
         pageKey,
+        isKnownCodeSite: Naming.isKnownCodeSite,
         ensureSiteItems,
         render,
         patchMedia,

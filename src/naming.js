@@ -49,6 +49,25 @@ const Naming = (() => {
   }
 
   /**
+   * Video watch pages on known-code hosts, including numeric article URLs
+   * such as supjav.com/455636.html that have no SNOS-309-style product code.
+   */
+  function isKnownCodeVideoPage(pageUrl) {
+    if (!pageUrl || !/^https?:/i.test(pageUrl)) return false;
+    try {
+      const parsed = new URL(pageUrl);
+      const host = parsed.hostname.replace(/^www\./i, "");
+      if (!isKnownCodeSite(host)) return false;
+      if (extractProductCode(parsed.href)) return true;
+      const path = parsed.pathname || "/";
+      if (path === "/" || path.length < 3) return false;
+      return /\/\d{3,}(?:\.html?)?$/i.test(path) || /\/\d{3,}\b/.test(path);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Known marketing descriptors appended to otherwise clean code slugs.
    * Strip from the right so combinations such as
    * "CAWD-952-uncensored-leaked" still reduce to one code token. 123av also
@@ -720,18 +739,57 @@ const Naming = (() => {
     return PREVIEW_URL_TOKEN.test(hay);
   }
 
+  const SHORT_STREAM_SECONDS = 90;
+
+  function streamDuration(item = {}) {
+    return typeof item.duration === "number" && item.duration > 0
+      ? item.duration
+      : 0;
+  }
+
+  function captureSourceRank(item = {}) {
+    const source = String(item.source || "");
+    if (source === "network") return 3;
+    if (source === "page" || source === "webRequest") return 2;
+    if (source === "script-sniff") return 0;
+    return 1;
+  }
+
+  function isShortStreamPreview(item = {}) {
+    const dur = streamDuration(item);
+    return !!(item.isHls || item.type === "stream") && dur > 0 && dur < SHORT_STREAM_SECONDS;
+  }
+
   /**
-   * Duration-first ranking used when a known-code HLS page (or any page with
-   * two or more stream URLs) must prefer the feature over a short sniff.
-   * Returns 0 when duration/height/bandwidth/size/segments all tie.
+   * Prefer the feature HLS over a short script-sniff preview.
+   * Duration is compared only when both sides know it — an unprobed network
+   * capture must not lose to a 30s preview that happened to probe first.
+   * Returns 0 when the remaining signals also tie.
    */
-  function compareMediaCandidates(a = {}, b = {}) {
-    const duration = (item) =>
-      typeof item.duration === "number" && item.duration > 0 ? item.duration : 0;
-    const durDelta = duration(b) - duration(a);
-    if (durDelta) return durDelta;
-    const heightDelta = (Number(b.height) || 0) - (Number(a.height) || 0);
-    if (heightDelta) return heightDelta;
+  function compareMediaCandidates(a = {}, b = {}, options = {}) {
+    const durA = streamDuration(a);
+    const durB = streamDuration(b);
+    if (durA && durB && durA !== durB) return durB - durA;
+
+    const shortA = isShortStreamPreview(a);
+    const shortB = isShortStreamPreview(b);
+    if (shortA !== shortB) return Number(shortA) - Number(shortB);
+
+    const longA = durA >= SHORT_STREAM_SECONDS;
+    const longB = durB >= SHORT_STREAM_SECONDS;
+    if (longA !== longB) return Number(longB) - Number(longA);
+
+    const prevA = looksLikePreviewMedia(a) ? 1 : 0;
+    const prevB = looksLikePreviewMedia(b) ? 1 : 0;
+    if (prevA !== prevB) return prevA - prevB;
+
+    if (options.preferNetwork !== false) {
+      const sourceDelta = captureSourceRank(b) - captureSourceRank(a);
+      if (sourceDelta) return sourceDelta;
+    }
+
+    const segDelta = (Number(b.segmentCount) || 0) - (Number(a.segmentCount) || 0);
+    if (segDelta) return segDelta;
     const bandwidth = (item) =>
       Number(item.bandwidth || item.estimateBandwidth) || 0;
     const bwDelta = bandwidth(b) - bandwidth(a);
@@ -739,7 +797,11 @@ const Naming = (() => {
     const bytes = (item) => Number(item.estimatedSize || item.size) || 0;
     const sizeDelta = bytes(b) - bytes(a);
     if (sizeDelta) return sizeDelta;
-    return (Number(b.segmentCount) || 0) - (Number(a.segmentCount) || 0);
+
+    const heightA = Number(a.height) || 0;
+    const heightB = Number(b.height) || 0;
+    if (heightA && heightB && heightA !== heightB) return heightB - heightA;
+    return 0;
   }
 
   /** Score for ranking main content higher */
@@ -772,6 +834,7 @@ const Naming = (() => {
     extractProductCode,
     bindTitleToPage,
     isKnownCodeSite,
+    isKnownCodeVideoPage,
     isUglyBase,
     extFromUrl,
     extFromFilename,

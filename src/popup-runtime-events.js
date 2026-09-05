@@ -220,9 +220,25 @@
             }
             return [item];
           });
-          setAllItems(ensureSiteItems(items, {
+          const knownCodeHost = (() => {
+            try {
+              const host = new URL(currentTabUrl).hostname;
+              if (typeof deps.isKnownCodeSite === "function") {
+                return !!deps.isKnownCodeSite(host);
+              }
+              return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
+                host
+              );
+            } catch {
+              return /:code:/.test(curKey);
+            }
+          })();
+          const painted = pageChanged && knownCodeHost
+            ? items.map((item) => ({ ...item, thumbnail: undefined }))
+            : items;
+          setAllItems(ensureSiteItems(painted, {
             url: currentTabUrl,
-            title: (items[0] && items[0].title) || ""
+            title: (painted[0] && painted[0].title) || ""
           }));
           scheduleMediaRender(pageChanged, mediaSignature());
           if (pageChanged) refreshHelperStatus(true);

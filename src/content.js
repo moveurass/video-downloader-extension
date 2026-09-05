@@ -303,8 +303,15 @@
     return cleanPageTitle(best);
   }
 
+  function isKnownCodeHostName(host = location.hostname) {
+    return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
+      String(host || "")
+    );
+  }
+
   function pageThumbnail() {
     const youtubeId = youtubeVideoId();
+    const knownCode = !youtubeId && isKnownCodeHostName();
     const candidates = [
       document.querySelector('meta[property="og:image"]')?.content,
       document.querySelector('meta[property="og:image:url"]')?.content,
@@ -313,18 +320,26 @@
       document.querySelector('meta[property="og:video:poster"]')?.content,
       document.querySelector('link[rel="image_src"]')?.href,
       document.querySelector("video[poster]")?.getAttribute("poster"),
-      document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")?.src,
-      document.querySelector("img[class*='cover' i], img[class*='thumb' i], img[class*='poster' i]")?.src,
-      // largest content image heuristic
-      ...[...document.querySelectorAll("img[src]")]
-        .filter((img) => (img.naturalWidth || img.width || 0) >= 200)
-        .sort(
-          (a, b) =>
-            (b.naturalWidth || b.width || 0) * (b.naturalHeight || b.height || 0) -
-            (a.naturalWidth || a.width || 0) * (a.naturalHeight || a.height || 0)
-        )
-        .slice(0, 3)
-        .map((img) => img.currentSrc || img.src)
+      ...(knownCode
+        ? []
+        : [
+            document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")
+              ?.src,
+            document.querySelector(
+              "img[class*='cover' i], img[class*='thumb' i], img[class*='poster' i]"
+            )?.src,
+            ...[...document.querySelectorAll("img[src]")]
+              .filter((img) => (img.naturalWidth || img.width || 0) >= 200)
+              .sort(
+                (a, b) =>
+                  (b.naturalWidth || b.width || 0) *
+                    (b.naturalHeight || b.height || 0) -
+                  (a.naturalWidth || a.width || 0) *
+                    (a.naturalHeight || a.height || 0)
+              )
+              .slice(0, 3)
+              .map((img) => img.currentSrc || img.src)
+          ])
     ];
     for (const c of candidates) {
       const u = absUrl(c);
@@ -452,11 +467,14 @@
     chrome.runtime
       .sendMessage({
         type: "PAGE_MEDIA",
+        pageUrl: location.href,
         items: fresh,
         pageMeta: {
           title: pageTitle(),
           thumbnail: pageThumbnail(),
-          host: location.hostname
+          host: location.hostname,
+          lastUrl: location.href,
+          pageUrl: location.href
         }
       })
       .catch(() => {});
@@ -966,6 +984,8 @@
       REPORTED.clear();
       scheduleScan();
     });
+  }
+  if (isYouTubeHost() || isKnownCodeHostName()) {
     window.addEventListener("popstate", () => {
       setTimeout(() => refreshAfterSpaNavigation(true), 0);
     });

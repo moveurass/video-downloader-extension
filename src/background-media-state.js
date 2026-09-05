@@ -167,8 +167,9 @@
         try {
           const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
           return !!(
-            Naming.isKnownCodeSite?.(host) &&
-            Naming.extractProductCode?.(pageUrl)
+            Naming.isKnownCodeVideoPage?.(pageUrl) ||
+            (Naming.isKnownCodeSite?.(host) &&
+              Naming.extractProductCode?.(pageUrl))
           );
         } catch {
           return false;
@@ -207,7 +208,8 @@
       if (!isDownloadableHelperPage(pageUrl)) return null;
       const kind = siteKind(pageUrl, pageUrl);
       const code = Naming.extractProductCode?.(pageUrl) || "";
-      if (!kind && !code) return null;
+      const knownVideo = Naming.isKnownCodeVideoPage?.(pageUrl);
+      if (!kind && !code && !knownVideo) return null;
       const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
       const currentPageKey = pageIdentityKey(pageUrl);
       const identityReady =
@@ -485,6 +487,11 @@
 
     function addMedia(tabId, item) {
       if (tabId == null || tabId < 0 || !item?.url) return;
+      if (item.pageUrl) {
+        const itemKey = pageIdentityKey(item.pageUrl);
+        const currentKey = tabMeta.get(tabId)?.pageKey || "";
+        if (itemKey && currentKey && itemKey !== currentKey) return;
+      }
       if (Naming.isJunkMedia(item)) return;
 
       const enriched = enrichItem(tabId, item);
@@ -552,9 +559,23 @@
       )
         ? meta.thumbnail
         : undefined;
+      const nextHost = (() => {
+        try {
+          return (
+            (typeof hostOf === "function" ? hostOf(nextUrl) : "") ||
+            new URL(nextUrl).hostname.replace(/^www\./i, "")
+          );
+        } catch {
+          return String(meta.host || prev.host || "");
+        }
+      })();
       let thumbnail;
       if (pageChanged) {
-        thumbnail = incomingThumbnail || undefined;
+        // Known-code last-good is same-pageKey only. Never keep a cover
+        // from the previous title, including a stale PAGE_META payload.
+        thumbnail = Naming.isKnownCodeSite?.(nextHost)
+          ? undefined
+          : incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
         thumbnail = incomingThumbnail || prev.thumbnail;
       } else {
@@ -798,18 +819,12 @@
       })();
       const preferDuration =
         !!Naming.isKnownCodeSite?.(pageHost) || hlsItems.length >= 2;
-      const hasLongerHls = (item) =>
-        hlsItems.some(
-          (other) =>
-            other !== item &&
-            (Number(other.duration) || 0) > (Number(item.duration) || 0)
-        );
       const score = (item) => {
         let value = Naming.mediaScore(item);
         if ((item.url || "").startsWith("blob:")) value -= 300;
         if (/\.m3u8/i.test(item.url || "")) value += 450;
         if (item.source === "script-sniff" && /\.m3u8/i.test(item.url || "")) {
-          if (preferDuration && hasLongerHls(item)) {
+          if (preferDuration && hlsItems.length >= 2) {
             value += 0;
           } else if (preferDuration) {
             value += 20;
@@ -818,20 +833,13 @@
           }
         }
         if (!preferDuration && item.duration && item.duration > 60) value += 80;
-        if (preferDuration) {
-          value += (Number(item.height) || 0) / 10;
-          value += Math.min((Number(item.bandwidth) || 0) / 1e5, 80);
-          value += Math.min(
-            (Number(item.estimatedSize || item.size) || 0) / 1e6,
-            80
-          );
-          value += Math.min(Number(item.segmentCount) || 0, 50);
-        }
         return value;
       };
       items.sort((a, b) => {
         if (preferDuration && typeof Naming.compareMediaCandidates === "function") {
-          const ranked = Naming.compareMediaCandidates(a, b);
+          const ranked = Naming.compareMediaCandidates(a, b, {
+            preferNetwork: true
+          });
           if (ranked) return ranked;
         }
         return score(b) - score(a);

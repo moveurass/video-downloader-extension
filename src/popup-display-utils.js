@@ -341,6 +341,14 @@
         if (incoming.isPagePlaceholder && !previous.isPagePlaceholder) {
           return { ...previous };
         }
+        const previousKey = pageKey(previous.pageUrl || previous.url || "");
+        const incomingKey = pageKey(incoming.pageUrl || incoming.url || "");
+        const samePage = !!(
+          previousKey &&
+          incomingKey &&
+          previousKey === incomingKey
+        );
+        const sameMedia = !!(previous.url && incoming.url && previous.url === incoming.url);
         return {
           ...previous,
           ...incoming,
@@ -355,15 +363,29 @@
             incoming.displayName
           ),
           filename: preferStableText(previous.filename, incoming.filename),
-          thumbnail: incoming.thumbnail || previous.thumbnail,
+          thumbnail:
+            incoming.thumbnail ||
+            (samePage ? previous.thumbnail : undefined),
           quality: incoming.quality || previous.quality,
-          duration: incoming.duration || previous.duration,
-          estimatedSize: incoming.estimatedSize || previous.estimatedSize
+          duration:
+            incoming.duration ||
+            (sameMedia ? previous.duration : incoming.duration),
+          estimatedSize:
+            incoming.estimatedSize ||
+            (sameMedia ? previous.estimatedSize : incoming.estimatedSize)
         };
       }
 
       function rememberStableItems(key, items) {
         if (!key || !items?.length) return;
+        const current = lastGoodItemsByPage.get(key);
+        if (
+          current?.[0] &&
+          current[0].isPagePlaceholder !== true &&
+          items.every((item) => item.isPagePlaceholder === true)
+        ) {
+          return;
+        }
         lastGoodItemsByPage.set(
           key,
           items.map((item) => ({ ...item }))

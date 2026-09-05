@@ -103,7 +103,19 @@
           if (tabId == null) {
             return { handled: true, keepChannel: false };
           }
-          const pageUrl = sender.tab?.url || msg.pageUrl || "";
+          const tabUrl = sender.tab?.url || "";
+          const scanUrl =
+            msg.pageUrl ||
+            msg.pageMeta?.pageUrl ||
+            msg.pageMeta?.lastUrl ||
+            "";
+          const tabKey = tabUrl ? deps.pageIdentityKey(tabUrl) : "";
+          const scanKey = scanUrl ? deps.pageIdentityKey(scanUrl) : "";
+          if (tabKey && scanKey && tabKey !== scanKey) {
+            sendResponse({ ok: true });
+            return { handled: true, keepChannel: false };
+          }
+          const pageUrl = tabUrl || scanUrl || "";
           if (msg.pageMeta && isTopFrame(sender)) {
             deps.setTabMeta(tabId, {
               ...msg.pageMeta,
