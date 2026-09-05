@@ -306,6 +306,34 @@ assert.equal(
   ).items.length,
   1
 );
+assert.equal(
+  HLS.estimateMediaBytes({
+    duration: 7200,
+    segmentCount: 1200,
+    height: 1080
+  }),
+  1200 * 220_000,
+  "feature media playlist size follows segment count"
+);
+assert.equal(
+  HLS.estimateMediaBytes({ duration: 30, segmentCount: 8, height: 480 }),
+  8 * 220_000,
+  "short preview playlist size stays preview-scale"
+);
+assert.equal(
+  HLS.estimateMediaBytes({ duration: 7200, height: 1080 }),
+  Math.round((5_000_000 / 8) * 7200),
+  "feature without segments uses height bitrate"
+);
+assert.deepEqual(
+  PopupMedia.estimateForQuality(
+    { duration: 7200, estimatedSize: 400_000_000 },
+    [{ id: "best", estimatedSize: 2_400_000 }],
+    "best"
+  ),
+  { bytes: 400_000_000, approx: true },
+  "stale preview chip size yields to the long feature estimate"
+);
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),
@@ -441,4 +469,4 @@ assert.equal(
   "X_987654321"
 );
 
-console.log("core modules: 98 assertions passed");
+console.log("core modules: 102 assertions passed");

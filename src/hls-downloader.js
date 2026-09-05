@@ -569,6 +569,40 @@ const HLS = (() => {
     };
   }
 
+  /** Typical HLS media-segment payload when EXT-X-BITRATE is absent. */
+  const SEGMENT_BYTE_ESTIMATE = 220_000;
+
+  /**
+   * Approximate media-playlist capacity from duration × bitrate, or segment count.
+   * Used by LIST_QUALITIES / maybeProbeHls so the popup does not keep a 30s
+   * preview estimate after a longer feature playlist wins ranking.
+   */
+  function estimateMediaBytes(info = {}) {
+    const duration = Number(info.duration) || 0;
+    const segmentCount = Number(info.segmentCount) || 0;
+    const bandwidth =
+      Number(info.estimateBandwidth || info.bandwidth) || 0;
+    const height = Number(info.height || info.inferredHeight) || 0;
+    if (bandwidth > 0 && duration >= 1) {
+      return Math.round((bandwidth / 8) * duration);
+    }
+    if (segmentCount > 5) {
+      return segmentCount * SEGMENT_BYTE_ESTIMATE;
+    }
+    if (duration >= 1) {
+      const rate =
+        height >= 1080
+          ? 5_000_000
+          : height >= 720
+            ? 2_500_000
+            : height >= 480
+              ? 1_000_000
+              : 700_000;
+      return Math.round((rate / 8) * duration);
+    }
+    return 0;
+  }
+
   /** Rough height when the master omits RESOLUTION (same thresholds as the popup) */
   function heightFromBandwidth(value) {
     const bandwidth = Number(value) || 0;
@@ -1495,6 +1529,7 @@ const HLS = (() => {
     qualityFromHeight,
     heightFromString,
     heightFromBandwidth,
+    estimateMediaBytes,
     pickVariant,
     parseByteRange,
     segmentIdentity,

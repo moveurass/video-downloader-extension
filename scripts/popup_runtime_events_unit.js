@@ -430,6 +430,58 @@ check(typeof PopupRuntimeEvents.bind, "function");
 }
 
 {
+  const qualityCalls = [];
+  let renderCount = 0;
+  const pageUrl = "https://supjav.com/455636.html";
+  const harness = makeHarness({
+    pageKey: (url) => {
+      try {
+        const parsed = new URL(url);
+        return `${parsed.hostname}${parsed.pathname}`;
+      } catch {
+        return String(url || "");
+      }
+    },
+    ensureSiteItems: (items) => items.map((item) => ({ ...item })),
+    loadAvailableQualities: (item) => {
+      qualityCalls.push(item.url);
+      return Promise.resolve();
+    },
+    render: () => {
+      renderCount += 1;
+    },
+    setTimeout: (callback) => {
+      callback();
+      return 1;
+    }
+  });
+  harness.state.currentTabUrl = pageUrl;
+  harness.state.allItems = [{
+    url: "https://cdn.test/preview-30s.m3u8",
+    pageUrl,
+    duration: 30,
+    estimatedSize: 2_400_000
+  }];
+  harness.handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl,
+    items: [{
+      url: "https://cdn.test/feature-long.m3u8",
+      pageUrl,
+      duration: 7200,
+      estimatedSize: 264_000_000
+    }]
+  });
+  check(
+    qualityCalls,
+    ["https://cdn.test/feature-long.m3u8"],
+    "same-page feature HLS reloads qualities for the winning URL"
+  );
+  check(renderCount > 0, true, "feature quality reload repaints the card");
+}
+
+{
   const { handler, calls } = makeHarness();
   handler({ type: "MEDIA_UPDATED", tabId: 99, items: [{}] });
   check(calls, [], "media updates from another tab are ignored");

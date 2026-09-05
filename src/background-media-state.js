@@ -778,12 +778,22 @@
             (cur.quality && !/^(best|all|unknown)$/i.test(String(cur.quality))
               ? cur.quality
               : null);
+          const estimatedSize =
+            (typeof HLS.estimateMediaBytes === "function"
+              ? HLS.estimateMediaBytes({
+                  duration,
+                  segmentCount: info.segmentCount,
+                  bandwidth: cur.estimateBandwidth || cur.bandwidth,
+                  height: inferredHeight || cur.height
+                })
+              : 0) || undefined;
           const updated = enrichItem(tabId, {
             ...cur,
             isHls: true,
             type: "stream",
             format: "MP4",
             duration: duration >= 1 ? duration : undefined,
+            estimatedSize,
             segmentCount: info.segmentCount,
             encrypted: info.encrypted,
             isFmp4: true,

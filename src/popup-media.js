@@ -52,7 +52,16 @@
   function estimateForQuality(item, qualities, selectedQuality) {
     const quality = (qualities || []).find((entry) => entry.id === selectedQuality);
     if (quality?.estimatedSize > 0) {
-      return { bytes: quality.estimatedSize, approx: quality.approx !== false };
+      const itemBytes = Number(item?.estimatedSize || item?.size) || 0;
+      const duration = Number(item?.duration) || 0;
+      // Preview chips (~30s) can outlive a longer ranked HLS. Prefer the
+      // item's own feature-sized estimate when duration says this is not a clip.
+      const stalePreviewChip =
+        duration >= 90 &&
+        itemBytes > quality.estimatedSize * 2.5;
+      if (!stalePreviewChip) {
+        return { bytes: quality.estimatedSize, approx: quality.approx !== false };
+      }
     }
     if (item?.estimatedSize > 0 && quality?.height && item._bestHeight) {
       const ratio = Math.min(

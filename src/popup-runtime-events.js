@@ -80,7 +80,8 @@
         getAllItems,
         getAvailableQualities,
         loadMedia,
-        patchMedia
+        patchMedia,
+        loadAvailableQualities
       } = deps;
       const setTimeoutFn = deps.setTimeout || setTimeout;
       const clearTimeoutFn = deps.clearTimeout || clearTimeout;
@@ -243,11 +244,30 @@
                 filename: undefined
               }))
             : items;
+          const previousPrimaryUrl = getAllItems?.()?.[0]?.url || "";
           setAllItems(ensureSiteItems(painted, {
             url: currentTabUrl,
             title: ""
           }));
+          const nextPrimary = getAllItems?.()?.[0] || null;
+          const primaryUrlChanged = !!(
+            !pageChanged &&
+            previousPrimaryUrl &&
+            nextPrimary?.url &&
+            nextPrimary.url !== previousPrimaryUrl
+          );
+          const qualityReload =
+            primaryUrlChanged && typeof loadAvailableQualities === "function"
+              ? Promise.resolve(loadAvailableQualities(nextPrimary)).catch(
+                  () => {}
+                )
+              : null;
           scheduleMediaRender(pageChanged, mediaSignature());
+          if (qualityReload) {
+            qualityReload.then(() => {
+              if (typeof render === "function") render();
+            });
+          }
           if (pageChanged) refreshHelperStatus(true);
           if (pageChanged && typeof loadMedia === "function") {
             // Paint the new MEDIA_UPDATED payload (or its site placeholder)

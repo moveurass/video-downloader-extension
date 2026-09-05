@@ -963,6 +963,7 @@
           trackedJobIds = value;
         },
         getAvailableQualities,
+        loadAvailableQualities,
         setTimeout,
         clearTimeout
       });

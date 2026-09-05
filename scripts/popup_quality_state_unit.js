@@ -261,6 +261,69 @@ async function main() {
     "probe metadata patches card item"
   );
 
+  let finishPreview;
+  const previewProbe = new Promise((resolve) => {
+    finishPreview = resolve;
+  });
+  h.setAllItems([{
+    url: "https://cdn.example/preview.m3u8",
+    type: "stream",
+    isHls: true,
+    duration: 30,
+    estimatedSize: 2_400_000
+  }]);
+  h.runtimeResponses.push(previewProbe);
+  const stalePreviewLoad = c.loadAvailableQualities(h.getAllItems()[0]);
+  h.setAllItems([{
+    url: "https://cdn.example/feature.m3u8",
+    type: "stream",
+    isHls: true,
+    duration: 7200,
+    estimatedSize: 400_000_000
+  }]);
+  h.runtimeResponses.push({
+    ok: true,
+    qualities: [{
+      id: "1080p",
+      label: "1080p",
+      height: 1080,
+      estimatedSize: 400_000_000
+    }],
+    duration: 7200,
+    estimatedSize: 400_000_000
+  });
+  await c.loadAvailableQualities(h.getAllItems()[0]);
+  finishPreview({
+    ok: true,
+    qualities: [{
+      id: "480p",
+      label: "480p",
+      height: 480,
+      estimatedSize: 2_400_000
+    }],
+    duration: 30,
+    estimatedSize: 2_400_000
+  });
+  await stalePreviewLoad;
+  check(
+    {
+      url: h.getAllItems()[0].url,
+      duration: h.getAllItems()[0].duration,
+      estimatedSize: h.getAllItems()[0].estimatedSize
+    },
+    {
+      url: "https://cdn.example/feature.m3u8",
+      duration: 7200,
+      estimatedSize: 400_000_000
+    },
+    "stale preview LIST_QUALITIES does not overwrite the feature item"
+  );
+  check(
+    c.getAvailableQualities().some((q) => q.estimatedSize === 2_400_000),
+    false,
+    "stale preview chip sizes are discarded after the feature wins"
+  );
+
   h.runtimeResponses.push(new Error("offline"));
   h.tabResponses.push(null, null);
   h.setAllItems([{ url: "https://cdn.example/video.mp4" }]);

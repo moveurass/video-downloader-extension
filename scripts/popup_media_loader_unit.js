@@ -575,7 +575,7 @@ async function main() {
     }
   };
   const patchCard = {
-    dataset: { mediaIdentity: "code:SNOS-342\nmedia" },
+    dataset: { mediaIdentity: "code:SNOS-342\nmedia\nhttps://cdn.test/snos-342/master.m3u8" },
     querySelector: (selector) => patchElements[selector] || null
   };
   const patchList = {

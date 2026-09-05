@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const Naming = require("../src/naming.js");
 const Sites = require("../src/site-detection.js");
 const DownloadEngine = require("../src/download-engine.js");
+const HLS = require("../src/hls-downloader.js");
 const { createStore } = require("../src/background-media-state.js");
 
 let assertions = 0;
@@ -77,7 +78,8 @@ function makeHarness(overrides = {}) {
     Naming,
     HLS: overrides.HLS || {
       probe: async () => null,
-      heightFromString: () => 0
+      heightFromString: () => 0,
+      estimateMediaBytes: HLS.estimateMediaBytes
     },
     ...Sites,
     isLikelyMedia: (url, mime = "", size = 0) =>
@@ -755,7 +757,8 @@ async function main() {
         }
         return null;
       },
-      heightFromString: () => 0
+      heightFromString: () => 0,
+      estimateMediaBytes: HLS.estimateMediaBytes
     }
   });
   harnessProbe.store.setTabMeta(22, {
@@ -790,6 +793,11 @@ async function main() {
   );
   equal(afterProbe[0].duration, 7200);
   equal(afterProbe[0].height, 1080);
+  equal(
+    afterProbe[0].estimatedSize,
+    1200 * 220_000,
+    "C: feature playlist size is not the 30s preview capacity"
+  );
 
   store.addMedia(23, {
     url: "https://cdn.example.com/bumper.mp4",

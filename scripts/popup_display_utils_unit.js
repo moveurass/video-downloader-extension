@@ -394,6 +394,48 @@ function main() {
     "other product code does not reuse last-good thumb"
   );
 
+  const previewSizePage = "https://supjav.com/455639.html";
+  h.setCurrentTabUrl(previewSizePage);
+  u.ensureSiteItems([{
+    url: "https://cdn.test/preview-30s.m3u8",
+    pageUrl: previewSizePage,
+    type: "stream",
+    isHls: true,
+    duration: 30,
+    estimatedSize: 2_400_000,
+    title: "Long feature title",
+    pageTitle: "Long feature title",
+    displayName: "Long feature title",
+    filename: "Long feature title.mp4"
+  }], { url: previewSizePage });
+  const featureOverPreview = u.ensureSiteItems([{
+    url: "https://cdn.test/feature-long.m3u8",
+    pageUrl: previewSizePage,
+    type: "stream",
+    isHls: true,
+    duration: 7200,
+    estimatedSize: 0,
+    title: "Long feature title",
+    pageTitle: "Long feature title",
+    displayName: "Long feature title",
+    filename: "Long feature title.mp4"
+  }], { url: previewSizePage })[0];
+  check(
+    featureOverPreview.url,
+    "https://cdn.test/feature-long.m3u8",
+    "ranked feature HLS replaces the preview URL"
+  );
+  check(
+    featureOverPreview.duration,
+    7200,
+    "feature duration is not the 30s preview length"
+  );
+  check(
+    !featureOverPreview.estimatedSize,
+    true,
+    "preview estimatedSize is not kept on a different feature URL"
+  );
+
   const supjavPage = "https://supjav.com/455636.html";
   h.setCurrentTabUrl(supjavPage);
   const supjavPlaceholder = u.ensureSiteItems([], {
