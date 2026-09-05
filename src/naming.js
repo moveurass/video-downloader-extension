@@ -49,6 +49,25 @@ const Naming = (() => {
   }
 
   /**
+   * Video watch pages on known-code hosts, including numeric article URLs
+   * such as supjav.com/455636.html that have no SNOS-309-style product code.
+   */
+  function isKnownCodeVideoPage(pageUrl) {
+    if (!pageUrl || !/^https?:/i.test(pageUrl)) return false;
+    try {
+      const parsed = new URL(pageUrl);
+      const host = parsed.hostname.replace(/^www\./i, "");
+      if (!isKnownCodeSite(host)) return false;
+      if (extractProductCode(parsed.href)) return true;
+      const path = parsed.pathname || "/";
+      if (path === "/" || path.length < 3) return false;
+      return /\/\d{3,}(?:\.html?)?$/i.test(path) || /\/\d{3,}\b/.test(path);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Known marketing descriptors appended to otherwise clean code slugs.
    * Strip from the right so combinations such as
    * "CAWD-952-uncensored-leaked" still reduce to one code token. 123av also
@@ -118,6 +137,23 @@ const Naming = (() => {
       return `${m[1].toUpperCase()}-${m[2]}`;
     }
     return "";
+  }
+
+  /** True when two titles refer to the same product / video identity */
+  function titlesMatchVideo(a, b) {
+    const sa = String(a || "").trim();
+    const sb = String(b || "").trim();
+    if (!sa || !sb) return false;
+    const ca = extractProductCode(sa) || "";
+    const cb = extractProductCode(sb) || "";
+    if (ca && cb) return ca.toUpperCase() === cb.toUpperCase();
+    if (ca || cb) return false;
+    const na = cleanPageTitle(sa) || sa;
+    const nb = cleanPageTitle(sb) || sb;
+    if (na === nb) return true;
+    const stripQ = (s) =>
+      s.replace(/[_\s-]*\d{3,4}p\b/gi, "").trim().toLowerCase();
+    return stripQ(na) === stripQ(nb) && stripQ(na).length >= 4;
   }
 
   /**
@@ -656,11 +692,20 @@ const Naming = (() => {
     if (/\d+_\d{2,4}x\d{2,4}/i.test(path)) return true;
     if (/\/\d{2,4}x\d{2,4}\.(mp4|webm)/i.test(path)) return true;
 
-    // Common ad/preview path tokens
+    const isStream = !!(item.isHls || item.type === "stream");
+
+    // Hard-junk obvious ad slots. Preview/trailer/sample/teaser/promo tokens
+    // on HLS/stream are soft-demoted in mediaScore so a lone clip still shows.
     if (
-      /\/(preroll|midroll|postroll|promo|banner|splash|teaser|preview|trailer[_-]?ad|advert|vast|vmap|ima)[\/._-]/i.test(
+      /\/(preroll|midroll|postroll|banner|splash|advert|vast|vmap|ima|trailer[_-]?ad)[\/._-]/i.test(
         path
       )
+    ) {
+      return true;
+    }
+    if (
+      !isStream &&
+      /\/(promo|teaser|preview|sample|trailer)[\/._-]/i.test(path)
     ) {
       return true;
     }
@@ -694,6 +739,88 @@ const Naming = (() => {
     return false;
   }
 
+  const PREVIEW_URL_TOKEN =
+    /(?:^|[/?#._=&-])(?:preview|trailer|sample|teaser|promo)(?:[/?#._=&-]|$)/i;
+
+  function looksLikePreviewMedia(item = {}) {
+    if (item.previewHint) return true;
+    const url = item.url || "";
+    const hay = (() => {
+      try {
+        const parsed = new URL(url);
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        return url;
+      }
+    })();
+    return PREVIEW_URL_TOKEN.test(hay);
+  }
+
+  const SHORT_STREAM_SECONDS = 90;
+
+  function streamDuration(item = {}) {
+    return typeof item.duration === "number" && item.duration > 0
+      ? item.duration
+      : 0;
+  }
+
+  function captureSourceRank(item = {}) {
+    const source = String(item.source || "");
+    if (source === "network") return 3;
+    if (source === "page" || source === "webRequest") return 2;
+    if (source === "script-sniff") return 0;
+    return 1;
+  }
+
+  function isShortStreamPreview(item = {}) {
+    const dur = streamDuration(item);
+    return !!(item.isHls || item.type === "stream") && dur > 0 && dur < SHORT_STREAM_SECONDS;
+  }
+
+  /**
+   * Prefer the feature HLS over a short script-sniff preview.
+   * Duration is compared only when both sides know it — an unprobed network
+   * capture must not lose to a 30s preview that happened to probe first.
+   * Returns 0 when the remaining signals also tie.
+   */
+  function compareMediaCandidates(a = {}, b = {}, options = {}) {
+    const durA = streamDuration(a);
+    const durB = streamDuration(b);
+    if (durA && durB && durA !== durB) return durB - durA;
+
+    const shortA = isShortStreamPreview(a);
+    const shortB = isShortStreamPreview(b);
+    if (shortA !== shortB) return Number(shortA) - Number(shortB);
+
+    const longA = durA >= SHORT_STREAM_SECONDS;
+    const longB = durB >= SHORT_STREAM_SECONDS;
+    if (longA !== longB) return Number(longB) - Number(longA);
+
+    const prevA = looksLikePreviewMedia(a) ? 1 : 0;
+    const prevB = looksLikePreviewMedia(b) ? 1 : 0;
+    if (prevA !== prevB) return prevA - prevB;
+
+    if (options.preferNetwork !== false) {
+      const sourceDelta = captureSourceRank(b) - captureSourceRank(a);
+      if (sourceDelta) return sourceDelta;
+    }
+
+    const segDelta = (Number(b.segmentCount) || 0) - (Number(a.segmentCount) || 0);
+    if (segDelta) return segDelta;
+    const bandwidth = (item) =>
+      Number(item.bandwidth || item.estimateBandwidth) || 0;
+    const bwDelta = bandwidth(b) - bandwidth(a);
+    if (bwDelta) return bwDelta;
+    const bytes = (item) => Number(item.estimatedSize || item.size) || 0;
+    const sizeDelta = bytes(b) - bytes(a);
+    if (sizeDelta) return sizeDelta;
+
+    const heightA = Number(a.height) || 0;
+    const heightB = Number(b.height) || 0;
+    if (heightA && heightB && heightA !== heightB) return heightB - heightA;
+    return 0;
+  }
+
   /** Score for ranking main content higher */
   function mediaScore(item = {}) {
     let s = 0;
@@ -702,14 +829,19 @@ const Naming = (() => {
     if (item.type === "audio") s += 40;
     if (item.source === "page") s += 25;
     if (item.variants?.length) s += 40;
-    if (item.segmentCount) s += Math.min(item.segmentCount, 30);
-    if (item.size) s += Math.min(item.size / 1e6, 80);
+    if (item.segmentCount) s += Math.min(Number(item.segmentCount) || 0, 80);
+    const bytes = Number(item.estimatedSize || item.size) || 0;
+    if (bytes) s += Math.min(bytes / 1e6, 120);
     if (item.width && item.height) s += (item.width * item.height) / 80_000;
-    if (item.duration && item.duration > 60) s += Math.min(item.duration / 10, 40);
+    const dur = Number(item.duration) || 0;
+    if (dur > 0) s += Math.min(dur / 5, 400);
     if (item.thumbnail) s += 5;
     // Prefer page-titled items
     if (item.title && !isUglyBase(item.title)) s += 15;
     if (item.pageTitle && !isUglyBase(item.pageTitle)) s += 10;
+    const isStream = !!(item.isHls || item.type === "stream");
+    if (isStream && dur > 0 && dur < 90) s -= 220;
+    if (looksLikePreviewMedia(item)) s -= 180;
     return s;
   }
 
@@ -718,7 +850,9 @@ const Naming = (() => {
     cleanPageTitle,
     extractProductCode,
     bindTitleToPage,
+    titlesMatchVideo,
     isKnownCodeSite,
+    isKnownCodeVideoPage,
     isUglyBase,
     extFromUrl,
     extFromFilename,
@@ -727,6 +861,8 @@ const Naming = (() => {
     buildSeriesFilename,
     displayTitle,
     isJunkMedia,
+    looksLikePreviewMedia,
+    compareMediaCandidates,
     mediaScore
   };
 })();

@@ -60,6 +60,7 @@
       let selectedAudioTrack = "";
       let selectedSubtitleTracks = new Set();
       let qualitiesLoading = false;
+      let qualitiesRequestId = 0;
 
       const getSelectedQuality = () => selectedQuality;
       const setSelectedQuality = (value) => {
@@ -300,7 +301,13 @@
         return !(q.height >= 240);
       }
 
+      function mediaUrlOf(value) {
+        return String(value?.url || "").trim();
+      }
+
       async function loadAvailableQualities(item) {
+        const requestId = ++qualitiesRequestId;
+        const probedUrl = mediaUrlOf(item);
         qualitiesLoading = true;
         availableQualities = fallback.map((entry) => ({ ...entry }));
         availableAudioTracks = [];
@@ -368,6 +375,7 @@
         }
 
         if (!canProbe) {
+          if (requestId !== qualitiesRequestId) return;
           availableQualities = ensureChoices(
             seedFromItem.length ? seedFromItem : fallback
           );
@@ -410,6 +418,14 @@
               [...selectedSubtitleTracks].filter((id) => subtitleIds.has(id))
             );
           }
+          if (requestId !== qualitiesRequestId) return;
+          const liveUrl = mediaUrlOf(getAllItems()[0]);
+          const sameProbedMedia = !probedUrl || !liveUrl || liveUrl === probedUrl;
+          if (!sameProbedMedia) {
+            if (requestId === qualitiesRequestId) qualitiesLoading = false;
+            return;
+          }
+
           if (response?.ok && response.qualities?.length) {
             availableQualities = ensureChoices(response.qualities);
           } else if (seedFromItem.length) {
@@ -423,13 +439,14 @@
             if (!recovered) {
               recovered = await fetchPlayerHeight(getCurrentTabId());
             }
+            if (requestId !== qualitiesRequestId) return;
             if (recovered) {
               availableQualities = ensureChoices([recovered]);
             }
           }
 
           const allItems = getAllItems();
-          if (response?.ok && allItems[0]) {
+          if (response?.ok && allItems[0] && mediaUrlOf(allItems[0]) === probedUrl) {
             const patch = { ...allItems[0] };
             if (response.duration >= 1) patch.duration = response.duration;
             if (response.estimatedSize > 0) {
@@ -469,15 +486,18 @@
             setAllItems(allItems);
           }
         } catch {
+          if (requestId !== qualitiesRequestId) return;
           if (seedFromItem.length) {
             availableQualities = ensureChoices(seedFromItem);
           } else {
             const playerHeight = await fetchPlayerHeight(getCurrentTabId());
+            if (requestId !== qualitiesRequestId) return;
             availableQualities = ensureChoices(
               playerHeight ? [playerHeight] : fallback
             );
           }
         }
+        if (requestId !== qualitiesRequestId) return;
         applySiteDefaultQuality(pageUrl || mediaUrl);
         if (!availableQualities.some((q) => q.id === selectedQuality)) {
           selectedQuality = availableQualities[0]?.id || "best";

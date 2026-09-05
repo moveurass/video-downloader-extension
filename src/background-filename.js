@@ -115,19 +115,21 @@
 
     /** True when two titles refer to the same product / video identity */
     function titlesMatchVideo(a, b) {
+      if (typeof Naming.titlesMatchVideo === "function") {
+        return Naming.titlesMatchVideo(a, b);
+      }
       const sa = String(a || "").trim();
       const sb = String(b || "").trim();
       if (!sa || !sb) return false;
       const ca = Naming.extractProductCode?.(sa) || "";
       const cb = Naming.extractProductCode?.(sb) || "";
       if (ca && cb) return ca.toUpperCase() === cb.toUpperCase();
-      // If only one has a product code, they are different videos
       if (ca || cb) return false;
       const na = Naming.cleanPageTitle?.(sa) || sa;
       const nb = Naming.cleanPageTitle?.(sb) || sb;
       if (na === nb) return true;
-      // Same stem ignoring quality suffix
-      const stripQ = (s) => s.replace(/[_\s-]*\d{3,4}p\b/gi, "").trim().toLowerCase();
+      const stripQ = (s) =>
+        s.replace(/[_\s-]*\d{3,4}p\b/gi, "").trim().toLowerCase();
       return stripQ(na) === stripQ(nb) && stripQ(na).length >= 4;
     }
 

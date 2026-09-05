@@ -79,7 +79,17 @@ function makeHarness() {
   };
   const Naming = {
     marker: "naming",
-    isKnownCodeSite: (host) => /123av/i.test(host),
+    isKnownCodeSite: (host) => /123av|supjav/i.test(host),
+    isKnownCodeVideoPage: (url) => {
+      try {
+        const host = new URL(url).hostname.replace(/^www\./i, "");
+        if (!/123av|supjav/i.test(host)) return false;
+        if (/[a-z]{2,12}[-_]\d{2,5}/i.test(url)) return true;
+        return /\/\d{3,}(?:\.html?)?$/i.test(new URL(url).pathname);
+      } catch {
+        return false;
+      }
+    },
     extractProductCode: (url) => {
       const match = String(url).match(/([a-z]{2,12})[-_](\d{2,5})/i);
       return match ? `${match[1].toUpperCase()}-${match[2]}` : "";
@@ -87,6 +97,18 @@ function makeHarness() {
     cleanPageTitle: (value) =>
       String(value || "").replace(/\s*-\s*123AV.*$/i, "").trim(),
     bindTitleToPage: (_url, title) => title,
+    titlesMatchVideo: (a, b) => {
+      const code = (value) => {
+        const match = String(value || "").match(/([a-z]{2,12})[-_](\d{2,5})/i);
+        return match ? `${match[1].toUpperCase()}-${match[2]}` : "";
+      };
+      const ca = code(a);
+      const cb = code(b);
+      if (ca && cb) return ca === cb;
+      const na = String(a || "").trim();
+      const nb = String(b || "").trim();
+      return !!na && !!nb && na === nb;
+    },
     buildFilename: ({ title }) => `${title}.mp4`
   };
   const pageHost = {
@@ -115,7 +137,7 @@ function makeHarness() {
     isSitePage: (url) => /youtube|tiktok|instagram/.test(url),
     isKnownDownloadablePage: (url) =>
       /youtube|tiktok|instagram/.test(url) ||
-      /123av\.com\/.*[a-z]{2,12}[-_]\d{2,5}/i.test(url),
+      Naming.isKnownCodeVideoPage(url),
     getCurrentTabUrl: () => currentTabUrl,
     getAllItems: () => allItems,
     getUvdSettings: () => uvdSettings,
@@ -359,6 +381,170 @@ function main() {
     suffixVariant.thumbnail,
     "https://img.test/snos-342.jpg",
     "suffix variant retains same-page title and thumbnail"
+  );
+
+  h.setCurrentTabUrl("https://123av.com/ko/v/snos-341");
+  const otherCode = u.ensureSiteItems([], {
+    url: "https://123av.com/ko/v/snos-341",
+    title: "SNOS-341"
+  })[0];
+  check(
+    otherCode.thumbnail !== "https://img.test/snos-342.jpg",
+    true,
+    "other product code does not reuse last-good thumb"
+  );
+
+  const previewSizePage = "https://supjav.com/455639.html";
+  h.setCurrentTabUrl(previewSizePage);
+  u.ensureSiteItems([{
+    url: "https://cdn.test/preview-30s.m3u8",
+    pageUrl: previewSizePage,
+    type: "stream",
+    isHls: true,
+    duration: 30,
+    estimatedSize: 2_400_000,
+    title: "Long feature title",
+    pageTitle: "Long feature title",
+    displayName: "Long feature title",
+    filename: "Long feature title.mp4"
+  }], { url: previewSizePage });
+  const featureOverPreview = u.ensureSiteItems([{
+    url: "https://cdn.test/feature-long.m3u8",
+    pageUrl: previewSizePage,
+    type: "stream",
+    isHls: true,
+    duration: 7200,
+    estimatedSize: 0,
+    title: "Long feature title",
+    pageTitle: "Long feature title",
+    displayName: "Long feature title",
+    filename: "Long feature title.mp4"
+  }], { url: previewSizePage })[0];
+  check(
+    featureOverPreview.url,
+    "https://cdn.test/feature-long.m3u8",
+    "ranked feature HLS replaces the preview URL"
+  );
+  check(
+    featureOverPreview.duration,
+    7200,
+    "feature duration is not the 30s preview length"
+  );
+  check(
+    !featureOverPreview.estimatedSize,
+    true,
+    "preview estimatedSize is not kept on a different feature URL"
+  );
+
+  const supjavPage = "https://supjav.com/455636.html";
+  h.setCurrentTabUrl(supjavPage);
+  const supjavPlaceholder = u.ensureSiteItems([], {
+    url: supjavPage,
+    title: "Supjav watch"
+  })[0];
+  check(
+    supjavPlaceholder.isPagePlaceholder,
+    true,
+    "numeric Supjav article URL gets a placeholder"
+  );
+  const supjavMedia = u.ensureSiteItems([{
+    url: "https://cdn.test/feature.m3u8",
+    pageUrl: supjavPage,
+    type: "stream",
+    isHls: true,
+    thumbnail: "https://img.test/supjav-current.jpg"
+  }], { url: supjavPage })[0];
+  check(supjavMedia.isPagePlaceholder, false, "real Supjav media replaces placeholder");
+  const supjavEmpty = u.ensureSiteItems([], { url: supjavPage })[0];
+  check(
+    supjavEmpty.url,
+    "https://cdn.test/feature.m3u8",
+    "empty Supjav refresh restores same-page last-good media"
+  );
+  check(
+    supjavEmpty.thumbnail,
+    "https://img.test/supjav-current.jpg",
+    "empty Supjav refresh keeps the same-page thumb"
+  );
+  const supjavPlaceholderUpdate = u.ensureSiteItems([{
+    url: supjavPage,
+    pageUrl: supjavPage,
+    isPagePlaceholder: true,
+    thumbnail: ""
+  }], { url: supjavPage })[0];
+  check(
+    supjavPlaceholderUpdate.url,
+    "https://cdn.test/feature.m3u8",
+    "placeholder-only update does not replace last-good media"
+  );
+  h.setCurrentTabUrl("https://supjav.com/455637.html");
+  const otherNumeric = u.ensureSiteItems([], {
+    url: "https://supjav.com/455637.html",
+    title: "Other clip"
+  })[0];
+  check(
+    otherNumeric.thumbnail !== "https://img.test/supjav-current.jpg",
+    true,
+    "numeric Supjav page change does not flash the previous thumb"
+  );
+
+  h.setCurrentTabUrl(supjavPage);
+  const keepThumb = u.ensureSiteItems([{
+    url: supjavPage,
+    pageUrl: supjavPage,
+    isPagePlaceholder: true
+  }], { url: supjavPage })[0];
+  check(
+    keepThumb.thumbnail,
+    "https://img.test/supjav-current.jpg",
+    "same-pageKey placeholder never blanks the last-good thumb"
+  );
+
+  h.setCurrentTabUrl("https://supjav.com/455638.html");
+  const nextNumeric = u.ensureSiteItems([{
+    url: "https://cdn.test/other-feature.m3u8",
+    pageUrl: "https://supjav.com/455638.html",
+    type: "stream",
+    isHls: true,
+    title: "Short current",
+    pageTitle: "Short current",
+    displayName: "Short current",
+    filename: "Short current.mp4",
+    thumbnail: "https://img.test/supjav-next.jpg"
+  }], {
+    url: "https://supjav.com/455638.html",
+    title: "Short current"
+  })[0];
+  check(
+    nextNumeric.title,
+    "Short current",
+    "a different numeric Supjav page uses the current title even when it is shorter"
+  );
+  check(
+    nextNumeric.thumbnail,
+    "https://img.test/supjav-next.jpg",
+    "a different numeric Supjav page uses the current cover"
+  );
+  check(
+    nextNumeric.filename,
+    "Short current.mp4",
+    "a different numeric Supjav page uses the current filename"
+  );
+
+  h.setCurrentTabUrl("https://supjav.com/455638.html");
+  const replacedTitle = u.ensureSiteItems([{
+    url: "https://cdn.test/other-feature.m3u8",
+    pageUrl: "https://supjav.com/455638.html",
+    type: "stream",
+    isHls: true,
+    title: "Updated current page title",
+    filename: "Updated current page title.mp4",
+    thumbnail: "https://img.test/supjav-next.jpg"
+  }], { url: "https://supjav.com/455638.html" })[0];
+  check(
+    replacedTitle.title,
+    "Updated current page title",
+    "same-page incoming title replaces a different previous video name"
   );
 
   h.elements.linkInput.value = "";

@@ -248,12 +248,40 @@
     if (label && tabId != null && height >= 240 && current && !(current.height >= 240)) {
       deps.getTabMap(tabId).set(url, { ...current, height, quality: label });
     }
+    const duration = info.duration >= 1 ? info.duration : 0;
+    const estimatedSize =
+      (typeof deps.HLS?.estimateMediaBytes === "function"
+        ? deps.HLS.estimateMediaBytes({
+            duration,
+            segmentCount: info.segmentCount,
+            bandwidth: current?.estimateBandwidth || current?.bandwidth,
+            height
+          })
+        : 0) || 0;
+    const chip = label
+      ? {
+          id: label,
+          label: estimatedSize
+            ? `${label} · ${sizeLabel(estimatedSize)}`
+            : label,
+          height: height || undefined,
+          estimatedSize: estimatedSize || undefined,
+          approx: estimatedSize > 0
+        }
+      : {
+          id: "best",
+          label: estimatedSize
+            ? `최고 · ${sizeLabel(estimatedSize)}`
+            : "최고",
+          estimatedSize: estimatedSize || undefined,
+          approx: estimatedSize > 0
+        };
     return {
       ok: true,
-      qualities: label ? [{ id: label, label, height: height || undefined }] : [{ id: "best", label: "최고" }],
+      qualities: [chip],
       source: "hls-media",
-      duration: info.duration >= 1 ? info.duration : 0,
-      estimatedSize: 0
+      duration,
+      estimatedSize
     };
   }
 

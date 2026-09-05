@@ -80,7 +80,8 @@
         getAllItems,
         getAvailableQualities,
         loadMedia,
-        patchMedia
+        patchMedia,
+        loadAvailableQualities
       } = deps;
       const setTimeoutFn = deps.setTimeout || setTimeout;
       const clearTimeoutFn = deps.clearTimeout || clearTimeout;
@@ -220,11 +221,53 @@
             }
             return [item];
           });
-          setAllItems(ensureSiteItems(items, {
+          const knownCodeHost = (() => {
+            try {
+              const host = new URL(currentTabUrl).hostname;
+              if (typeof deps.isKnownCodeSite === "function") {
+                return !!deps.isKnownCodeSite(host);
+              }
+              return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
+                host
+              );
+            } catch {
+              return /:code:/.test(curKey);
+            }
+          })();
+          const painted = pageChanged && knownCodeHost
+            ? items.map((item) => ({
+                ...item,
+                thumbnail: undefined,
+                title: undefined,
+                pageTitle: undefined,
+                displayName: undefined,
+                filename: undefined
+              }))
+            : items;
+          const previousPrimaryUrl = getAllItems?.()?.[0]?.url || "";
+          setAllItems(ensureSiteItems(painted, {
             url: currentTabUrl,
-            title: (items[0] && items[0].title) || ""
+            title: ""
           }));
+          const nextPrimary = getAllItems?.()?.[0] || null;
+          const primaryUrlChanged = !!(
+            !pageChanged &&
+            previousPrimaryUrl &&
+            nextPrimary?.url &&
+            nextPrimary.url !== previousPrimaryUrl
+          );
+          const qualityReload =
+            primaryUrlChanged && typeof loadAvailableQualities === "function"
+              ? Promise.resolve(loadAvailableQualities(nextPrimary)).catch(
+                  () => {}
+                )
+              : null;
           scheduleMediaRender(pageChanged, mediaSignature());
+          if (qualityReload) {
+            qualityReload.then(() => {
+              if (typeof render === "function") render();
+            });
+          }
           if (pageChanged) refreshHelperStatus(true);
           if (pageChanged && typeof loadMedia === "function") {
             // Paint the new MEDIA_UPDATED payload (or its site placeholder)

@@ -76,25 +76,28 @@
           return { handled: true, keepChannel: false };
         }
         case "PAGE_META": {
-          if (tabId != null && msg.pageMeta) {
+          if (tabId != null && msg.pageMeta && isTopFrame(sender)) {
             const pageUrl =
-              msg.pageMeta.lastUrl || sender.tab?.url || msg.pageUrl || "";
-            if (isTopFrame(sender)) {
-              deps.setTabMeta(tabId, {
-                ...msg.pageMeta,
-                lastUrl: pageUrl || msg.pageMeta.lastUrl,
-                pageKey: pageUrl
-                  ? deps.pageIdentityKey(pageUrl)
-                  : msg.pageMeta.pageKey
-              });
-            } else if (pageUrl) {
-              // all_frames content scripts may report an empty player title.
-              // Keep the top-page identity without clearing its real metadata.
-              deps.setTabMeta(tabId, {
-                lastUrl: pageUrl,
-                pageKey: deps.pageIdentityKey(pageUrl)
-              });
+              sender.tab?.url || msg.pageUrl || msg.pageMeta.lastUrl || "";
+            const tabKey = pageUrl ? deps.pageIdentityKey(pageUrl) : "";
+            const metaUrl =
+              msg.pageMeta.lastUrl ||
+              msg.pageMeta.pageUrl ||
+              msg.pageUrl ||
+              "";
+            const metaKey = metaUrl ? deps.pageIdentityKey(metaUrl) : "";
+            if (tabKey && metaKey && tabKey !== metaKey) {
+              sendResponse({ ok: true });
+              return { handled: true, keepChannel: false };
             }
+            deps.setTabMeta(tabId, {
+              ...msg.pageMeta,
+              lastUrl: pageUrl || msg.pageMeta.lastUrl,
+              pageKey: pageUrl
+                ? deps.pageIdentityKey(pageUrl)
+                : msg.pageMeta.pageKey,
+              fromPageMeta: true
+            });
           }
           sendResponse({ ok: true });
           return { handled: true, keepChannel: false };
@@ -103,17 +106,29 @@
           if (tabId == null) {
             return { handled: true, keepChannel: false };
           }
-          const pageUrl = sender.tab?.url || msg.pageUrl || "";
-          if (msg.pageMeta && isTopFrame(sender)) {
+          const tabUrl = sender.tab?.url || "";
+          const scanUrl =
+            msg.pageUrl ||
+            msg.pageMeta?.pageUrl ||
+            msg.pageMeta?.lastUrl ||
+            "";
+          const topFrame = isTopFrame(sender);
+          const tabKey = tabUrl ? deps.pageIdentityKey(tabUrl) : "";
+          const scanKey = scanUrl ? deps.pageIdentityKey(scanUrl) : "";
+          // Top-frame reports from a previous watch id are stale. Nested
+          // player frames (lk1 / voe / fst) have a different pageKey but
+          // belong to this tab — rebind them to the watch URL.
+          if (topFrame && tabKey && scanKey && tabKey !== scanKey) {
+            sendResponse({ ok: true });
+            return { handled: true, keepChannel: false };
+          }
+          const pageUrl = tabUrl || scanUrl || "";
+          if (msg.pageMeta && topFrame) {
             deps.setTabMeta(tabId, {
               ...msg.pageMeta,
               lastUrl: pageUrl || msg.pageMeta.lastUrl,
-              pageKey: pageUrl ? deps.pageIdentityKey(pageUrl) : undefined
-            });
-          } else if (pageUrl) {
-            deps.setTabMeta(tabId, {
-              lastUrl: pageUrl,
-              pageKey: deps.pageIdentityKey(pageUrl)
+              pageKey: pageUrl ? deps.pageIdentityKey(pageUrl) : undefined,
+              fromPageMeta: true
             });
           }
           for (const item of msg.items || []) {

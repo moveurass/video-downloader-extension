@@ -40,6 +40,16 @@
         : "";
     }
 
+    function isKnownCodePageUrl(rawUrl) {
+      try {
+        return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
+          new URL(rawUrl).hostname
+        );
+      } catch {
+        return false;
+      }
+    }
+
     function thumbnailMatchesPage(thumbnail, pageUrl) {
       const expected = youtubeVideoId(pageUrl);
       if (!expected) return true;
@@ -294,6 +304,7 @@
           nextKey &&
           previousKey !== nextKey
         );
+        const knownCodePage = isKnownCodePageUrl(nextTabUrl);
         const suppressProvisionalTitle =
           options.navigation === true || navigationChanged;
         setCurrentTabId(tab.id);
@@ -364,7 +375,7 @@
             pageUrl: currentTabUrl,
             // Browser tab titles can lag behind a YouTube pushState URL.
             title:
-              youtubeId && suppressProvisionalTitle
+              (youtubeId || knownCodePage) && suppressProvisionalTitle
                 ? ""
                 : tab.title || ""
           });
@@ -380,7 +391,9 @@
             return !itemKey || !curKey || itemKey === curKey;
           })
           .map((item) => {
-            if (!youtubeId) return item;
+            if (!youtubeId && !(knownCodePage && suppressProvisionalTitle)) {
+              return item;
+            }
             return {
               ...item,
               // A helper placeholder can be stamped with the new URL while
@@ -389,16 +402,15 @@
               pageTitle: undefined,
               displayName: undefined,
               filename: undefined,
-              thumbnail: thumbnailMatchesPage(
-                item.thumbnail,
-                currentTabUrl
-              )
-                ? item.thumbnail
+              thumbnail: youtubeId
+                ? thumbnailMatchesPage(item.thumbnail, currentTabUrl)
+                  ? item.thumbnail
+                  : undefined
                 : undefined
             };
           });
         const siteTab =
-          youtubeId && suppressProvisionalTitle
+          (youtubeId || knownCodePage) && suppressProvisionalTitle
             ? { ...tab, title: "" }
             : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));
@@ -451,7 +463,8 @@
                 item.pageUrl || item.url || currentTabUrl
               );
               const samePage = !itemKey || !curKey || itemKey === curKey;
-              const keepExisting = samePage && !youtubeId;
+              const keepExisting =
+                samePage && !youtubeId && !knownCodePage;
               return {
                 ...item,
                 thumbnail:
@@ -470,7 +483,8 @@
                   freshTitle ||
                   (keepExisting ? item.displayName : undefined) ||
                   undefined,
-                filename: keepExisting ? item.filename : undefined
+                filename:
+                  freshTitle || !keepExisting ? undefined : item.filename
               };
             })
           );

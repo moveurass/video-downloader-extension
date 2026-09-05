@@ -73,7 +73,7 @@
           pageUrl;
         return `${key}\n${
           item?.isPagePlaceholder ? "placeholder" : "media"
-        }`;
+        }\n${item?.url || ""}`;
       }
 
       function bindThumbFallback(card) {
@@ -367,6 +367,16 @@
         const nextMetaHtml = metaRowsHtml(item);
         if (metaEl && metaEl.innerHTML !== nextMetaHtml) {
           metaEl.innerHTML = nextMetaHtml;
+        }
+        const estimateEl = card.querySelector(".estimate-bar");
+        if (estimateEl && typeof estimateBarHtml === "function") {
+          const nextEstimateHtml = estimateBarHtml(
+            item,
+            getQualitiesLoading?.()
+          );
+          if (nextEstimateHtml && estimateEl.outerHTML !== nextEstimateHtml) {
+            estimateEl.outerHTML = nextEstimateHtml;
+          }
         }
         const filenameEl = card.querySelector(".filename-value");
         if (filenameEl && filenameEl.textContent !== file) {

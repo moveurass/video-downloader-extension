@@ -33,6 +33,20 @@
     return `${h}p`;
   }
 
+  function looksLikePreviewUrl(url) {
+    const hay = (() => {
+      try {
+        const parsed = new URL(absUrl(url) || url);
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        return String(url || "");
+      }
+    })();
+    return /(?:^|[/?#._=&-])(?:preview|trailer|sample|teaser|promo)(?:[/?#._=&-]|$)/i.test(
+      hay
+    );
+  }
+
   /** Guess height from m3u8/CDN path tokens */
   function heightFromUrl(url) {
     const s = String(url || "");
@@ -289,8 +303,45 @@
     return cleanPageTitle(best);
   }
 
+  function isKnownCodeHostName(host = location.hostname) {
+    return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
+      String(host || "")
+    );
+  }
+
+  function cssBackgroundImageUrl(el) {
+    if (!el) return "";
+    const fromStyle = String(el.getAttribute("style") || "").match(
+      /background(?:-image)?\s*:\s*url\(\s*(['"]?)(https?:\/\/[^'")]+)\1\s*\)/i
+    );
+    if (fromStyle?.[2]) return fromStyle[2];
+    try {
+      const computed = getComputedStyle(el).backgroundImage || "";
+      const match = computed.match(
+        /url\(\s*(['"]?)(https?:\/\/[^'")]+)\1\s*\)/i
+      );
+      return match?.[2] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function playerWrapCover() {
+    const nodes = document.querySelectorAll(
+      ".player-wrap, #dz_video, [style*='background-image']"
+    );
+    for (const el of nodes) {
+      const url = cssBackgroundImageUrl(el);
+      if (url && !/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(url)) {
+        return url;
+      }
+    }
+    return "";
+  }
+
   function pageThumbnail() {
     const youtubeId = youtubeVideoId();
+    const knownCode = !youtubeId && isKnownCodeHostName();
     const candidates = [
       document.querySelector('meta[property="og:image"]')?.content,
       document.querySelector('meta[property="og:image:url"]')?.content,
@@ -299,18 +350,27 @@
       document.querySelector('meta[property="og:video:poster"]')?.content,
       document.querySelector('link[rel="image_src"]')?.href,
       document.querySelector("video[poster]")?.getAttribute("poster"),
-      document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")?.src,
-      document.querySelector("img[class*='cover' i], img[class*='thumb' i], img[class*='poster' i]")?.src,
-      // largest content image heuristic
-      ...[...document.querySelectorAll("img[src]")]
-        .filter((img) => (img.naturalWidth || img.width || 0) >= 200)
-        .sort(
-          (a, b) =>
-            (b.naturalWidth || b.width || 0) * (b.naturalHeight || b.height || 0) -
-            (a.naturalWidth || a.width || 0) * (a.naturalHeight || a.height || 0)
-        )
-        .slice(0, 3)
-        .map((img) => img.currentSrc || img.src)
+      playerWrapCover(),
+      ...(knownCode
+        ? []
+        : [
+            document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")
+              ?.src,
+            document.querySelector(
+              "img[class*='cover' i], img[class*='thumb' i], img[class*='poster' i]"
+            )?.src,
+            ...[...document.querySelectorAll("img[src]")]
+              .filter((img) => (img.naturalWidth || img.width || 0) >= 200)
+              .sort(
+                (a, b) =>
+                  (b.naturalWidth || b.width || 0) *
+                    (b.naturalHeight || b.height || 0) -
+                  (a.naturalWidth || a.width || 0) *
+                    (a.naturalHeight || a.height || 0)
+              )
+              .slice(0, 3)
+              .map((img) => img.currentSrc || img.src)
+          ])
     ];
     for (const c of candidates) {
       const u = absUrl(c);
@@ -438,11 +498,14 @@
     chrome.runtime
       .sendMessage({
         type: "PAGE_MEDIA",
+        pageUrl: location.href,
         items: fresh,
         pageMeta: {
           title: pageTitle(),
           thumbnail: pageThumbnail(),
-          host: location.hostname
+          host: location.hostname,
+          lastUrl: location.href,
+          pageUrl: location.href
         }
       })
       .catch(() => {});
@@ -634,12 +697,15 @@
       });
     }
 
-    // Script sniff — critical for 123av / missav-style players
+    // Script sniff — parent HTML on server-button sites (Supjav TV/FST/VOE)
+    // often has no feature m3u8. Nested iframe inject/FOUND_MEDIA is the
+    // capture path once the user plays FST/VOE; do not auto-click servers.
     const playerDim = bestPlayerDimensions();
     for (const u of sniffUrlsFromPageText()) {
       const isStream = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(u);
+      const previewHint = looksLikePreviewUrl(u);
       const fromUrl = heightFromUrl(u);
-      const h = fromUrl || playerDim.height || 0;
+      const h = fromUrl || (previewHint ? 0 : playerDim.height) || 0;
       const q = qualityFromHeight(h);
       items.push({
         url: u,
@@ -650,6 +716,7 @@
         type: isStream ? "stream" : "video",
         source: "script-sniff",
         isHls: isStream,
+        previewHint: previewHint || undefined,
         width: h ? playerDim.width || undefined : undefined,
         height: h || undefined,
         quality: q,
@@ -661,6 +728,7 @@
     if (playerDim.height >= 240) {
       const q = qualityFromHeight(playerDim.height);
       for (const it of items) {
+        if (it.previewHint) continue;
         if (!(it.height >= 240) && (it.isHls || it.type === "stream" || /\.m3u8/i.test(it.url || ""))) {
           it.height = playerDim.height;
           it.width = playerDim.width || it.width;
@@ -949,6 +1017,8 @@
       REPORTED.clear();
       scheduleScan();
     });
+  }
+  if (isYouTubeHost() || isKnownCodeHostName()) {
     window.addEventListener("popstate", () => {
       setTimeout(() => refreshAfterSpaNavigation(true), 0);
     });

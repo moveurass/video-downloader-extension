@@ -35,6 +35,28 @@
           !deps.Naming.isJunkMedia(item)
       );
       items.sort((first, second) => {
+        if (typeof deps.Naming.compareMediaCandidates === "function") {
+          const ranked = deps.Naming.compareMediaCandidates(first, second);
+          if (ranked) return ranked;
+        } else {
+          const duration = (item) =>
+            typeof item.duration === "number" && item.duration > 0
+              ? item.duration
+              : 0;
+          const durDelta = duration(second) - duration(first);
+          if (durDelta) return durDelta;
+          const heightDelta =
+            (Number(second.height) || 0) - (Number(first.height) || 0);
+          if (heightDelta) return heightDelta;
+          const bytes = (item) =>
+            Number(item.estimatedSize || item.size) || 0;
+          const sizeDelta = bytes(second) - bytes(first);
+          if (sizeDelta) return sizeDelta;
+          const segDelta =
+            (Number(second.segmentCount) || 0) -
+            (Number(first.segmentCount) || 0);
+          if (segDelta) return segDelta;
+        }
         const score = (item) =>
           (/\.m3u8/i.test(item.url || "") ? 500 : 0) +
           deps.Naming.mediaScore(item);
