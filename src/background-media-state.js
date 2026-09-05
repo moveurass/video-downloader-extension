@@ -810,6 +810,13 @@
       const meta = tabMeta.get(tabId);
       const pageUrl = meta?.lastUrl || "";
       const pageKey = meta?.pageKey || pageIdentityKey(pageUrl);
+      const stillCurrent = () => {
+        const current = tabMeta.get(tabId);
+        const currentUrl = current?.lastUrl || "";
+        const currentKey =
+          current?.pageKey || pageIdentityKey(currentUrl);
+        return currentUrl === pageUrl && currentKey === pageKey;
+      };
       const immediatePlaceholder =
         getMediaForTab(tabId).length === 0
           ? makeSitePlaceholder({ id: tabId, url: pageUrl, title: "" })
@@ -830,6 +837,7 @@
       }
       getMediaForTabAsync(tabId)
         .then((items) => {
+          if (!stillCurrent()) return;
           chrome.runtime
             .sendMessage({
               type: "MEDIA_UPDATED",
@@ -843,6 +851,7 @@
             .catch(() => {});
         })
         .catch(() => {
+          if (!stillCurrent()) return;
           chrome.runtime
             .sendMessage({
               type: "MEDIA_UPDATED",
