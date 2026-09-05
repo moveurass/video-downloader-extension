@@ -57,8 +57,15 @@
       }
     }
 
-    function settleTrackedJob(jobId, result, error) {
+    function settleTrackedJob(jobId, result, error, runGeneration = null) {
       const job = deps.activeDownloads.get(jobId);
+      if (
+        job &&
+        runGeneration != null &&
+        Number(job.runGeneration || 1) !== Number(runGeneration)
+      ) {
+        return false;
+      }
       const message = String(error?.message || error || "");
       if (job?.pauseRequested || /PAUSED/i.test(message)) {
         deps.finalizePausedJob(jobId);
@@ -69,10 +76,15 @@
       } else {
         deps.finishDownloadJob(jobId, result, null);
       }
+      return true;
     }
 
     function runTrackedDownload(meta, asyncFn, sendResponse) {
       const jobId = deps.createDownloadJob(meta);
+      const runGeneration =
+        deps.getJobRunGeneration?.(jobId) ||
+        Number(deps.activeDownloads.get(jobId)?.runGeneration) ||
+        1;
       const keepAlive = startKeepAlive();
       try {
         sendResponse({
@@ -87,13 +99,24 @@
         // Popup may already be closed.
       }
       Promise.resolve()
-        .then(() => deps.withJobContext(jobId, () => asyncFn(jobId)))
+        .then(() => {
+          if (
+            deps.isCurrentJobRun &&
+            !deps.isCurrentJobRun(jobId, runGeneration)
+          ) {
+            throw new Error("STALE_RUN");
+          }
+          return deps.withJobContext(
+            jobId,
+            () => asyncFn(jobId, runGeneration)
+          );
+        })
         .then((result) => {
-          settleTrackedJob(jobId, result, null);
+          settleTrackedJob(jobId, result, null, runGeneration);
           stopKeepAlive(keepAlive);
         })
         .catch((error) => {
-          settleTrackedJob(jobId, null, error);
+          settleTrackedJob(jobId, null, error, runGeneration);
           stopKeepAlive(keepAlive);
         });
       return true;
@@ -101,13 +124,20 @@
 
     async function runTrackedDownloadAsync(meta, asyncFn) {
       const jobId = deps.createDownloadJob(meta);
+      const runGeneration =
+        deps.getJobRunGeneration?.(jobId) ||
+        Number(deps.activeDownloads.get(jobId)?.runGeneration) ||
+        1;
       const keepAlive = startKeepAlive();
       try {
-        const result = await deps.withJobContext(jobId, () => asyncFn(jobId));
-        settleTrackedJob(jobId, result, null);
+        const result = await deps.withJobContext(
+          jobId,
+          () => asyncFn(jobId, runGeneration)
+        );
+        settleTrackedJob(jobId, result, null, runGeneration);
         return result;
       } catch (error) {
-        settleTrackedJob(jobId, null, error);
+        settleTrackedJob(jobId, null, error, runGeneration);
         throw error;
       } finally {
         stopKeepAlive(keepAlive);
@@ -192,6 +222,17 @@
       const mediaMode = forceOpts.mediaMode || settings.mediaMode || "video";
       const quality = forceOpts.preferQuality || preferQuality || "best";
       const jobSnapshot = jid ? deps.activeDownloads.get(jid) : null;
+      const runGeneration =
+        forceOpts.runGeneration ??
+        (jobSnapshot ? Number(jobSnapshot.runGeneration) || 1 : null);
+      if (
+        jid &&
+        runGeneration != null &&
+        deps.isCurrentJobRun &&
+        !deps.isCurrentJobRun(jid, runGeneration)
+      ) {
+        throw new Error("STALE_RUN");
+      }
       let filename = "";
       try {
         filename = deps.lockSaveName({
@@ -245,7 +286,8 @@
             audioTrackId: forceOpts.audioTrackId || "",
             subtitleLanguages: Array.isArray(forceOpts.subtitleLanguages)
               ? forceOpts.subtitleLanguages
-              : []
+              : [],
+            runGeneration
           }
         );
       }
@@ -390,6 +432,7 @@
             jobId: jid,
             forceMediaMode: mediaMode,
             resume: !!forceOpts.resume,
+            runGeneration,
             audioTrackId: forceOpts.audioTrackId || "",
             subtitleLanguages: Array.isArray(forceOpts.subtitleLanguages)
               ? forceOpts.subtitleLanguages

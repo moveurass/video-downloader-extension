@@ -55,10 +55,11 @@
             quality,
             thumbnail: deps.getTabMeta(tab.id)?.thumbnail || ""
           },
-          (jobId) =>
+          (jobId, runGeneration) =>
             deps.downloadPageFromUi(tab.id, tab.url, quality, jobId, {
               mediaMode,
-              preferQuality: quality
+              preferQuality: quality,
+              runGeneration
             })
         );
       } catch (error) {

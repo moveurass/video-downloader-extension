@@ -57,7 +57,7 @@
               pageUrl: tab.url,
               filename: fname
             },
-            () =>
+            (jobId, runGeneration) =>
               deps.downloadSmart(
                 tabId,
                 info.srcUrl,
@@ -65,7 +65,7 @@
                 "best",
                 item?.type || "video",
                 item,
-                { pageUrl: tab.url }
+                { pageUrl: tab.url, jobId, runGeneration }
               )
           );
           return;
@@ -79,7 +79,14 @@
               pageUrl: info.linkUrl,
               filename: ""
             },
-            () => deps.downloadPageFromUi(tabId, info.linkUrl, "best")
+            (jobId, runGeneration) =>
+              deps.downloadPageFromUi(
+                tabId,
+                info.linkUrl,
+                "best",
+                jobId,
+                { runGeneration }
+              )
           );
           return;
         }
@@ -93,7 +100,14 @@
           }
           await deps.runTrackedDownloadAsync(
             { tabId, title: "", pageUrl: link, filename: "" },
-            () => deps.downloadPageFromUi(tabId, link, "best")
+            (jobId, runGeneration) =>
+              deps.downloadPageFromUi(
+                tabId,
+                link,
+                "best",
+                jobId,
+                { runGeneration }
+              )
           );
           return;
         }
@@ -113,7 +127,14 @@
                 pageUrl: tab.url,
                 filename
               },
-              () => deps.downloadPageFromUi(tabId, tab.url, "best")
+              (jobId, runGeneration) =>
+                deps.downloadPageFromUi(
+                  tabId,
+                  tab.url,
+                  "best",
+                  jobId,
+                  { runGeneration }
+                )
             );
             return;
           }
@@ -143,7 +164,7 @@
               pageUrl: tab.url,
               filename
             },
-            () =>
+            (jobId, runGeneration) =>
               deps.downloadSmart(
                 tabId,
                 best.url,
@@ -151,7 +172,7 @@
                 "best",
                 best.type,
                 best,
-                { pageUrl: tab.url }
+                { pageUrl: tab.url, jobId, runGeneration }
               )
           );
         }

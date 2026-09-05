@@ -229,10 +229,49 @@
       return { ok: true, ...saved, method: "tiktok-fetch-blob" };
     }
 
-    function assignHelperJobId(progress, jid) {
+    function helperRunIdentity(jid, filename, forceOpts = {}) {
+      const job = jid ? deps.getActiveDownload(jid) : null;
+      const runGeneration =
+        forceOpts.runGeneration ??
+        (job ? Number(job.runGeneration) || 1 : null);
+      if (jid) deps.throwIfJobStopped(jid, runGeneration);
+      const proposedTitleHint = deps.ytdlpFilenameHint(
+        filename,
+        job?.title || ""
+      );
+      const locked =
+        jid && typeof deps.lockHelperResumeIdentity === "function"
+          ? deps.lockHelperResumeIdentity(jid, proposedTitleHint || "")
+          : {
+              resumeKey: jid || "",
+              titleHint: proposedTitleHint || ""
+            };
+      return {
+        runGeneration,
+        resumeKey: locked.resumeKey || jid || undefined,
+        titleHint: locked.titleHint || undefined
+      };
+    }
+
+    function assignHelperJobId(progress, jid, runGeneration = null) {
       if (!progress.helperJobId || !jid) return;
       const job = deps.getActiveDownload(jid);
-      if (job) job.helperJobId = progress.helperJobId;
+      if (
+        job &&
+        (runGeneration == null ||
+          Number(job.runGeneration || 1) === Number(runGeneration))
+      ) {
+        job.helperJobId = progress.helperJobId;
+        if (job.pauseRequested || job.status === "paused") {
+          Promise.resolve(
+            deps.YtDlp.cancelJob(progress.helperJobId, { pause: true })
+          ).catch(() => {});
+        } else if (job.cancelRequested || job.status === "cancelled") {
+          Promise.resolve(
+            deps.YtDlp.cancelJob(progress.helperJobId, { purge: true })
+          ).catch(() => {});
+        }
+      }
     }
 
     async function downloadTikTok(
@@ -271,7 +310,8 @@
       }
       try {
         const extra = await ytdlpExtraFromSettings(targetPage, forceOpts);
-        const nameHint = deps.ytdlpFilenameHint(filename);
+        const identity = helperRunIdentity(jid, filename, forceOpts);
+        const nameHint = identity.titleHint;
         const result = await deps.YtDlp.downloadAndWait(
           {
             url: targetPage,
@@ -280,15 +320,16 @@
             title: nameHint || undefined,
             quality: preferQuality || "best",
             site: "tiktok",
-            resumeKey: jid || undefined,
+            resumeKey: identity.resumeKey,
+            outputStem: nameHint || undefined,
             cookieHeader: cookieHeader || undefined,
             mediaUrl:
               mediaUrl && deps.looksLikeVideoFileUrl(mediaUrl) ? mediaUrl : undefined,
             ...extra
           },
           (p) => {
-            deps.throwIfJobStopped(jid);
-            assignHelperJobId(p, jid);
+            assignHelperJobId(p, jid, identity.runGeneration);
+            deps.throwIfJobStopped(jid, identity.runGeneration);
             let message = p.message || "받는 중…";
             if (/\[download\]/i.test(message)) {
               message = `받는 중… ${Math.round(p.percent || 0)}%`;
@@ -300,11 +341,15 @@
               message = "TikTok 접근이 막혔습니다. 링크 붙여넣기로 다시 시도해 주세요";
             }
             const pct = Math.min(98, Math.max(2, Number(p.percent) || 10));
-            deps.emitDownloadProgress(tabId, pct, message, "download", jid);
+            deps.emitDownloadProgress(tabId, pct, message, "download", jid, {
+              runGeneration: identity.runGeneration
+            });
           },
           15 * 60 * 1000
         );
-        deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+        deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid, {
+          runGeneration: identity.runGeneration
+        });
         return {
           ok: true,
           method: result.method || "yt-dlp",
@@ -383,7 +428,8 @@
       } else if (extra.writeSubs) {
         deps.emitDownloadProgress(tabId, 5, "영상+자막 받는 중…", "start", jid);
       }
-      const nameHint = deps.ytdlpFilenameHint(filename);
+      const identity = helperRunIdentity(jid, filename, forceOpts);
+      const nameHint = identity.titleHint;
       const result = await deps.YtDlp.downloadAndWait(
         {
           url: targetPage,
@@ -392,14 +438,15 @@
           title: nameHint || undefined,
           quality: preferQuality || "best",
           site: kind || undefined,
-          resumeKey: jid || undefined,
+          resumeKey: identity.resumeKey,
+          outputStem: nameHint || undefined,
           cookieHeader: cookieHeader || undefined,
           cookiesList: cookiesList?.length ? cookiesList : undefined,
           ...extra
         },
         (p) => {
-          deps.throwIfJobStopped(jid);
-          assignHelperJobId(p, jid);
+          assignHelperJobId(p, jid, identity.runGeneration);
+          deps.throwIfJobStopped(jid, identity.runGeneration);
           let message = p.message || "받는 중…";
           if (/Merging|Merger|합치/i.test(message)) {
             message = "파일 합치는 중… (시간이 걸릴 수 있어요)";
@@ -415,11 +462,15 @@
           }
           if (/ERROR/i.test(message)) message = message.slice(0, 120);
           const pct = Math.min(98, Math.max(2, Number(p.percent) || 10));
-          deps.emitDownloadProgress(tabId, pct, message, p.status || "download", jid);
+          deps.emitDownloadProgress(tabId, pct, message, p.status || "download", jid, {
+            runGeneration: identity.runGeneration
+          });
         },
         40 * 60 * 1000
       );
-      deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+      deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid, {
+        runGeneration: identity.runGeneration
+      });
       return {
         ok: true,
         method: "yt-dlp",
@@ -523,7 +574,8 @@
       );
       try {
         const extra = await ytdlpExtraFromSettings(targetPage, forceOpts);
-        const nameHint = deps.ytdlpFilenameHint(filename);
+        const identity = helperRunIdentity(jid, filename, forceOpts);
+        const nameHint = identity.titleHint;
         const result = await deps.YtDlp.downloadAndWait(
           {
             url: targetPage,
@@ -532,14 +584,15 @@
             title: nameHint || undefined,
             quality: preferQuality || "best",
             site: "instagram",
-            resumeKey: jid || undefined,
+            resumeKey: identity.resumeKey,
+            outputStem: nameHint || undefined,
             cookieHeader: cookieHeader || undefined,
             cookiesList,
             ...extra
           },
           (p) => {
-            deps.throwIfJobStopped(jid);
-            assignHelperJobId(p, jid);
+            assignHelperJobId(p, jid, identity.runGeneration);
+            deps.throwIfJobStopped(jid, identity.runGeneration);
             let message = p.message || "받는 중…";
             if (/\[download\]/i.test(message)) {
               message = `받는 중… ${Math.round(p.percent || 0)}%`;
@@ -549,11 +602,15 @@
                 "Instagram 인증 문제 — 브라우저에서 로그인·새로고침 후 링크를 다시 붙여 넣어 주세요";
             }
             const pct = Math.min(98, Math.max(2, Number(p.percent) || 28));
-            deps.emitDownloadProgress(tabId, pct, message, "download", jid);
+            deps.emitDownloadProgress(tabId, pct, message, "download", jid, {
+              runGeneration: identity.runGeneration
+            });
           },
           20 * 60 * 1000
         );
-        deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+        deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid, {
+          runGeneration: identity.runGeneration
+        });
         return {
           ok: true,
           method: result.method || "yt-dlp",

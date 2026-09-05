@@ -84,6 +84,10 @@
           ? job.subtitleLanguages
           : [],
         helperJobId: job.helperJobId || null,
+        helperResumeKey: job.helperResumeKey || "",
+        helperTitleHint: job.helperTitleHint || "",
+        helperIdentityLocked: job.helperIdentityLocked === true,
+        runGeneration: Math.max(1, Number(job.runGeneration) || 1),
         speedBps: job.speedBps || 0,
         speedLabel: job.speedBps ? UVD.formatSpeed(job.speedBps) : "",
         estimatedSize: job.estimatedSize || 0,
@@ -144,6 +148,7 @@
         ...item,
         cancelRequested: false,
         helperJobId: null,
+        runGeneration: Math.max(1, Number(item.runGeneration) || 1),
         _restoredFromStorage: true,
         _interrupted: true
       };
@@ -271,6 +276,7 @@
             phase: "paused",
             pauseRequested: true,
             cancelRequested: false,
+            runGeneration: Math.max(1, Number(item.runGeneration) || 1),
             resumeState: item.resumeState || null,
             _restoredFromStorage: true
           });
@@ -324,10 +330,56 @@
       }, DURABLE_RUNNING_DEBOUNCE_MS);
     }
 
-    function throwIfJobStopped(jobId) {
+    function getJobRunGeneration(jobId) {
+      const job = activeDownloads.get(jobId);
+      return job ? Math.max(1, Number(job.runGeneration) || 1) : 0;
+    }
+
+    function isCurrentJobRun(jobId, runGeneration) {
+      if (runGeneration == null) return activeDownloads.has(jobId);
+      return getJobRunGeneration(jobId) === Number(runGeneration);
+    }
+
+    function beginJobRun(jobId) {
+      const job = activeDownloads.get(jobId);
+      if (!job) return 0;
+      job.runGeneration = getJobRunGeneration(jobId) + 1;
+      job.updatedAt = now();
+      return job.runGeneration;
+    }
+
+    function lockHelperResumeIdentity(jobId, proposedTitleHint = "") {
+      const job = activeDownloads.get(jobId);
+      const fallback = {
+        resumeKey: jobId || "",
+        titleHint: proposedTitleHint || ""
+      };
+      if (!job) return fallback;
+      if (job.helperIdentityLocked !== true) {
+        job.helperResumeKey = job.helperResumeKey || job.id;
+        job.helperTitleHint = String(proposedTitleHint || "");
+        job.helperIdentityLocked = true;
+        job.updatedAt = now();
+        persistJobs();
+      }
+      return {
+        resumeKey: job.helperResumeKey || job.id,
+        titleHint: job.helperTitleHint || ""
+      };
+    }
+
+    function throwIfJobStopped(jobId, runGeneration = null) {
       if (!jobId) return;
       const job = activeDownloads.get(jobId);
       if (!job) return;
+      if (
+        runGeneration != null &&
+        !isCurrentJobRun(jobId, runGeneration)
+      ) {
+        const error = new Error("STALE_RUN");
+        error.code = "STALE_RUN";
+        throw error;
+      }
       if (job.pauseRequested || job.status === "paused") {
         const error = new Error("PAUSED");
         error.code = "PAUSED";
@@ -508,7 +560,7 @@
       }
       if (job.helperJobId) {
         try {
-          await YtDlp.cancelJob(job.helperJobId);
+          await YtDlp.cancelJob(job.helperJobId, { pause: true });
         } catch {
           // Helper may already have stopped.
         }
@@ -539,6 +591,7 @@
           ? job.resumeState.downloadId
           : null;
       if (directDownloadId != null) {
+        const restoredRun = job._restoredFromStorage === true;
         try {
           await chrome.downloads.resume(directDownloadId);
         } catch (error) {
@@ -550,6 +603,9 @@
             )
           };
         }
+        const runGeneration = restoredRun
+          ? beginJobRun(jobId)
+          : getJobRunGeneration(jobId);
         job.status = "running";
         job.phase = "download";
         job.message = "이어받는 중…";
@@ -562,11 +618,12 @@
         broadcastJob(job);
         updateDownloadBadge();
         await syncDurablePausedJobs();
-        if (job._restoredFromStorage && waitForChromeDownload) {
+        if (restoredRun && waitForChromeDownload) {
           delete job._restoredFromStorage;
           const keep = startKeepAlive();
           Promise.resolve(waitForChromeDownload(directDownloadId))
             .then((result) => {
+              if (!isCurrentJobRun(jobId, runGeneration)) return;
               const current = activeDownloads.get(jobId);
               if (current?.pauseRequested) {
                 finalizePausedJob(jobId);
@@ -586,6 +643,7 @@
               );
             })
             .catch((error) => {
+              if (!isCurrentJobRun(jobId, runGeneration)) return;
               const current = activeDownloads.get(jobId);
               if (current?.pauseRequested) finalizePausedJob(jobId);
               else finishDownloadJob(jobId, null, error);
@@ -603,6 +661,7 @@
       if (!pageUrl || !/^https?:/i.test(pageUrl)) {
         return { ok: false, error: "다시 시작할 주소가 없습니다" };
       }
+      const runGeneration = beginJobRun(jobId);
       job.status = "running";
       job.phase = "start";
       job.message =
@@ -630,17 +689,19 @@
           subtitleLanguages: Array.isArray(job.subtitleLanguages)
             ? job.subtitleLanguages
             : [],
-          resume: true
+          resume: true,
+          runGeneration
         })
       )
         .then((result) => {
+          if (!isCurrentJobRun(jobId, runGeneration)) return;
           const current = activeDownloads.get(jobId);
           if (current?.pauseRequested) finalizePausedJob(jobId);
           else if (current?.cancelRequested) finishCancelledJob(jobId);
           else finishDownloadJob(jobId, result, null);
-          stopKeepAlive(keep);
         })
         .catch((error) => {
+          if (!isCurrentJobRun(jobId, runGeneration)) return;
           const current = activeDownloads.get(jobId);
           const message = String(error?.message || error || "");
           if (current?.pauseRequested || /PAUSED/i.test(message)) {
@@ -650,8 +711,8 @@
           } else {
             finishDownloadJob(jobId, null, error);
           }
-          stopKeepAlive(keep);
-        });
+        })
+        .finally(() => stopKeepAlive(keep));
       return { ok: true, status: "running" };
     }
 
@@ -772,6 +833,7 @@
         progressVersion: UVDProgress.VERSION,
         progressAttempt: 1,
         progressSeq: 0,
+        runGeneration: 1,
         message:
           niceTitle !== "영상"
             ? `받는 중 · ${niceTitle.slice(0, 40)}`
@@ -1179,9 +1241,8 @@
           }
           persistJobs();
           broadcastJob(job);
-        } else {
-          tabJobMap.delete(tabId);
         }
+        tabJobMap.delete(tabId);
       }
       for (const job of activeDownloads.values()) {
         if (job.tabId === tabId && job.status === "running") {
@@ -1203,10 +1264,10 @@
     ) {
       const explicit = jobId ? activeDownloads.get(jobId) : null;
       if (explicit && jobIsStopping(explicit)) {
-        throwIfJobStopped(jobId);
+        throwIfJobStopped(jobId, extra.runGeneration);
         return;
       }
-      throwIfJobStopped(jobId);
+      throwIfJobStopped(jobId, extra.runGeneration);
       const job = findRunningJob(tabId, jobId);
       if (!job) {
         if (countRunningJobs() > 1 && !jobId) return;
@@ -1288,6 +1349,10 @@
       hlsProgress,
       notifActions,
       getCurrentJobContext,
+      getJobRunGeneration,
+      isCurrentJobRun,
+      beginJobRun,
+      lockHelperResumeIdentity,
       publicJob,
       throwIfJobStopped,
       finalizePausedJob,

@@ -62,6 +62,10 @@
           seriesTitle: options.title || "",
           tags: ["series", "playlist", options.seriesId, seriesKey].filter(Boolean)
         });
+        const runGeneration =
+          deps.getJobRunGeneration?.(jobId) ||
+          Number(deps.activeDownloads.get(jobId)?.runGeneration) ||
+          1;
         const keepAlive = deps.startKeepAlive();
         started.push({ jobId, url: pageUrl, title });
         deps.withJobContext(jobId, () =>
@@ -72,13 +76,16 @@
             filename || undefined,
             options.quality,
             jobId,
-            { mediaMode: options.settings.mediaMode }
+            {
+              mediaMode: options.settings.mediaMode,
+              runGeneration
+            }
           )
         ).then((result) => {
-          deps.settleTrackedJob(jobId, result, null);
+          deps.settleTrackedJob(jobId, result, null, runGeneration);
           deps.stopKeepAlive(keepAlive);
         }).catch((error) => {
-          deps.settleTrackedJob(jobId, null, error);
+          deps.settleTrackedJob(jobId, null, error, runGeneration);
           deps.stopKeepAlive(keepAlive);
         });
       }

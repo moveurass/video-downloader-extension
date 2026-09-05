@@ -79,7 +79,7 @@
             ? msg.subtitleLanguages
             : []
         },
-        async (jobId) => {
+        async (jobId, runGeneration) => {
           let workTab = tid;
           let opened = false;
           // For HLS from watchlist: open the original page so Referer/cookies work (123av etc.)
@@ -109,6 +109,7 @@
                 pageUrl,
                 preferYtDlp,
                 jobId,
+                runGeneration,
                 audioTrackId: msg.audioTrackId || "",
                 subtitleLanguages: Array.isArray(msg.subtitleLanguages)
                   ? msg.subtitleLanguages

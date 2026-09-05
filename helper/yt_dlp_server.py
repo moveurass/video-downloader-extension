@@ -268,17 +268,28 @@ def sweep_tmp_dirs(max_age: float = TMP_MAX_AGE_SECONDS) -> int:
     return removed
 
 
-def request_cancel_job(job_id: str, purge: bool = False) -> bool:
-    """Mark job cancelled and kill yt-dlp (and its children) if running."""
+def request_cancel_job(
+    job_id: str, purge: bool = False, pause: bool = False
+) -> bool:
+    """Stop yt-dlp, preserving resumable work and semantics for a pause."""
     with jobs_lock:
         job = jobs.get(job_id)
         if not job:
             return False
-        job["cancel"] = True
-        job["purge"] = bool(purge)
-        job["status"] = "cancelled"
-        job["message"] = "취소됨"
-        job["error"] = "사용자가 취소했습니다"
+        if pause:
+            job["pause"] = True
+            job["cancel"] = False
+            job["purge"] = False
+            job["status"] = "paused"
+            job["message"] = "일시정지됨 · 이어받기 가능"
+            job.pop("error", None)
+        else:
+            job["pause"] = False
+            job["cancel"] = True
+            job["purge"] = bool(purge)
+            job["status"] = "cancelled"
+            job["message"] = "취소됨"
+            job["error"] = "사용자가 취소했습니다"
         work_dir = job.get("workDir")
         running = job_id in process_map
     proc = process_map.get(job_id)
@@ -286,9 +297,38 @@ def request_cancel_job(job_id: str, purge: bool = False) -> bool:
         kill_process_tree(proc)
     process_map.pop(job_id, None)
     # When the worker thread is no longer around to honour the flag, purge here.
-    if purge and work_dir and not running:
+    if purge and not pause and work_dir and not running:
         purge_work_dir(Path(work_dir))
     return True
+
+
+def finish_stopped_job(job_id: str) -> bool:
+    """Keep a worker exit from rewriting PAUSED/CANCELLED as an error."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+        if not job:
+            return False
+        if job.get("pause"):
+            job.update(
+                {
+                    "status": "paused",
+                    "message": "일시정지됨 · 이어받기 가능",
+                    "finishedAt": time.time(),
+                }
+            )
+            job.pop("error", None)
+            return True
+        if job.get("cancel"):
+            job.update(
+                {
+                    "status": "cancelled",
+                    "message": "취소됨",
+                    "error": "사용자가 취소했습니다",
+                    "finishedAt": time.time(),
+                }
+            )
+            return True
+    return False
 
 
 def write_netscape_cookies(cookies: list, path: Path) -> int:
@@ -671,11 +711,25 @@ def download_url_to_file(
 
 def supplied_title_hint(payload: dict) -> str:
     """Prefer a real page/video title over a filename or opaque identifier."""
-    for key in ("title", "filename"):
+    for key in ("outputStem", "title", "filename"):
         candidate = str(payload.get(key) or "").strip()
         if candidate and not is_generic_name(candidate):
             return candidate
     return ""
+
+
+def output_template_basename(payload: dict) -> str:
+    """
+    Build the reusable yt-dlp output basename. The extension locks outputStem
+    on the first run and sends it again after resume, so .part paths cannot
+    drift when page metadata or a filename hint changes.
+    """
+    hint = str(payload.get("outputStem") or "").strip() or supplied_title_hint(payload)
+    if hint:
+        safe = clean_name(hint)
+        if safe:
+            return f"{safe}.%(ext)s"
+    return "%(title).100s.%(ext)s"
 
 
 def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) -> bool:
@@ -729,7 +783,10 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
             dest,
             referer=page_url or "https://www.tiktok.com/",
             cookie_header=cookie_header,
-            should_cancel=lambda: bool(jobs.get(job_id, {}).get("cancel")),
+            should_cancel=lambda: bool(
+                jobs.get(job_id, {}).get("cancel")
+                or jobs.get(job_id, {}).get("pause")
+            ),
         )
         if size < 50_000:
             try:
@@ -753,15 +810,17 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
         return True
     except Exception as e:
         with jobs_lock:
-            cancelled = bool(jobs[job_id].get("cancel"))
-            if not cancelled:
+            stopped = bool(
+                jobs[job_id].get("cancel") or jobs[job_id].get("pause")
+            )
+            if not stopped:
                 jobs[job_id]["message"] = f"TikTok 직접 저장 실패: {e}"
         try:
             dest.unlink(missing_ok=True)
         except Exception:
             pass
         # A cancelled job must not fall through to the yt-dlp attempts.
-        return cancelled
+        return stopped
 
 
 def find_ytdlp() -> str | None:
@@ -998,6 +1057,8 @@ def collect_track_choices(info: dict) -> tuple[list[dict], list[dict]]:
 
 
 def run_download(job_id: str, payload: dict) -> None:
+    if finish_stopped_job(job_id):
+        return
     bin_path = find_ytdlp()
     url = (payload.get("url") or "").strip()
     page_url = (payload.get("pageUrl") or payload.get("referer") or "").strip()
@@ -1011,14 +1072,20 @@ def run_download(job_id: str, payload: dict) -> None:
     manifest = bool(payload.get("manifest")) or ".mpd" in url.lower()
 
     with jobs_lock:
-        jobs[job_id].update(
-            {
-                "status": "running",
-                "percent": 2,
-                "message": "시작…",
-                "startedAt": time.time(),
-            }
-        )
+        state = jobs.get(job_id, {})
+        stopped_before_start = bool(state.get("cancel") or state.get("pause"))
+        if not stopped_before_start:
+            state.update(
+                {
+                    "status": "running",
+                    "percent": 2,
+                    "message": "시작…",
+                    "startedAt": time.time(),
+                }
+            )
+    if stopped_before_start:
+        finish_stopped_job(job_id)
+        return
 
     if not url and not page_url:
         with jobs_lock:
@@ -1094,16 +1161,9 @@ def run_download(job_id: str, payload: dict) -> None:
     with jobs_lock:
         jobs[job_id]["workDir"] = str(work_dir)
 
-    # output template — clean human names (no "(2) " notification prefix, no "_best")
-    if title_hint:
-        safe = clean_name(title_hint)
-        # Readable old-style names: keep spaces + unicode (no restrict-filenames)
-        outtmpl = str(work_dir / f"{safe}.%(ext)s")
-    else:
-        # Real video title from extractor — keep spaces/unicode so names stay readable
-        # (e.g. "SSIS-001 이복 여동생 이야기.mp4")
-        # Use .s (chars) not .B (bytes) so Korean titles are not cut mid-glyph.
-        outtmpl = str(work_dir / "%(title).100s.%(ext)s")
+    # output template — outputStem is locked by the extension across attempts.
+    # Without a supplied stem, keep the extractor-title fallback.
+    outtmpl = str(work_dir / output_template_basename(payload))
 
     site = (payload.get("site") or "").lower()
     host = ""
@@ -1532,6 +1592,8 @@ def run_download(job_id: str, payload: dict) -> None:
 
     try:
         for attempt_i, (fmt_try, merge_try, extra) in enumerate(attempts):
+            if finish_stopped_job(job_id):
+                return
             using_aria2 = aria2_for_job
             cmd = build_cmd(fmt_try, merge_try, extra, use_aria2=using_aria2)
             with jobs_lock:
@@ -1571,8 +1633,9 @@ def run_download(job_id: str, payload: dict) -> None:
             aria2_failure_line = ""
             for line in proc.stdout:
                 with jobs_lock:
-                    cancelled = bool(jobs.get(job_id, {}).get("cancel"))
-                if cancelled:
+                    state = jobs.get(job_id, {})
+                    stopped = bool(state.get("cancel") or state.get("pause"))
+                if stopped:
                     kill_process_tree(proc)
                     break
                 line = line.rstrip()
@@ -1675,17 +1738,8 @@ def run_download(job_id: str, payload: dict) -> None:
                 process_map.pop(job_id, None)
                 raise RuntimeError("yt-dlp가 1시간 동안 끝나지 않아 중단했습니다")
             process_map.pop(job_id, None)
-            with jobs_lock:
-                if jobs.get(job_id, {}).get("cancel"):
-                    jobs[job_id].update(
-                        {
-                            "status": "cancelled",
-                            "message": "취소됨",
-                            "error": "사용자가 취소했습니다",
-                            "finishedAt": time.time(),
-                        }
-                    )
-                    return
+            if finish_stopped_job(job_id):
+                return
             if code == 0:
                 break
             # aria2 can be rejected by a CDN even though yt-dlp's native
@@ -1711,17 +1765,8 @@ def run_download(job_id: str, payload: dict) -> None:
                 continue
             break
 
-        with jobs_lock:
-            if jobs.get(job_id, {}).get("cancel"):
-                jobs[job_id].update(
-                    {
-                        "status": "cancelled",
-                        "message": "취소됨",
-                        "error": "사용자가 취소했습니다",
-                        "finishedAt": time.time(),
-                    }
-                )
-                return
+        if finish_stopped_job(job_id):
+            return
 
         # Resolve output file — prefer the exact path yt-dlp reported
         final_path: str | None = None
@@ -1894,16 +1939,17 @@ def run_download(job_id: str, payload: dict) -> None:
                     }
                 )
     except Exception as e:
-        with jobs_lock:
-            jobs[job_id].update(
-                {
-                    "status": "error",
-                    "percent": 0,
-                    "message": str(e),
-                    "error": str(e),
-                    "finishedAt": time.time(),
-                }
-            )
+        if not finish_stopped_job(job_id):
+            with jobs_lock:
+                jobs[job_id].update(
+                    {
+                        "status": "error",
+                        "percent": 0,
+                        "message": str(e),
+                        "error": str(e),
+                        "finishedAt": time.time(),
+                    }
+                )
     finally:
         # Session cookies must not linger on disk after the job ends
         if cookies_file:
@@ -2013,13 +2059,22 @@ class Handler(BaseHTTPRequestHandler):
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
             job_id = rest[: -len("/cancel")].rstrip("/") if rest.endswith("/cancel") else rest
             cancel_payload = read_json(self)
-            # purge=true (user cancel) removes partial files; a pause omits it so
-            # the next job with the same resumeKey can --continue.
-            ok = request_cancel_job(job_id, purge=bool(cancel_payload.get("purge")))
+            # pause=true kills the process but keeps resumable work and never
+            # reports a user-cancellation error. purge is explicit-cancel only.
+            pause = bool(cancel_payload.get("pause"))
+            ok = request_cancel_job(
+                job_id,
+                purge=bool(cancel_payload.get("purge")) and not pause,
+                pause=pause,
+            )
             send_json(
                 self,
                 200 if ok else 404,
-                {"ok": ok, "error": None if ok else "job not found"},
+                {
+                    "ok": ok,
+                    "status": "paused" if ok and pause else "cancelled" if ok else None,
+                    "error": None if ok else "job not found",
+                },
             )
             return
 
