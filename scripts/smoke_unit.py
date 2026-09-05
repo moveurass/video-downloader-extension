@@ -244,6 +244,49 @@ def main() -> int:
         )[0]["domain"]
         == ".x.test",
     )
+    with tempfile.TemporaryDirectory() as tmp:
+        reported_paths = Path(tmp) / "path_job.txt"
+        reported_paths.write_text(
+            "\n".join(
+                [
+                    str(Path(tmp) / "first.mp4"),
+                    str(Path(tmp) / "first.jpg"),
+                    str(Path(tmp) / "final.mkv"),
+                    str(Path(tmp) / "final.webp"),
+                ]
+            ),
+            encoding="utf-8",
+        )
+        selected_path = helper_server.last_media_output_path(
+            reported_paths.read_text(encoding="utf-8").splitlines()
+        )
+        check(
+            "after_move path report selects the last media, not thumbnail",
+            selected_path == str(Path(tmp) / "final.mkv"),
+            str(selected_path),
+        )
+    check(
+        "image-only path reports cannot complete a helper job",
+        helper_server.last_media_output_path(
+            ["movie.jpg", "movie.jpeg", "movie.png", "movie.webp"]
+        )
+        is None,
+    )
+    check(
+        "reported media filter matches video and audio outputs",
+        all(
+            helper_server.is_media_output_path(f"movie{suffix}")
+            for suffix in (".mp4", ".webm", ".mkv", ".m4a", ".mp3")
+        )
+        and not helper_server.is_media_output_path("movie.jpg"),
+    )
+    check(
+        "completed work purges only after real media publish",
+        helper_server.should_purge_job_work_dir("done", True, False)
+        and not helper_server.should_purge_job_work_dir("done", False, False)
+        and not helper_server.should_purge_job_work_dir("error", True, False)
+        and helper_server.should_purge_job_work_dir("cancelled", False, True),
+    )
     helper_source = (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
     check(
         "no global Cookie header passed to yt-dlp",

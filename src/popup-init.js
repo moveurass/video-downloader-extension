@@ -915,6 +915,7 @@
         pageKey,
         ensureSiteItems,
         render,
+        loadMedia,
         refreshHelperStatus,
         applyJobProgress,
         updateQuickPageUi,

@@ -581,6 +581,51 @@ async function main() {
   ]);
   assert.equal(response.items[0].title, "CAWB-035 실제 영상 제목 - 123AV");
 
+  const oembedRequests = [];
+  const youtubeMetaHandler = createMediaMessageHandler({
+    fetch: async (url, options) => {
+      oembedRequests.push([url, options]);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          title: "Current YouTube title",
+          thumbnail_url:
+            "https://i.ytimg.com/vi/current-id/hqdefault.jpg"
+        })
+      };
+    }
+  });
+  response = null;
+  assert.deepEqual(
+    youtubeMetaHandler(
+      {
+        type: "PROBE_PAGE_META",
+        tabId: 7,
+        url: "https://www.youtube.com/watch?v=current-id"
+      },
+      7,
+      {},
+      (value) => { response = value; }
+    ),
+    { handled: true, keepChannel: true }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(oembedRequests.length, 1);
+  assert.match(oembedRequests[0][0], /youtube\.com\/oembed/);
+  assert.deepEqual(response, {
+    ok: true,
+    exists: true,
+    status: 200,
+    url: "https://www.youtube.com/watch?v=current-id",
+    finalUrl: "https://www.youtube.com/watch?v=current-id",
+    title: "Current YouTube title",
+    thumbnail: "https://i.ytimg.com/vi/current-id/hqdefault.jpg",
+    videoId: "current-id",
+    identityConfirmed: true,
+    source: "youtube-oembed"
+  });
+
   const healthCalls = [];
   const helperHandler = createHelperMessageHandler({
     YtDlp: {

@@ -305,6 +305,9 @@ const YtDlp = (() => {
           path: job.path || job.outDir || started.outDir,
           size: job.size || 0,
           filename: job.filename || payload.filename,
+          writeThumbnail:
+            job.writeThumbnail === true || payload.writeThumbnail === true,
+          thumbnailPath: job.thumbnailPath || "",
           method: "yt-dlp"
         };
       }

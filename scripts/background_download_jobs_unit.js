@@ -2,7 +2,11 @@
 
 const assert = require("node:assert/strict");
 const UVDProgress = require("../src/progress-protocol.js");
-const { createManager } = require("../src/background-download-jobs.js");
+const {
+  createManager,
+  isHelperSavedResult,
+  helperHandledThumbnail
+} = require("../src/background-download-jobs.js");
 
 let assertions = 0;
 const equal = (...args) => {
@@ -28,12 +32,13 @@ function event() {
   };
 }
 
-function makeHarness() {
+function makeHarness(options = {}) {
   let clock = 1_000;
   const messages = [];
   const sessionWrites = [];
   const timers = [];
   const stoppedTabs = [];
+  const notifications = [];
   const notificationClicks = event();
   const lateCalls = {
     downloadPageFromUi: 0,
@@ -68,7 +73,9 @@ function makeHarness() {
     },
     notifications: {
       onClicked: notificationClicks,
-      create: async () => {},
+      create: async (id, notification) => {
+        notifications.push({ id, notification });
+      },
       clear: async () => {}
     },
     action: {
@@ -89,7 +96,7 @@ function makeHarness() {
     isGenericSaveName: (name) => !name || /^video$/i.test(name),
     getSettings: async () => ({
       showBadge: true,
-      notifyOnComplete: false
+      notifyOnComplete: !!options.notifyOnComplete
     }),
     appendHistory: async (entry) => {
       history.push(entry);
@@ -136,12 +143,29 @@ function makeHarness() {
     timers,
     stoppedTabs,
     notificationClicks,
+    notifications,
     history,
     lateCalls
   };
 }
 
 async function main() {
+  equal(
+    isHelperSavedResult({
+      downloadId: null,
+      path: "/Downloads/VideoDownloader/movie.mp4"
+    }),
+    true
+  );
+  equal(
+    helperHandledThumbnail({
+      downloadId: null,
+      path: "/Downloads/VideoDownloader/movie.mp4",
+      thumbnailPath: "/Downloads/VideoDownloader/movie.jpg"
+    }),
+    true
+  );
+
   const harness = makeHarness();
   const {
     manager,
@@ -270,7 +294,89 @@ async function main() {
   equal(done.status, "done");
   equal(done.percent, 100);
   equal(done.filename, "after.mp4");
+  equal(lateCalls.saveCompanionThumbnail, 1);
   equal(timers.some((timer) => timer.delay === 120_000), true);
+
+  const helperId = manager.createDownloadJob({
+    tabId: 9,
+    title: "Helper title",
+    pageUrl: "https://youtube.com/watch?v=unit",
+    filename: "before-helper.mp4"
+  });
+  manager.finishDownloadJob(
+    helperId,
+    {
+      ok: true,
+      downloadId: null,
+      ytdlp: true,
+      path: "/Users/unit/Downloads/VideoDownloader/helper-video.mkv",
+      filename: "helper-video.mkv",
+      size: 300_000,
+      method: "yt-dlp",
+      writeThumbnail: true
+    },
+    null
+  );
+  const helperDone = manager.activeDownloads.get(helperId);
+  equal(helperDone.status, "done");
+  equal(lateCalls.saveCompanionThumbnail, 1);
+  ok(helperDone.message.includes("helper-video.mkv"));
+  ok(helperDone.message.includes("/Users/unit/Downloads/VideoDownloader"));
+  ok(helperDone.message.includes("Chrome 다운로드 선반"));
+
+  const helperDirectId = manager.createDownloadJob({
+    tabId: 10,
+    title: "Helper direct title",
+    pageUrl: "https://example.test/direct",
+    filename: "helper-direct.mp4"
+  });
+  manager.finishDownloadJob(
+    helperDirectId,
+    {
+      ok: true,
+      downloadId: null,
+      ytdlp: true,
+      path: "/Users/unit/Downloads/VideoDownloader/helper-direct.mp4",
+      filename: "helper-direct.mp4",
+      size: 300_000,
+      method: "yt-dlp-direct",
+      writeThumbnail: false
+    },
+    null
+  );
+  equal(lateCalls.saveCompanionThumbnail, 2);
+
+  const notified = makeHarness({ notifyOnComplete: true });
+  const helperResult = {
+    downloadId: null,
+    ytdlp: true,
+    path: "/Users/unit/Downloads/VideoDownloader/notified-video.mp4",
+    filename: "notified-video.mp4",
+    size: 400_000,
+    writeThumbnail: true
+  };
+  await notified.manager.notifyDownloadFinished(
+    {
+      id: "notification-helper",
+      title: "Notification title",
+      filename: "notified-video.mp4",
+      status: "done"
+    },
+    helperResult,
+    null
+  );
+  equal(notified.notifications.length, 1);
+  equal(
+    notified.notifications[0].notification.title,
+    "로컬 도우미 영상 저장 완료"
+  );
+  ok(notified.notifications[0].notification.message.includes("notified-video.mp4"));
+  ok(
+    notified.notifications[0].notification.message.includes(
+      "/Users/unit/Downloads/VideoDownloader/notified-video.mp4"
+    )
+  );
+  ok(notified.notifications[0].notification.message.includes("다운로드 선반"));
 
   console.log(`background download jobs unit: ${assertions} assertions`);
 }

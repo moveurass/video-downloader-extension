@@ -115,6 +115,30 @@ def pair_extension(origin: str, token: str) -> tuple[bool, str]:
 
 TMP_ROOT = OUT_DIR / ".uvd-tmp"
 OUT_DIR_IS_DEFAULT = "UVD_OUT" not in os.environ
+MEDIA_OUTPUT_SUFFIXES = (".mp4", ".webm", ".mkv", ".m4a", ".mp3")
+THUMBNAIL_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def is_media_output_path(path: str | Path | None) -> bool:
+    """Match the video/audio outputs accepted from yt-dlp."""
+    value = str(path or "").strip().lower()
+    return bool(value and value.endswith(MEDIA_OUTPUT_SUFFIXES))
+
+
+def last_media_output_path(paths: list[str]) -> str | None:
+    """Return the last reported media path, never a thumbnail sidecar."""
+    for path in reversed(paths):
+        value = str(path or "").strip()
+        if is_media_output_path(value):
+            return value
+    return None
+
+
+def should_purge_job_work_dir(
+    status: str, media_published: bool, purge_requested: bool
+) -> bool:
+    """Purge completed work only after media publish; explicit cancel may purge."""
+    return bool(purge_requested or (status == "done" and media_published))
 
 
 def subfolder_segments(subfolder: str) -> list[str]:
@@ -1501,6 +1525,8 @@ def run_download(job_id: str, payload: dict) -> None:
     printed_paths: list[str] = []
     last_line = ""
     code = 1
+    media_published = False
+    published_thumbnail_path = ""
     aria2_fallback_used = False
     native_retry_index = -1
 
@@ -1554,10 +1580,7 @@ def run_download(job_id: str, payload: dict) -> None:
                 if is_aria2_failure(1, line):
                     aria2_failure_line = line
                 if line.startswith("/") or (len(line) > 3 and line[1:3] == ":\\"):
-                    if any(
-                        line.lower().endswith(ext)
-                        for ext in (".mp4", ".webm", ".mkv", ".m4a", ".mp3")
-                    ):
+                    if is_media_output_path(line):
                         printed_paths.append(line)
                 percent = None
                 if "[download]" in line and "%" in line:
@@ -1701,7 +1724,7 @@ def run_download(job_id: str, payload: dict) -> None:
                 return
 
         # Resolve output file — prefer the exact path yt-dlp reported
-        final_path = None
+        final_path: str | None = None
         final_size = 0
         try:
             if path_file.is_file():
@@ -1710,23 +1733,32 @@ def run_download(job_id: str, payload: dict) -> None:
                     for ln in path_file.read_text(encoding="utf-8").splitlines()
                     if ln.strip()
                 ]
-                if lines:
-                    final_path = lines[-1]
+                final_path = last_media_output_path(lines)
         except OSError:
             final_path = None
         if not final_path and printed_paths:
-            final_path = printed_paths[-1]
+            final_path = last_media_output_path(printed_paths)
         if not final_path:
             # Newest video file written after we started
-            candidates = []
-            for pat in ("*.mp4", "*.webm", "*.mkv", "*.m4a"):
-                candidates.extend(work_dir.glob(pat))
-            candidates = [p for p in candidates if p.is_file() and p.stat().st_mtime >= started_at - 2]
+            try:
+                candidates = [
+                    path
+                    for path in work_dir.iterdir()
+                    if path.is_file()
+                    and is_media_output_path(path)
+                    and path.stat().st_mtime >= started_at - 2
+                ]
+            except OSError:
+                candidates = []
             candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
             if candidates:
                 final_path = str(candidates[0])
 
-        if final_path and Path(final_path).is_file():
+        if (
+            final_path
+            and is_media_output_path(final_path)
+            and Path(final_path).is_file()
+        ):
             # Make sure saved name is human-readable (strip "(2) " counters etc.)
             try:
                 p = Path(final_path)
@@ -1751,27 +1783,56 @@ def run_download(job_id: str, payload: dict) -> None:
             # or mistaken for this job's result.
             try:
                 source = Path(final_path)
+                if not is_media_output_path(source):
+                    raise RuntimeError("refusing to publish a non-media output")
                 destination = unique_output_path(publish_dir, source.name)
                 if source.resolve() != destination.resolve():
                     shutil.move(str(source), str(destination))
-                    final_path = str(destination)
+                published_path = destination
+                if not published_path.is_file() or not is_media_output_path(
+                    published_path
+                ):
+                    raise RuntimeError("published output is not video/audio")
+                final_path = str(published_path)
+                final_size = published_path.stat().st_size
+                media_published = True
                 # --write-thumbnail lands beside the template (inside work_dir);
-                # publish it under the final stem instead of leaving litter.
-                for thumb in list(work_dir.glob("*.jpg")) + list(work_dir.glob("*.png")) + list(work_dir.glob("*.webp")):
+                # publish one sidecar under the final stem. Remaining image
+                # variants are temp artifacts and leave with the work directory.
+                thumbnail_candidates = [
+                    path
+                    for path in work_dir.iterdir()
+                    if path.is_file()
+                    and path.suffix.lower() in THUMBNAIL_SUFFIXES
+                ]
+                thumbnail_candidates.sort(
+                    key=lambda path: (
+                        THUMBNAIL_SUFFIXES.index(path.suffix.lower()),
+                        -path.stat().st_mtime,
+                    )
+                )
+                if thumbnail_candidates:
+                    thumb = thumbnail_candidates[0]
                     try:
-                        thumb_dest = Path(final_path).with_suffix(thumb.suffix)
+                        thumb_suffix = (
+                            ".jpg"
+                            if thumb.suffix.lower() == ".jpeg"
+                            else thumb.suffix.lower()
+                        )
+                        thumb_dest = published_path.with_suffix(thumb_suffix)
                         if not thumb_dest.exists():
                             shutil.move(str(thumb), str(thumb_dest))
                         else:
                             thumb.unlink(missing_ok=True)
+                        if thumb_dest.is_file():
+                            published_thumbnail_path = str(thumb_dest)
                     except Exception:
                         pass
             except Exception as e:
                 print(f"[uvd-helper] publish output: {e}", file=sys.stderr)
-            final_size = Path(final_path).stat().st_size
 
         with jobs_lock:
-            if code == 0 and final_path and final_size > 50_000:
+            if code == 0 and media_published and final_path:
                 jobs[job_id].update(
                     {
                         "status": "done",
@@ -1780,24 +1841,21 @@ def run_download(job_id: str, payload: dict) -> None:
                         "path": final_path,
                         "filename": Path(final_path).name,
                         "size": final_size,
-                        "finishedAt": time.time(),
-                    }
-                )
-            elif code == 0:
-                jobs[job_id].update(
-                    {
-                        "status": "done",
-                        "percent": 100,
-                        "message": f"저장 완료 → {publish_dir}",
-                        "path": final_path or str(publish_dir),
-                        "size": final_size,
+                        "writeThumbnail": write_thumbnail,
+                        "thumbnailPath": published_thumbnail_path,
                         "finishedAt": time.time(),
                     }
                 )
             else:
-                err = last_line or f"yt-dlp 종료 코드 {code}"
+                err = (
+                    "다운로드는 끝났지만 저장할 영상/오디오 파일을 찾지 못했습니다"
+                    if code == 0
+                    else last_line or f"yt-dlp 종료 코드 {code}"
+                )
                 # Friendly common errors
-                if "Sign in to confirm" in err or "login required" in err.lower():
+                if code == 0:
+                    pass
+                elif "Sign in to confirm" in err or "login required" in err.lower():
                     err = "로그인이 필요한 영상입니다. 브라우저에서 로그인한 뒤 다시 시도해 주세요"
                 elif "Private video" in err or "private" in err.lower():
                     err = "비공개 영상이라 받을 수 없습니다"
@@ -1859,12 +1917,12 @@ def run_download(job_id: str, payload: dict) -> None:
             pass
         with jobs_lock:
             state = jobs.get(job_id, {})
-            finished_ok = state.get("status") == "done"
+            status = str(state.get("status") or "")
             purge = bool(state.get("purge"))
-        if finished_ok or purge:
-            # Completed downloads have been published; explicit cancels do not
-            # want the partial files. Paused/errored jobs keep them so the same
-            # resumeKey can --continue.
+        if should_purge_job_work_dir(status, media_published, purge):
+            # Completed work is removed only after a real video/audio publish.
+            # Explicit user cancellation may still request removal of partials.
+            # Paused/errored jobs otherwise keep them for --continue.
             purge_work_dir(work_dir)
         else:
             try:

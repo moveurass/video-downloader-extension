@@ -45,6 +45,10 @@ function makeHarness(overrides = {}) {
     renderWatchlist: () => calls.push("renderWatchlist"),
     getCurrentTabId: () => state.currentTabId,
     getCurrentTabUrl: () => state.currentTabUrl,
+    setCurrentTabUrl: (value) => {
+      calls.push("setCurrentTabUrl");
+      state.currentTabUrl = value;
+    },
     setAllItems: (value) => {
       calls.push("setAllItems");
       state.allItems = value;
@@ -59,6 +63,7 @@ function makeHarness(overrides = {}) {
     },
     getActiveTabName: () => state.activeTabName,
     getTrackedJobIds: () => state.trackedJobIds,
+    loadMedia: () => calls.push("loadMedia"),
     ...overrides
   };
   return {
@@ -122,12 +127,10 @@ check(typeof PopupRuntimeEvents.bind, "function");
       pageUrl: state.currentTabUrl,
       thumbnail: undefined,
       isSiteDownload: true,
-      title: "Other"
-    },
-    {
-      url: "https://cdn.example/other.mp4",
-      pageUrl: "https://example.com/watch?v=other",
-      thumbnail: undefined
+      title: undefined,
+      pageTitle: undefined,
+      displayName: undefined,
+      filename: undefined
     },
     {
       url: "https://cdn.example/current.mp4",
@@ -143,8 +146,69 @@ check(typeof PopupRuntimeEvents.bind, "function");
   ]);
   check(calls[0][2], {
     url: state.currentTabUrl,
-    title: "Other"
+    title: ""
   });
+}
+
+{
+  const { handler, state, calls } = makeHarness();
+  state.allItems = [{
+    pageUrl: "https://www.youtube.com/watch?v=old",
+    title: "Old video",
+    thumbnail: "https://i.ytimg.com/vi/old/hqdefault.jpg"
+  }];
+  state.currentTabUrl = "https://www.youtube.com/watch?v=old";
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl: "https://www.youtube.com/watch?v=new",
+    pageKey: "yt:new",
+    items: [{
+      pageUrl: "https://www.youtube.com/watch?v=new",
+      title: "New video"
+    }]
+  });
+  check(
+    state.currentTabUrl,
+    "https://www.youtube.com/watch?v=new",
+    "SPA update adopts the newly reported watch URL"
+  );
+  check(state.allItems, [], "SPA update clears the previous card immediately");
+  check(calls, [
+    "setCurrentTabUrl",
+    "setAllItems",
+    "render",
+    "loadMedia"
+  ]);
+}
+
+{
+  const { handler, state } = makeHarness();
+  state.currentTabUrl = "https://www.youtube.com/watch?v=current";
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl: state.currentTabUrl,
+    identityConfirmed: false,
+    items: [{
+      pageUrl: state.currentTabUrl,
+      title: "Previous video",
+      pageTitle: "Previous video",
+      thumbnail: "https://i.ytimg.com/vi/previous/hqdefault.jpg"
+    }]
+  });
+  check(
+    state.allItems[1],
+    {
+      pageUrl: state.currentTabUrl,
+      title: undefined,
+      pageTitle: undefined,
+      thumbnail: undefined,
+      displayName: undefined,
+      filename: undefined
+    },
+    "unconfirmed YouTube updates cannot repaint old identity-bound metadata"
+  );
 }
 
 {

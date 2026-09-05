@@ -5,6 +5,22 @@
 })(typeof globalThis !== "undefined" ? globalThis : self, function makeBackgroundDownloadJobs() {
   "use strict";
 
+  function isHelperSavedResult(result) {
+    return !!(
+      result &&
+      (result.ytdlp === true ||
+        (result.downloadId == null && String(result.path || "").trim()))
+    );
+  }
+
+  function helperHandledThumbnail(result) {
+    return !!(
+      isHelperSavedResult(result) &&
+      (result.writeThumbnail === true ||
+        String(result.thumbnailPath || "").trim())
+    );
+  }
+
   function createManager(deps) {
     const {
       chrome,
@@ -95,6 +111,8 @@
               size: job.result.size || 0,
               method: job.result.method || null,
               ytdlp: !!job.result.ytdlp,
+              writeThumbnail: !!job.result.writeThumbnail,
+              thumbnailPath: job.result.thumbnailPath || "",
               partial: !!job.result.partial
             }
           : null,
@@ -928,6 +946,7 @@
         const outcome = job.partial
           ? `일부 누락 저장 (${job.skippedSegments}/${job.expectedSegments} 빠짐)`
           : "저장 완료";
+        const helperSaved = isHelperSavedResult(result);
         if (savedName) {
           job.filename = savedName;
           const base = String(savedName).replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
@@ -937,7 +956,11 @@
           ) {
             job.title = base;
           }
-          job.message = `${outcome} · ${savedName}`;
+          job.message = helperSaved
+            ? `도우미 저장 완료 · ${savedName} · ${
+                result?.path || result?.outDir || ""
+              } · Chrome 다운로드 선반에는 표시되지 않을 수 있음`
+            : `${outcome} · ${savedName}`;
         } else {
           job.message = outcome;
         }
@@ -982,7 +1005,9 @@
         // History is best-effort.
       }
       if (!error && job.status === "done") {
-        saveCompanionThumbnail(job, result).catch(() => {});
+        if (!helperHandledThumbnail(result)) {
+          saveCompanionThumbnail(job, result).catch(() => {});
+        }
       }
       notifyDownloadFinished(job, result, error).catch(() => {});
       schedule(() => {
@@ -1003,9 +1028,15 @@
         if (!chrome.notifications?.create) return;
         const title = (job?.title || job?.filename || "영상").slice(0, 60);
         const ok = !error && job?.status === "done";
+        const helperSaved = ok && isHelperSavedResult(result);
         const notifId = `uvd_${job?.id || now()}`;
         const path = result?.path || result?.outDir || "";
         const downloadId = result?.downloadId ?? null;
+        const savedName =
+          result?.filename ||
+          (path ? String(path).split(/[/\\]/).pop() : "") ||
+          job?.filename ||
+          title;
         const size = result?.size || 0;
         const sizeText =
           size >= 1024 * 1024
@@ -1040,11 +1071,21 @@
         await chrome.notifications.create(notifId, {
           type: "basic",
           iconUrl: chrome.runtime.getURL("icons/icon128.png"),
-          title: !ok ? "다운로드 실패" : partial ? "일부 누락 저장" : "저장 완료",
+          title: !ok
+            ? "다운로드 실패"
+            : partial
+              ? "일부 누락 저장"
+              : helperSaved
+                ? "로컬 도우미 영상 저장 완료"
+                : "저장 완료",
           message: !ok
             ? `${title}\n${failMessage.slice(0, 120)}`
             : partial
               ? `${title}${sizeText ? ` · ${sizeText}` : ""}\n조각 ${skipped}/${expected}개가 빠졌습니다 · 다시 받기를 권장`
+              : helperSaved
+                ? `${savedName}${sizeText ? ` · ${sizeText}` : ""}\n${
+                    path ? `저장 위치: ${path}\n` : ""
+                  }Chrome 다운로드 선반에는 표시되지 않을 수 있습니다`
               : `${title}${sizeText ? ` · ${sizeText}` : ""}\n클릭하면 폴더를 엽니다`,
           priority: !ok || partial ? 2 : 1,
           requireInteraction: !ok || partial
@@ -1273,5 +1314,5 @@
     };
   }
 
-  return { createManager };
+  return { createManager, isHelperSavedResult, helperHandledThumbnail };
 });

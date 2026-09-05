@@ -183,7 +183,28 @@
   }
 
   function safeDownloadName(filename, mime = "", Naming = root.Naming) {
-    const defaultExtension = String(mime).includes("audio") ? ".mp3" : ".mp4";
+    const normalizedMime = String(mime).split(";", 1)[0].trim().toLowerCase();
+    const imageExtension =
+      {
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/pjpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp"
+      }[normalizedMime] || "";
+    const defaultExtension =
+      imageExtension || (normalizedMime.startsWith("audio/") ? ".mp3" : ".mp4");
+    const mediaExtensions = [
+      ".mp4",
+      ".webm",
+      ".mkv",
+      ".mov",
+      ".m4v",
+      ".mp3",
+      ".m4a",
+      ".aac"
+    ];
+    const imageExtensions = [".jpg", ".jpeg", ".png", ".webp"];
     let name = String(filename || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
     name = name
       .replace(
@@ -217,12 +238,22 @@
       const match = name.match(/(\.[a-z0-9]{2,5})$/i);
       if (!match) break;
       const candidate = match[1].toLowerCase();
-      if (candidate === ".ts" || candidate === ".m3u8") {
-        extension = ".mp4";
-      } else if (
-        [".mp4", ".webm", ".mkv", ".mov", ".m4v", ".mp3", ".m4a", ".aac"].includes(candidate)
+      if (
+        imageExtension &&
+        (mediaExtensions.includes(candidate) ||
+          imageExtensions.includes(candidate) ||
+          candidate === ".ts" ||
+          candidate === ".m3u8")
       ) {
+        // A supplied image MIME is authoritative. Peel prior/stacked image or
+        // media suffixes, then append one canonical image suffix below.
+        extension = imageExtension;
+      } else if (candidate === ".ts" || candidate === ".m3u8") {
+        extension = ".mp4";
+      } else if (mediaExtensions.includes(candidate)) {
         extension = candidate;
+      } else if (imageExtensions.includes(candidate)) {
+        extension = candidate === ".jpeg" ? ".jpg" : candidate;
       } else {
         break;
       }

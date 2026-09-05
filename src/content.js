@@ -168,6 +168,59 @@
     return false;
   }
 
+  function youtubeVideoId(rawUrl = location.href) {
+    try {
+      const url = new URL(rawUrl, location.href);
+      const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+      if (host === "youtu.be") {
+        return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+      }
+      if (!host.includes("youtube") && !host.includes("youtube-nocookie")) {
+        return "";
+      }
+      const watchId = url.searchParams.get("v");
+      if (watchId) return watchId;
+      const match = url.pathname.match(/\/(?:shorts|embed|live)\/([^/?#]+)/i);
+      return match?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function youtubeImageVideoId(rawUrl) {
+    const match = String(rawUrl || "").match(
+      /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
+    );
+    return match?.[1] || "";
+  }
+
+  function youtubeIdentityConfirmed(videoId = youtubeVideoId()) {
+    if (!videoId) return true;
+    const renderedIds = new Set();
+    for (const selector of [
+      "ytd-watch-flexy[video-id]",
+      "#movie_player[data-video-id]",
+      'meta[itemprop="videoId"]'
+    ]) {
+      const element = document.querySelector(selector);
+      const value =
+        element?.getAttribute?.("video-id") ||
+        element?.getAttribute?.("data-video-id") ||
+        element?.getAttribute?.("content") ||
+        "";
+      if (value) renderedIds.add(value);
+    }
+    for (const value of [
+      document.querySelector('meta[property="og:image"]')?.content,
+      document.querySelector('meta[name="twitter:image"]')?.content,
+      document.querySelector("video[poster]")?.getAttribute("poster")
+    ]) {
+      const imageId = youtubeImageVideoId(value);
+      if (imageId) renderedIds.add(imageId);
+    }
+    return renderedIds.has(videoId);
+  }
+
   /**
    * Human-readable video name for list + save.
    * Prefer real page title / h1 / product code — never player domain.
@@ -176,6 +229,34 @@
     // In embed/player iframes, don't invent names from javplayer.cc
     if (isPlayerFrame()) {
       return ""; // background will use tab title from main page
+    }
+
+    const youtubeId = youtubeVideoId();
+    if (youtubeId) {
+      if (!youtubeIdentityConfirmed(youtubeId)) return "";
+      const heading = [
+        "ytd-watch-metadata h1 yt-formatted-string",
+        "ytd-watch-metadata h1",
+        "#above-the-fold #title h1",
+        "h1.ytd-watch-metadata"
+      ]
+        .map((selector) => document.querySelector(selector)?.textContent?.trim())
+        .find(Boolean);
+      const cleanHeading = cleanPageTitle(heading || "");
+      if (cleanHeading) return cleanHeading;
+
+      const ogImage =
+        document.querySelector('meta[property="og:image"]')?.content ||
+        document.querySelector('meta[name="twitter:image"]')?.content ||
+        "";
+      if (youtubeImageVideoId(ogImage) === youtubeId) {
+        const currentOgTitle =
+          document.querySelector('meta[property="og:title"]')?.content ||
+          document.querySelector('meta[name="twitter:title"]')?.content ||
+          "";
+        return cleanPageTitle(currentOgTitle);
+      }
+      return "";
     }
 
     const og =
@@ -209,6 +290,7 @@
   }
 
   function pageThumbnail() {
+    const youtubeId = youtubeVideoId();
     const candidates = [
       document.querySelector('meta[property="og:image"]')?.content,
       document.querySelector('meta[property="og:image:url"]')?.content,
@@ -235,9 +317,30 @@
       if (!u || u.startsWith("data:")) continue;
       if (/\.svg(\?|$)/i.test(u)) continue;
       if (/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(u)) continue;
+      if (youtubeId && youtubeImageVideoId(u) !== youtubeId) continue;
       return u;
     }
+    if (youtubeId) {
+      return `https://i.ytimg.com/vi/${encodeURIComponent(
+        youtubeId
+      )}/hqdefault.jpg`;
+    }
     return null;
+  }
+
+  function currentPageMeta() {
+    const videoId = youtubeVideoId();
+    return {
+      title: pageTitle(),
+      thumbnail: pageThumbnail(),
+      host: location.hostname,
+      lastUrl: location.href,
+      pageUrl: location.href,
+      videoId: videoId || undefined,
+      identityConfirmed: videoId
+        ? youtubeIdentityConfirmed(videoId)
+        : true
+    };
   }
 
   /** poster / og:image first — no play required */
@@ -589,7 +692,12 @@
     chrome.runtime
       .sendMessage({
         type: "PAGE_META",
-        pageMeta: { title, thumbnail: thumb, host }
+        pageMeta: {
+          ...currentPageMeta(),
+          title,
+          thumbnail: thumb,
+          host
+        }
       })
       .catch(() => {});
 
@@ -786,6 +894,64 @@
   function scheduleScan() {
     clearTimeout(scanTimer);
     scanTimer = setTimeout(scanPage, 400);
+  }
+
+  function currentNavigationIdentity() {
+    const videoId = youtubeVideoId();
+    if (videoId) return `yt:${videoId}`;
+    return `${location.origin}${location.pathname}${location.search}`;
+  }
+
+  let lastNavigationIdentity = currentNavigationIdentity();
+
+  function refreshAfterSpaNavigation(forceRefresh = false) {
+    const nextIdentity = currentNavigationIdentity();
+    const changed =
+      !!nextIdentity &&
+      !!lastNavigationIdentity &&
+      nextIdentity !== lastNavigationIdentity;
+    if (changed) {
+      lastNavigationIdentity = nextIdentity;
+      REPORTED.clear();
+      const videoId = youtubeVideoId();
+      chrome.runtime
+        .sendMessage({
+          type: "PAGE_META",
+          pageMeta: {
+            title: "",
+            thumbnail: "",
+            host: location.hostname,
+            lastUrl: location.href,
+            pageUrl: location.href,
+            videoId: videoId || undefined,
+            identityConfirmed: false
+          }
+        })
+        .catch(() => {});
+    }
+    if (!changed && !forceRefresh) return;
+    for (const delay of [0, 300, 1000]) {
+      setTimeout(() => {
+        REPORTED.clear();
+        scanPage();
+      }, delay);
+    }
+  }
+
+  if (isYouTubeHost()) {
+    document.addEventListener("yt-navigate-start", () => {
+      setTimeout(() => refreshAfterSpaNavigation(false), 0);
+    });
+    document.addEventListener("yt-navigate-finish", () => {
+      refreshAfterSpaNavigation(true);
+    });
+    document.addEventListener("yt-page-data-updated", () => {
+      REPORTED.clear();
+      scheduleScan();
+    });
+    window.addEventListener("popstate", () => {
+      setTimeout(() => refreshAfterSpaNavigation(true), 0);
+    });
   }
 
   // Skip MutationObserver on TikTok/Instagram — DOM churn lags players
@@ -1119,11 +1285,7 @@
       scanPage();
       sendResponse({
         ok: true,
-        pageMeta: {
-          title: pageTitle(),
-          thumbnail: pageThumbnail(),
-          host: location.hostname
-        }
+        pageMeta: currentPageMeta()
       });
       return false;
     }
@@ -1329,11 +1491,7 @@
     }
 
     if (msg.type === "GET_PAGE_META") {
-      sendResponse({
-        title: pageTitle(),
-        thumbnail: pageThumbnail(),
-        host: location.hostname
-      });
+      sendResponse(currentPageMeta());
       return false;
     }
 
@@ -1404,11 +1562,7 @@
   chrome.runtime
     .sendMessage({
       type: "PAGE_META",
-      pageMeta: {
-        title: pageTitle(),
-        thumbnail: pageThumbnail(),
-        host: location.hostname
-      }
+      pageMeta: currentPageMeta()
     })
     .catch(() => {});
 

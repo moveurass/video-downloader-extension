@@ -313,7 +313,10 @@
           path: result.path || result.outDir || "",
           outDir: result.outDir || "",
           filename: result.filename || filename,
-          size: result.size || 0
+          size: result.size || 0,
+          writeThumbnail:
+            result.writeThumbnail === true || extra.writeThumbnail === true,
+          thumbnailPath: result.thumbnailPath || ""
         };
       } catch (e) {
         const msg = String(e?.message || e);
@@ -425,7 +428,10 @@
         path: result.path || result.outDir || "",
         outDir: result.outDir || "",
         filename: result.filename || nameHint || filename,
-        size: result.size || 0
+        size: result.size || 0,
+        writeThumbnail:
+          result.writeThumbnail === true || extra.writeThumbnail === true,
+        thumbnailPath: result.thumbnailPath || ""
       };
     }
 
@@ -556,7 +562,10 @@
           path: result.path || result.outDir || "",
           outDir: result.outDir || "",
           filename: result.filename || filename,
-          size: result.size || 0
+          size: result.size || 0,
+          writeThumbnail:
+            result.writeThumbnail === true || extra.writeThumbnail === true,
+          thumbnailPath: result.thumbnailPath || ""
         };
       } catch (e) {
         const msg = String(e?.message || e);

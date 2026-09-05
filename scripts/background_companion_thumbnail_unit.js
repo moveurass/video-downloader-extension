@@ -2,6 +2,7 @@
 
 const assert = require("node:assert/strict");
 const { createSaver } = require("../src/background-companion-thumbnail.js");
+const DownloadEngine = require("../src/download-engine.js");
 
 function makeHarness(options = {}) {
   const downloads = [];
@@ -31,7 +32,7 @@ function makeHarness(options = {}) {
         }
       };
     },
-    safeDownloadName: (name) => `safe-${name}`,
+    safeDownloadName: DownloadEngine.safeDownloadName,
     relDownloadPath: async (name) => `VideoDownloader/${name}`,
     getTabMeta: () => ({ thumbnail: "https://cdn.test/meta.jpg" }),
     async startChromeDownload(url, filename) {
@@ -61,7 +62,7 @@ async function main() {
   );
   assert.deepEqual(direct.downloads, [{
     url: "https://cdn.test/job.jpg",
-    filename: "VideoDownloader/safe-result.jpg"
+    filename: "VideoDownloader/result.jpg"
   }]);
   assert.equal(direct.fetches.length, 0);
 
@@ -77,7 +78,7 @@ async function main() {
   assert.match(fallback.downloads[1].url, /^data:image\/webp;base64,/);
   assert.equal(
     fallback.downloads[1].filename,
-    "VideoDownloader/safe-A title.jpg"
+    "VideoDownloader/A title.webp"
   );
   assert.equal(fallback.warnings.length, 0);
 
@@ -94,6 +95,42 @@ async function main() {
     {}
   );
   assert.equal(audio.downloads.length, 0);
+
+  const helperThumbnail = makeHarness();
+  await helperThumbnail.saveCompanionThumbnail(
+    { thumbnail: "https://cdn.test/job.jpg", filename: "movie.mp4" },
+    {
+      ytdlp: true,
+      downloadId: null,
+      path: "/Downloads/VideoDownloader/movie.mp4",
+      writeThumbnail: true
+    }
+  );
+  assert.equal(helperThumbnail.downloads.length, 0);
+  assert.equal(helperThumbnail.fetches.length, 0);
+
+  const publishedThumbnail = makeHarness();
+  await publishedThumbnail.saveCompanionThumbnail(
+    { thumbnail: "https://cdn.test/job.jpg", filename: "movie.mp4" },
+    {
+      downloadId: null,
+      path: "/Downloads/VideoDownloader/movie.mp4",
+      thumbnailPath: "/Downloads/VideoDownloader/movie.jpg"
+    }
+  );
+  assert.equal(publishedThumbnail.downloads.length, 0);
+
+  const helperWithoutThumbnail = makeHarness();
+  await helperWithoutThumbnail.saveCompanionThumbnail(
+    { thumbnail: "https://cdn.test/job.jpg", filename: "movie.mp4" },
+    {
+      ytdlp: true,
+      downloadId: null,
+      path: "/Downloads/VideoDownloader/movie.mp4",
+      writeThumbnail: false
+    }
+  );
+  assert.equal(helperWithoutThumbnail.downloads.length, 1);
 
   const tiny = makeHarness({ directFails: true, blobSize: 100 });
   await tiny.saveCompanionThumbnail(

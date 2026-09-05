@@ -86,6 +86,16 @@
       }
     }
 
+    function thumbnailMatchesPageKey(thumbnail, pageKey) {
+      const expected = String(pageKey || "").match(
+        /^yt:(?:(?:shorts|embed|live):)?([^:/?#]+)$/i
+      )?.[1];
+      const actual = String(thumbnail || "").match(
+        /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
+      )?.[1];
+      return !expected || !actual || expected === actual;
+    }
+
     function getTabMap(tabId) {
       if (!tabMedia.has(tabId)) tabMedia.set(tabId, new Map());
       return tabMedia.get(tabId);
@@ -105,9 +115,11 @@
       const kind = siteKind(pageUrl, pageUrl);
       if (!kind) return null;
       const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
+      const identityReady =
+        kind !== "youtube" || meta?.identityConfirmed === true;
       const title =
-        meta?.title ||
-        Naming.cleanPageTitle(tab?.title || "") ||
+        (identityReady ? meta?.title : "") ||
+        (identityReady ? Naming.cleanPageTitle(tab?.title || "") : "") ||
         siteDefaultTitle(kind);
       return enrichItem(tab.id, {
         url: pageUrl,
@@ -119,7 +131,7 @@
         title,
         pageTitle: title,
         pageUrl,
-        thumbnail: meta?.thumbnail,
+        thumbnail: identityReady ? meta?.thumbnail : undefined,
         host: hostOf(pageUrl),
         quality: "best",
         format: "MP4"
@@ -153,6 +165,7 @@
           pageKey: pageIdentityKey(prevUrl),
           title: undefined,
           thumbnail: undefined,
+          identityConfirmed: false,
           host: (() => {
             try {
               return new URL(prevUrl).hostname;
@@ -192,11 +205,16 @@
         !itemPage ||
         pageIdentityKey(itemPage) === meta.pageKey ||
         pageIdentityKey(meta.lastUrl || "") === meta.pageKey;
+      const identityReady =
+        !String(meta?.pageKey || "").startsWith("yt:") ||
+        meta?.identityConfirmed === true;
 
-      const tabTitle = samePage ? meta?.title || "" : "";
+      const tabTitle = samePage && identityReady ? meta?.title || "" : "";
       const pageRef = item.pageUrl || (samePage ? meta?.lastUrl : "") || "";
       let title = "";
-      for (const candidate of [item.title, item.pageTitle]) {
+      for (const candidate of identityReady
+        ? [item.title, item.pageTitle]
+        : []) {
         if (!candidate) continue;
         const cleaned = pageRef
           ? Naming.bindTitleToPage?.(pageRef, candidate) ||
@@ -235,8 +253,14 @@
       }
 
       const host = meta?.host || item.host || "";
+      const itemThumbnail = thumbnailMatchesPageKey(
+        item.thumbnail,
+        meta?.pageKey
+      )
+        ? item.thumbnail
+        : undefined;
       const thumbnail =
-        item.thumbnail ||
+        itemThumbnail ||
         (samePage && meta?.thumbnail ? meta.thumbnail : undefined) ||
         undefined;
       const existingRaw = (item.filename || "").replace(/\.[a-z0-9]{2,5}$/i, "");
@@ -244,7 +268,10 @@
         existingRaw && !Naming.isUglyBase(existingRaw) ? item.filename : "";
       const filename = Naming.buildFilename({
         title,
-        pageTitle: item.pageTitle || (samePage ? meta?.title : "") || "",
+        pageTitle:
+          (identityReady ? item.pageTitle : "") ||
+          (samePage && identityReady ? meta?.title : "") ||
+          "",
         quality,
         type: item.type || "video",
         isHls,
@@ -256,7 +283,10 @@
       });
       const displayName = Naming.displayTitle({
         title,
-        pageTitle: item.pageTitle || (samePage ? meta?.title : "") || "",
+        pageTitle:
+          (identityReady ? item.pageTitle : "") ||
+          (samePage && identityReady ? meta?.title : "") ||
+          "",
         type: item.type || "video"
       });
 
@@ -279,7 +309,9 @@
         estimatedSize: estimatedSize || undefined,
         title: title || undefined,
         pageTitle:
-          item.pageTitle || (samePage ? meta?.title : undefined) || undefined,
+          (identityReady ? item.pageTitle : undefined) ||
+          (samePage && identityReady ? meta?.title : undefined) ||
+          undefined,
         host: host || undefined,
         thumbnail,
         filename,
@@ -376,11 +408,17 @@
         title = prev.title;
       }
 
+      const incomingThumbnail = thumbnailMatchesPageKey(
+        meta.thumbnail,
+        nextKey
+      )
+        ? meta.thumbnail
+        : undefined;
       let thumbnail;
       if (pageChanged) {
-        thumbnail = meta.thumbnail || undefined;
+        thumbnail = incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
-        thumbnail = meta.thumbnail || undefined;
+        thumbnail = incomingThumbnail || undefined;
       } else {
         thumbnail = prev.thumbnail;
       }
@@ -390,7 +428,17 @@
         thumbnail,
         host: meta.host || prev.host,
         lastUrl: nextUrl || prev.lastUrl,
-        pageKey: nextKey || prevKey || undefined
+        pageKey: nextKey || prevKey || undefined,
+        videoId: pageChanged
+          ? meta.videoId || undefined
+          : Object.prototype.hasOwnProperty.call(meta, "videoId")
+            ? meta.videoId || undefined
+            : prev.videoId,
+        identityConfirmed: pageChanged
+          ? meta.identityConfirmed === true
+          : Object.prototype.hasOwnProperty.call(meta, "identityConfirmed")
+            ? meta.identityConfirmed === true
+            : prev.identityConfirmed
       };
 
       if (pageChanged) tabMedia.delete(tabId);
@@ -750,12 +798,19 @@
     }
 
     function broadcastUpdate(tabId) {
+      const meta = tabMeta.get(tabId);
+      const pageUrl = meta?.lastUrl || "";
+      const pageKey = meta?.pageKey || pageIdentityKey(pageUrl);
       getMediaForTabAsync(tabId)
         .then((items) => {
           chrome.runtime
             .sendMessage({
               type: "MEDIA_UPDATED",
               tabId,
+              pageUrl,
+              pageKey,
+              videoId: meta?.videoId,
+              identityConfirmed: meta?.identityConfirmed === true,
               items: items || []
             })
             .catch(() => {});
@@ -765,6 +820,10 @@
             .sendMessage({
               type: "MEDIA_UPDATED",
               tabId,
+              pageUrl,
+              pageKey,
+              videoId: meta?.videoId,
+              identityConfirmed: meta?.identityConfirmed === true,
               items: getMediaForTab(tabId)
             })
             .catch(() => {});
@@ -967,6 +1026,7 @@
       maybeProbeHls,
       mergePrefer,
       pageIdentityKey,
+      thumbnailMatchesPageKey,
       probedUrls,
       resolveFilename,
       setTabMeta,
