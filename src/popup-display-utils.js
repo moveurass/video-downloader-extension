@@ -329,7 +329,25 @@
         return base.length + (qualityOnly ? -20 : 20);
       }
 
+      function titlesMatchVideo(previous, incoming) {
+        if (typeof deps.Naming.titlesMatchVideo === "function") {
+          return deps.Naming.titlesMatchVideo(previous, incoming);
+        }
+        const a = String(previous || "").trim();
+        const b = String(incoming || "").trim();
+        if (!a || !b) return false;
+        const codeA = deps.Naming.extractProductCode?.(a) || "";
+        const codeB = deps.Naming.extractProductCode?.(b) || "";
+        if (codeA && codeB) return codeA.toUpperCase() === codeB.toUpperCase();
+        return a === b;
+      }
+
       function preferStableText(previous, incoming) {
+        if (!incoming) return previous;
+        if (!previous) return incoming;
+        if (!titlesMatchVideo(previous, incoming) && textScore(incoming) >= 0) {
+          return incoming;
+        }
         return textScore(incoming) >= textScore(previous)
           ? incoming
           : previous;
@@ -351,6 +369,13 @@
           incomingKey &&
           previousKey === incomingKey
         );
+        const sameVideo =
+          samePage &&
+          (!previous.title ||
+            !incoming.title ||
+            incoming.isPagePlaceholder ||
+            previous.isPagePlaceholder ||
+            titlesMatchVideo(previous.title, incoming.title));
         const sameMedia = !!(previous.url && incoming.url && previous.url === incoming.url);
         return {
           ...previous,
@@ -368,7 +393,7 @@
           filename: preferStableText(previous.filename, incoming.filename),
           thumbnail:
             incoming.thumbnail ||
-            (samePage ? previous.thumbnail : undefined),
+            (sameVideo ? previous.thumbnail : undefined),
           quality: incoming.quality || previous.quality,
           duration:
             incoming.duration ||
@@ -409,10 +434,16 @@
         if (!isKnownDownloadablePage(url)) return list;
 
         if (!list.length && cached.length) {
-          return cached.map((item) => ({
-            ...item,
-            pageUrl: url || item.pageUrl
-          }));
+          const valid = cached.filter((item) => {
+            const itemKey = pageKey(item.pageUrl || item.url || "");
+            return !itemKey || itemKey === curKey;
+          });
+          if (valid.length) {
+            return valid.map((item) => ({
+              ...item,
+              pageUrl: url || item.pageUrl
+            }));
+          }
         }
 
         const local = buildLocalSiteItem(tabLike || { url, title: "" });

@@ -97,6 +97,18 @@ function makeHarness() {
     cleanPageTitle: (value) =>
       String(value || "").replace(/\s*-\s*123AV.*$/i, "").trim(),
     bindTitleToPage: (_url, title) => title,
+    titlesMatchVideo: (a, b) => {
+      const code = (value) => {
+        const match = String(value || "").match(/([a-z]{2,12})[-_](\d{2,5})/i);
+        return match ? `${match[1].toUpperCase()}-${match[2]}` : "";
+      };
+      const ca = code(a);
+      const cb = code(b);
+      if (ca && cb) return ca === cb;
+      const na = String(a || "").trim();
+      const nb = String(b || "").trim();
+      return !!na && !!nb && na === nb;
+    },
     buildFilename: ({ title }) => `${title}.mp4`
   };
   const pageHost = {
@@ -444,6 +456,53 @@ function main() {
     keepThumb.thumbnail,
     "https://img.test/supjav-current.jpg",
     "same-pageKey placeholder never blanks the last-good thumb"
+  );
+
+  h.setCurrentTabUrl("https://supjav.com/455638.html");
+  const nextNumeric = u.ensureSiteItems([{
+    url: "https://cdn.test/other-feature.m3u8",
+    pageUrl: "https://supjav.com/455638.html",
+    type: "stream",
+    isHls: true,
+    title: "Short current",
+    pageTitle: "Short current",
+    displayName: "Short current",
+    filename: "Short current.mp4",
+    thumbnail: "https://img.test/supjav-next.jpg"
+  }], {
+    url: "https://supjav.com/455638.html",
+    title: "Short current"
+  })[0];
+  check(
+    nextNumeric.title,
+    "Short current",
+    "a different numeric Supjav page uses the current title even when it is shorter"
+  );
+  check(
+    nextNumeric.thumbnail,
+    "https://img.test/supjav-next.jpg",
+    "a different numeric Supjav page uses the current cover"
+  );
+  check(
+    nextNumeric.filename,
+    "Short current.mp4",
+    "a different numeric Supjav page uses the current filename"
+  );
+
+  h.setCurrentTabUrl("https://supjav.com/455638.html");
+  const replacedTitle = u.ensureSiteItems([{
+    url: "https://cdn.test/other-feature.m3u8",
+    pageUrl: "https://supjav.com/455638.html",
+    type: "stream",
+    isHls: true,
+    title: "Updated current page title",
+    filename: "Updated current page title.mp4",
+    thumbnail: "https://img.test/supjav-next.jpg"
+  }], { url: "https://supjav.com/455638.html" })[0];
+  check(
+    replacedTitle.title,
+    "Updated current page title",
+    "same-page incoming title replaces a different previous video name"
   );
 
   h.elements.linkInput.value = "";

@@ -872,6 +872,95 @@ async function main() {
     "known-code navigation immediately broadcasts a non-empty placeholder"
   );
 
+  const prevSupjav = "https://supjav.com/111111.html";
+  const nextSupjav = "https://supjav.com/455636.html";
+  store.setTabMeta(34, {
+    lastUrl: prevSupjav,
+    host: "supjav.com",
+    title: "Previous downloaded title SNOS-100",
+    thumbnail: "https://img.supjav.com/old.jpg",
+    fromPageMeta: true
+  });
+  store.addMedia(34, {
+    url: "https://cdn.example.com/old-feature.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "network",
+    duration: 5000,
+    pageUrl: prevSupjav,
+    host: "supjav.com"
+  });
+  equal(
+    store.getMediaForTab(34)[0].title,
+    "SNOS-100 Previous downloaded title"
+  );
+  store.setTabMeta(34, {
+    lastUrl: nextSupjav,
+    host: "supjav.com",
+    title: "Previous downloaded title SNOS-100"
+  });
+  equal(store.getTabItems(34).length, 0, "numeric Supjav navigation clears media");
+  equal(
+    store.getTabMeta(34).title,
+    undefined,
+    "lagged chrome tab title is not applied after a known-code page change"
+  );
+  equal(
+    store.getTabMeta(34).thumbnail,
+    undefined,
+    "previous cover is cleared on numeric Supjav navigation"
+  );
+  store.setTabMeta(34, {
+    lastUrl: nextSupjav,
+    host: "supjav.com",
+    title: "Previous downloaded title SNOS-100"
+  });
+  equal(
+    store.getTabMeta(34).title,
+    undefined,
+    "GET_MEDIA-style lagged tab title cannot rename the new watch page"
+  );
+  store.setTabMeta(34, {
+    lastUrl: nextSupjav,
+    host: "supjav.com",
+    title: "Current watch page title",
+    thumbnail: "https://img.supjav.com/images/2026/09/current.jpg",
+    fromPageMeta: true
+  });
+  equal(store.getTabMeta(34).title, "Current watch page title");
+  equal(
+    store.getTabMeta(34).thumbnail,
+    "https://img.supjav.com/images/2026/09/current.jpg"
+  );
+  store.addMedia(34, {
+    url: "https://cdn.example.com/fst/current-feature.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "injected",
+    duration: 7200,
+    pageUrl: nextSupjav,
+    host: "supjav.com"
+  });
+  const currentFeature = store.getMediaForTab(34)[0];
+  equal(
+    currentFeature.title,
+    "Current watch page title",
+    "feature HLS uses the current PAGE_META title, not the previous download"
+  );
+  equal(
+    currentFeature.thumbnail,
+    "https://img.supjav.com/images/2026/09/current.jpg",
+    "feature HLS uses the current PAGE_META cover"
+  );
+  ok(
+    String(currentFeature.filename || "").includes("Current watch page title"),
+    "saved filename is locked from the current page title"
+  );
+  ok(
+    !String(currentFeature.filename || "").includes("SNOS-100"),
+    "saved filename does not reuse the previous video name"
+  );
+
   store.addMedia(12, {
     url: "https://cdn.example.com/new.mp4",
     type: "video",

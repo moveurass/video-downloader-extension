@@ -139,6 +139,23 @@ const Naming = (() => {
     return "";
   }
 
+  /** True when two titles refer to the same product / video identity */
+  function titlesMatchVideo(a, b) {
+    const sa = String(a || "").trim();
+    const sb = String(b || "").trim();
+    if (!sa || !sb) return false;
+    const ca = extractProductCode(sa) || "";
+    const cb = extractProductCode(sb) || "";
+    if (ca && cb) return ca.toUpperCase() === cb.toUpperCase();
+    if (ca || cb) return false;
+    const na = cleanPageTitle(sa) || sa;
+    const nb = cleanPageTitle(sb) || sb;
+    if (na === nb) return true;
+    const stripQ = (s) =>
+      s.replace(/[_\s-]*\d{3,4}p\b/gi, "").trim().toLowerCase();
+    return stripQ(na) === stripQ(nb) && stripQ(na).length >= 4;
+  }
+
   /**
    * Bind a human title to the page being downloaded.
    * A usable title is authoritative. URL product codes are only a last-resort
@@ -833,6 +850,7 @@ const Naming = (() => {
     cleanPageTitle,
     extractProductCode,
     bindTitleToPage,
+    titlesMatchVideo,
     isKnownCodeSite,
     isKnownCodeVideoPage,
     isUglyBase,

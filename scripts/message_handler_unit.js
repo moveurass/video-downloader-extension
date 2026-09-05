@@ -461,7 +461,8 @@ async function main() {
     {
       title: "페이지 제목",
       lastUrl: "https://example.com/watch/1",
-      pageKey: "key:https://example.com/watch/1"
+      pageKey: "key:https://example.com/watch/1",
+      fromPageMeta: true
     }
   ]);
 
@@ -505,7 +506,8 @@ async function main() {
     {
       title: "영상 페이지",
       lastUrl: "https://example.com/watch/2",
-      pageKey: "key:https://example.com/watch/2"
+      pageKey: "key:https://example.com/watch/2",
+      fromPageMeta: true
     }
   ]);
   assert.deepEqual(pageMedia[0], [
@@ -610,6 +612,28 @@ async function main() {
     mediaMeta.length,
     metaBeforeNested,
     "iframe PAGE_META does not change pageKey"
+  );
+
+  const metaBeforeStalePage = mediaMeta.length;
+  mediaHandler(
+    {
+      type: "PAGE_META",
+      pageUrl: iframeWatch,
+      pageMeta: {
+        lastUrl: "https://supjav.com/111.html",
+        pageUrl: "https://supjav.com/111.html",
+        title: "Previous watch title",
+        thumbnail: "https://img.example/old.jpg"
+      }
+    },
+    7,
+    { tab: { url: iframeWatch } },
+    (value) => { response = value; }
+  );
+  assert.equal(
+    mediaMeta.length,
+    metaBeforeStalePage,
+    "stale top-frame PAGE_META from a previous watch id is dropped"
   );
 
   const mediaBeforeStale = pageMedia.length;

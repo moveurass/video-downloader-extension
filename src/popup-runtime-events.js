@@ -234,11 +234,18 @@
             }
           })();
           const painted = pageChanged && knownCodeHost
-            ? items.map((item) => ({ ...item, thumbnail: undefined }))
+            ? items.map((item) => ({
+                ...item,
+                thumbnail: undefined,
+                title: undefined,
+                pageTitle: undefined,
+                displayName: undefined,
+                filename: undefined
+              }))
             : items;
           setAllItems(ensureSiteItems(painted, {
             url: currentTabUrl,
-            title: (painted[0] && painted[0].title) || ""
+            title: ""
           }));
           scheduleMediaRender(pageChanged, mediaSignature());
           if (pageChanged) refreshHelperStatus(true);

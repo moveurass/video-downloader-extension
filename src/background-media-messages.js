@@ -79,12 +79,24 @@
           if (tabId != null && msg.pageMeta && isTopFrame(sender)) {
             const pageUrl =
               sender.tab?.url || msg.pageUrl || msg.pageMeta.lastUrl || "";
+            const tabKey = pageUrl ? deps.pageIdentityKey(pageUrl) : "";
+            const metaUrl =
+              msg.pageMeta.lastUrl ||
+              msg.pageMeta.pageUrl ||
+              msg.pageUrl ||
+              "";
+            const metaKey = metaUrl ? deps.pageIdentityKey(metaUrl) : "";
+            if (tabKey && metaKey && tabKey !== metaKey) {
+              sendResponse({ ok: true });
+              return { handled: true, keepChannel: false };
+            }
             deps.setTabMeta(tabId, {
               ...msg.pageMeta,
               lastUrl: pageUrl || msg.pageMeta.lastUrl,
               pageKey: pageUrl
                 ? deps.pageIdentityKey(pageUrl)
-                : msg.pageMeta.pageKey
+                : msg.pageMeta.pageKey,
+              fromPageMeta: true
             });
           }
           sendResponse({ ok: true });
@@ -115,7 +127,8 @@
             deps.setTabMeta(tabId, {
               ...msg.pageMeta,
               lastUrl: pageUrl || msg.pageMeta.lastUrl,
-              pageKey: pageUrl ? deps.pageIdentityKey(pageUrl) : undefined
+              pageKey: pageUrl ? deps.pageIdentityKey(pageUrl) : undefined,
+              fromPageMeta: true
             });
           }
           for (const item of msg.items || []) {

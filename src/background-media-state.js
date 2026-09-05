@@ -216,18 +216,20 @@
         kind !== "youtube" || meta?.identityConfirmed === true;
       const youtubeId =
         kind === "youtube" ? youtubeVideoId(pageUrl) : "";
+      const titleBelongsToPage =
+        !!(meta?.titlePageKey && meta.titlePageKey === currentPageKey);
       const trustedMetaTitle =
-        identityReady ||
-        (meta?.titlePageKey &&
-          meta.titlePageKey === currentPageKey)
+        titleBelongsToPage || (identityReady && !knownVideo)
           ? usableProvisionalTitle(meta?.title)
           : "";
       const provisionalTabTitle =
-        kind !== "youtube" ||
-        identityReady ||
-        meta?.provisionalTitleBlocked !== true
-          ? usableProvisionalTitle(tab?.title)
-          : "";
+        knownVideo && meta?.provisionalTitleBlocked
+          ? ""
+          : kind !== "youtube" ||
+              identityReady ||
+              meta?.provisionalTitleBlocked !== true
+            ? usableProvisionalTitle(tab?.title)
+            : "";
       const title =
         trustedMetaTitle ||
         provisionalTabTitle ||
@@ -328,8 +330,15 @@
         !meta?.pageKey ||
         !itemPage ||
         pageIdentityKey(itemPage) === meta.pageKey;
+      const knownCodePage = !!(
+        Naming.isKnownCodeVideoPage?.(itemPage) ||
+        Naming.isKnownCodeSite?.(hostOf(itemPage) || meta?.host || "")
+      );
       const identityReady =
-        !String(meta?.pageKey || "").startsWith("yt:") ||
+        (!String(meta?.pageKey || "").startsWith("yt:") &&
+          (!knownCodePage ||
+            !meta?.titlePageKey ||
+            meta.titlePageKey === meta.pageKey)) ||
         meta?.identityConfirmed === true ||
         (samePage && item.provisionalIdentitySafe === true) ||
         (samePage &&
@@ -365,15 +374,26 @@
         }
       } else if (title && tabTitle && samePage) {
         const cleanedTabTitle = Naming.cleanPageTitle(tabTitle) || tabTitle;
-        if (
-          cleanedTabTitle &&
-          !Naming.isUglyBase(cleanedTabTitle) &&
-          titlesMatchVideo(title, cleanedTabTitle) &&
-          cleanedTabTitle.length > title.length + 5
-        ) {
-          title = pageRef
-            ? Naming.bindTitleToPage?.(pageRef, cleanedTabTitle) || cleanedTabTitle
-            : cleanedTabTitle;
+        if (cleanedTabTitle && !Naming.isUglyBase(cleanedTabTitle)) {
+          const sameVideo = titlesMatchVideo(title, cleanedTabTitle);
+          if (
+            !sameVideo &&
+            knownCodePage &&
+            meta?.titlePageKey === meta?.pageKey
+          ) {
+            title = pageRef
+              ? Naming.bindTitleToPage?.(pageRef, cleanedTabTitle) ||
+                cleanedTabTitle
+              : cleanedTabTitle;
+          } else if (
+            sameVideo &&
+            cleanedTabTitle.length > title.length + 5
+          ) {
+            title = pageRef
+              ? Naming.bindTitleToPage?.(pageRef, cleanedTabTitle) ||
+                cleanedTabTitle
+              : cleanedTabTitle;
+          }
         }
       }
       if (!title && pageRef) {
@@ -457,14 +477,11 @@
           const nextBase = String(value).replace(/\.[^.]+$/, "");
           if (!out[key] || Naming.isUglyBase(previousBase)) {
             if (!Naming.isUglyBase(nextBase)) out[key] = value;
-          } else if (
-            !Naming.isUglyBase(nextBase) &&
-            nextBase.length > previousBase.length
-          ) {
-            if (
-              titlesMatchVideo(previousBase, nextBase) ||
-              !Naming.extractProductCode?.(previousBase)
-            ) {
+          } else if (!Naming.isUglyBase(nextBase)) {
+            const sameVideo = titlesMatchVideo(previousBase, nextBase);
+            if (!sameVideo) {
+              out[key] = value;
+            } else if (nextBase.length > previousBase.length) {
               out[key] = value;
             }
           }
@@ -474,7 +491,9 @@
           if (
             !out.thumbnail ||
             (String(value).startsWith("data:") &&
-              !String(out.thumbnail).startsWith("data:"))
+              !String(out.thumbnail).startsWith("data:")) ||
+            (String(value) !== String(out.thumbnail) &&
+              String(value).startsWith("http"))
           ) {
             out.thumbnail = value;
           }
@@ -541,24 +560,6 @@
         usableProvisionalTitle(meta.title)
           ? usableProvisionalTitle(meta.title)
           : "";
-
-      let title;
-      if (pageChanged) {
-        title = incomingTitle || undefined;
-      } else if (Object.prototype.hasOwnProperty.call(meta, "title")) {
-        // Empty/unconfirmed metadata is common during YouTube SPA startup.
-        // Keep a title already associated with this exact page identity.
-        title = incomingTitle || prev.title;
-      } else {
-        title = prev.title;
-      }
-
-      const incomingThumbnail = thumbnailMatchesPageKey(
-        meta.thumbnail,
-        nextKey
-      )
-        ? meta.thumbnail
-        : undefined;
       const nextHost = (() => {
         try {
           return (
@@ -569,6 +570,48 @@
           return String(meta.host || prev.host || "");
         }
       })();
+      const knownCodeHost = Naming.isKnownCodeSite?.(nextHost);
+      const fromPageMeta = meta.fromPageMeta === true;
+
+      let title;
+      if (pageChanged) {
+        // Known-code chrome tab titles lag after numeric-id navigation.
+        // Only a live PAGE_META payload may name the new watch page.
+        title =
+          knownCodeHost && !fromPageMeta ? undefined : incomingTitle || undefined;
+      } else if (Object.prototype.hasOwnProperty.call(meta, "title")) {
+        // Empty/unconfirmed metadata is common during YouTube SPA startup.
+        // Keep a title already associated with this exact page identity.
+        if (
+          knownCodeHost &&
+          incomingTitle &&
+          prev.title &&
+          prev.titlePageKey === nextKey &&
+          !fromPageMeta &&
+          !titlesMatchVideo(incomingTitle, prev.title)
+        ) {
+          title = prev.title;
+        } else if (
+          knownCodeHost &&
+          incomingTitle &&
+          !prev.title &&
+          prev.provisionalTitleBlocked &&
+          !fromPageMeta
+        ) {
+          title = undefined;
+        } else {
+          title = incomingTitle || prev.title;
+        }
+      } else {
+        title = prev.title;
+      }
+
+      const incomingThumbnail = thumbnailMatchesPageKey(
+        meta.thumbnail,
+        nextKey
+      )
+        ? meta.thumbnail
+        : undefined;
       let thumbnail;
       if (pageChanged) {
         // Known-code last-good is same-pageKey only. Never keep a cover
@@ -606,7 +649,9 @@
             ? meta.identityConfirmed === true
             : prev.identityConfirmed,
         provisionalTitleBlocked: pageChanged
-          ? !incomingTitle
+          ? knownCodeHost && !fromPageMeta
+            ? true
+            : !incomingTitle
           : incomingTitle || meta.identityConfirmed === true
             ? false
             : prev.provisionalTitleBlocked === true
@@ -1253,24 +1298,41 @@
             updateBadge(tabId);
           }
         } else if (changeInfo.status === "complete" && tab?.url) {
+          const completeHost = (() => {
+            try {
+              return new URL(tab.url).hostname;
+            } catch {
+              return "";
+            }
+          })();
+          const knownCodeComplete = Naming.isKnownCodeSite?.(completeHost);
           setTabMeta(tabId, {
             lastUrl: tab.url,
             pageKey: pageIdentityKey(tab.url),
-            title: Naming.cleanPageTitle(tab.title || "") || undefined,
-            host: (() => {
-              try {
-                return new URL(tab.url).hostname;
-              } catch {
-                return undefined;
-              }
-            })()
+            title: knownCodeComplete
+              ? undefined
+              : Naming.cleanPageTitle(tab.title || "") || undefined,
+            host: completeHost || undefined
           });
           updateSocialBadge(tabId, tab.url);
           requestTabRescan(tabId, tab.url);
         }
         if (changeInfo.title && acceptTitleUpdate) {
           const title = Naming.cleanPageTitle(changeInfo.title);
-          if (title && !Naming.isUglyBase(title)) applyTabTitle(tabId, title);
+          const titleHost = (() => {
+            try {
+              return new URL(tab?.url || "").hostname;
+            } catch {
+              return "";
+            }
+          })();
+          if (
+            title &&
+            !Naming.isUglyBase(title) &&
+            !Naming.isKnownCodeSite?.(titleHost)
+          ) {
+            applyTabTitle(tabId, title);
+          }
         }
       });
 

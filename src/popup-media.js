@@ -172,7 +172,7 @@
     const Naming = options.Naming;
     const pageUrl = item?.pageUrl || options.currentTabUrl || "";
     let best = "";
-    for (const candidate of [item?.title, item?.pageTitle, item?.displayName, item?.filename]) {
+    for (const candidate of [item?.title, item?.pageTitle, item?.displayName]) {
       let cleaned = cleanTitleText(candidate, Naming);
       if (!cleaned || isUglyName(cleaned) || cleaned.length < 2) continue;
       if (Naming?.bindTitleToPage && pageUrl) {
@@ -181,6 +181,10 @@
       if (cleaned.length > best.length) best = cleaned;
     }
     if (!best && pageUrl) best = Naming?.bindTitleToPage?.(pageUrl, "") || "";
+    if (!best && item?.filename) {
+      const fromFile = cleanTitleText(item.filename, Naming);
+      if (fromFile && !isUglyName(fromFile) && fromFile.length >= 2) best = fromFile;
+    }
     if (!best) best = "영상";
     return best.length > 70 ? `${best.slice(0, 68).trim()}…` : best;
   }
@@ -189,7 +193,7 @@
     const { Naming, UVD } = options;
     const pageUrl = item?.pageUrl || options.currentTabUrl || "";
     let title = "";
-    for (const candidate of [item?.title, item?.pageTitle, item?.displayName, item?.filename]) {
+    for (const candidate of [item?.title, item?.pageTitle, item?.displayName]) {
       let cleaned = cleanTitleText(candidate, Naming);
       if (!cleaned || isUglyName(cleaned) || UVD.isGenericSaveName(cleaned)) continue;
       if (Naming?.bindTitleToPage && pageUrl) {
@@ -198,6 +202,16 @@
       if (cleaned.length > title.length) title = cleaned;
     }
     if (!title && pageUrl) title = Naming?.bindTitleToPage?.(pageUrl, "") || "";
+    if (!title && item?.filename) {
+      const fromFile = cleanTitleText(item.filename, Naming);
+      if (
+        fromFile &&
+        !isUglyName(fromFile) &&
+        !UVD.isGenericSaveName(fromFile)
+      ) {
+        title = fromFile;
+      }
+    }
     const selected = options.selectedQuality || "";
     const quality = selected && !/^(best|all)$/i.test(selected)
       ? selected

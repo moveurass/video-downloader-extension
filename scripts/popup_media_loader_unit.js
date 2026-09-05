@@ -407,6 +407,127 @@ async function main() {
     "initial YouTube load forwards the real tab title for filename locking"
   );
 
+  const firstSupjav = "https://supjav.com/111111.html";
+  const nextSupjav = "https://supjav.com/455636.html";
+  const supjavTab = {
+    id: 9,
+    url: nextSupjav,
+    title: "Previous downloaded title SNOS-100 - Supjav"
+  };
+  let supjavCurrentUrl = firstSupjav;
+  const supjavRuntime = [];
+  const supjavLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [supjavTab],
+        get: async () => supjavTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type !== "GET_PAGE_META") return { ok: true };
+          return {
+            pageUrl: nextSupjav,
+            lastUrl: nextSupjav,
+            title: "Current watch page title",
+            thumbnail: "https://img.supjav.com/images/2026/09/current.jpg",
+            identityConfirmed: true
+          };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          supjavRuntime.push(message);
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: "https://cdn.test/fst/current-feature.m3u8",
+                pageUrl: nextSupjav,
+                type: "stream",
+                isHls: true,
+                duration: 7200,
+                title: "Previous downloaded title SNOS-100",
+                pageTitle: "Previous downloaded title SNOS-100",
+                displayName: "Previous downloaded title SNOS-100",
+                filename: "Previous downloaded title SNOS-100.mp4",
+                thumbnail: "https://img.supjav.com/old.jpg"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => elements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items) => items,
+    pageKey: (url) => {
+      try {
+        const parsed = new URL(url);
+        return `${parsed.hostname.replace(/^www\./, "")}${parsed.pathname}`;
+      } catch {
+        return "";
+      }
+    },
+    isInstagramUrl: () => false,
+    isTiktokUrl: () => false,
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: () => false,
+    isHlsItem: () => true,
+    cleanTitleText: (value) => String(value || "").trim(),
+    isUglyName: () => false,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    loadAvailableQualities: async () => {},
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => allItems,
+    setAllItems: (items) => {
+      allItems = items;
+    },
+    getCurrentTabId: () => currentTabId,
+    setCurrentTabId: (value) => {
+      currentTabId = value;
+    },
+    getCurrentTabUrl: () => supjavCurrentUrl,
+    setCurrentTabUrl: (value) => {
+      supjavCurrentUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {},
+    setTimeout: (callback) => callback()
+  });
+  allItems = [];
+  currentTabId = null;
+  await supjavLoader.loadMedia({ navigation: true });
+  check(
+    supjavRuntime.find((message) => message.type === "GET_MEDIA")?.title,
+    "",
+    "known-code navigation does not cache a lagged browser-tab title"
+  );
+  check(
+    allItems[0].title,
+    "Current watch page title",
+    "GET_PAGE_META replaces the previous download title on a new numeric page"
+  );
+  check(
+    allItems[0].thumbnail,
+    "https://img.supjav.com/images/2026/09/current.jpg",
+    "GET_PAGE_META replaces the previous download cover on a new numeric page"
+  );
+  check(
+    allItems[0].filename,
+    undefined,
+    "the previous download filename is not kept across numeric watch pages"
+  );
+
   spaCurrentTabUrl = oldWatchUrl;
   spaItems = [{
     pageUrl: oldWatchUrl,
