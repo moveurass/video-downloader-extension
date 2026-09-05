@@ -60,7 +60,7 @@
           jid,
           {
             mediaMode: options.forceMediaMode,
-            runGeneration,
+            ...(runGeneration != null ? { runGeneration } : {}),
             audioTrackId: options.audioTrackId || "",
             subtitleLanguages: Array.isArray(options.subtitleLanguages)
               ? options.subtitleLanguages
@@ -90,7 +90,7 @@
             jid,
             {
               mediaMode: options.forceMediaMode,
-              runGeneration,
+              ...(runGeneration != null ? { runGeneration } : {}),
               audioTrackId: options.audioTrackId || "",
               subtitleLanguages: Array.isArray(options.subtitleLanguages)
                 ? options.subtitleLanguages
@@ -333,7 +333,7 @@
               pageUrl,
               filename,
               jid,
-              { runGeneration }
+              runGeneration != null ? { runGeneration } : {}
             );
             emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
             return saved;

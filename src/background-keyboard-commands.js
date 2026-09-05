@@ -59,7 +59,7 @@
             deps.downloadPageFromUi(tab.id, tab.url, quality, jobId, {
               mediaMode,
               preferQuality: quality,
-              runGeneration
+              ...(runGeneration != null ? { runGeneration } : {})
             })
         );
       } catch (error) {

@@ -35,7 +35,7 @@
             deps.downloadPageFromUi(-1, pageUrl, item.quality || "best", jobId, {
               mediaUrl: item.mediaUrl || "",
               title: item.title || "",
-              runGeneration
+              ...(runGeneration != null ? { runGeneration } : {})
             })
         );
       } catch (e) {

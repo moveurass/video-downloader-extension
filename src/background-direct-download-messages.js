@@ -109,7 +109,7 @@
                 pageUrl,
                 preferYtDlp,
                 jobId,
-                runGeneration,
+                ...(runGeneration != null ? { runGeneration } : {}),
                 audioTrackId: msg.audioTrackId || "",
                 subtitleLanguages: Array.isArray(msg.subtitleLanguages)
                   ? msg.subtitleLanguages
