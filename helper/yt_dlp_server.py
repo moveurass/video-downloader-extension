@@ -781,6 +781,67 @@ def find_ytdlp() -> str | None:
     return None
 
 
+def is_youtube_download(site: str, *urls: str) -> bool:
+    """Recognize YouTube pages and the googlevideo media URLs they resolve to."""
+    if (site or "").lower() == "youtube":
+        return True
+    youtube_domains = (
+        "youtube.com",
+        "youtube-nocookie.com",
+        "youtu.be",
+        "googlevideo.com",
+    )
+    for value in urls:
+        try:
+            host = (urlparse(value or "").hostname or "").lower().rstrip(".")
+        except Exception:
+            continue
+        if any(host == domain or host.endswith(f".{domain}") for domain in youtube_domains):
+            return True
+    return False
+
+
+def ytdlp_js_runtime_args() -> list[str]:
+    """Enable installed JS runtimes explicitly, including their absolute paths."""
+    args: list[str] = []
+    for runtime in ("deno", "node"):
+        runtime_path = shutil.which(runtime)
+        if runtime_path:
+            args.extend(["--js-runtimes", f"{runtime}:{runtime_path}"])
+    return args
+
+
+def should_use_aria2(
+    aria2_path: str | None, speed_profile: str, is_youtube: bool
+) -> bool:
+    """Use aria2 only for fast-profile sites where multi-connection is reliable."""
+    return bool(aria2_path and speed_profile == "fast" and not is_youtube)
+
+
+def is_aria2_failure(return_code: int, output: str) -> bool:
+    """Identify yt-dlp failures caused by its external aria2c downloader."""
+    if return_code == 0:
+        return False
+    text = (output or "").lower()
+    return "aria2c exited" in text or (
+        "aria2c" in text and ("error" in text or "failed" in text)
+    )
+
+
+def should_retry_without_aria2(
+    using_aria2: bool,
+    fallback_used: bool,
+    return_code: int,
+    output: str,
+) -> bool:
+    """Allow one native retry when the external downloader caused the failure."""
+    return (
+        using_aria2
+        and not fallback_used
+        and is_aria2_failure(return_code, output)
+    )
+
+
 _version_cache: dict[str, tuple[str, float]] = {}
 VERSION_CACHE_SECONDS = 10 * 60
 
@@ -1051,7 +1112,8 @@ def run_download(job_id: str, payload: dict) -> None:
     except Exception:
         host = ""
 
-    is_youtube = site == "youtube" or "youtube" in host or "youtu.be" in target
+    is_youtube = is_youtube_download(site, target, page_url)
+    youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []
     is_tiktok = site == "tiktok" or "tiktok" in host
     is_instagram = (
         site == "instagram"
@@ -1264,8 +1326,11 @@ def run_download(job_id: str, payload: dict) -> None:
     write_thumbnail = bool(payload.get("writeThumbnail")) and not audio_only
     yes_playlist = bool(payload.get("yesPlaylist") or payload.get("playlist"))
 
-    # aria2c multi-connection when installed (big win on progressive/large files)
+    # aria2c is an optional speed boost. YouTube/googlevideo reject its
+    # aggressive multi-connection requests often enough that native yt-dlp is
+    # always the safer default there.
     aria2 = shutil.which("aria2c")
+    aria2_for_job = should_use_aria2(aria2, speed_profile, is_youtube)
 
     # yt-dlp writes the FINAL saved path here — exact attribution even with
     # concurrent jobs, and no Downloads-folder listing needed (macOS TCC can
@@ -1276,7 +1341,12 @@ def run_download(job_id: str, payload: dict) -> None:
     except OSError:
         pass
 
-    def build_cmd(format_str: str, merge: str, extra: list[str] | None = None) -> list[str]:
+    def build_cmd(
+        format_str: str,
+        merge: str,
+        extra: list[str] | None = None,
+        use_aria2: bool = False,
+    ) -> list[str]:
         c = [
             bin_path,
             "--newline",
@@ -1302,15 +1372,16 @@ def run_download(job_id: str, payload: dict) -> None:
             "--socket-timeout",
             "30",
         ]
-        # External multi-connection downloader when installed (optional speed boost)
-        if aria2 and speed_profile not in ("safe", "slow"):
+        c.extend(youtube_js_args)
+        # External multi-connection downloader when allowed for this attempt.
+        if use_aria2:
             # -x connections/server, -s splits, -j parallel jobs
             c.extend(
                 [
                     "--downloader",
                     "aria2c",
                     "--downloader-args",
-                    "aria2c:-c true -x 16 -s 16 -k 1M -j 16 --file-allocation=none --min-split-size=1M",
+                    "aria2c:--continue=true -x 16 -s 16 -k 1M -j 16 --file-allocation=none --min-split-size=1M",
                 ]
             )
         # Playlist: only when explicitly requested (batch paste of playlist URLs)
@@ -1456,10 +1527,13 @@ def run_download(job_id: str, payload: dict) -> None:
     code = 1
     media_published = False
     published_thumbnail_path = ""
+    aria2_fallback_used = False
+    native_retry_index = -1
 
     try:
         for attempt_i, (fmt_try, merge_try, extra) in enumerate(attempts):
-            cmd = build_cmd(fmt_try, merge_try, extra)
+            using_aria2 = aria2_for_job
+            cmd = build_cmd(fmt_try, merge_try, extra, use_aria2=using_aria2)
             with jobs_lock:
                 jobs[job_id]["cmd"] = " ".join(cmd[:8]) + " …"
                 # Fresh multi-stage progress per attempt (video / audio / merge)
@@ -1467,7 +1541,14 @@ def run_download(job_id: str, payload: dict) -> None:
                 jobs[job_id]["_dest_count"] = 0
                 jobs[job_id]["_raw_dl_pct"] = None
                 jobs[job_id]["_disp_pct"] = 0.0
-                if attempt_i:
+                if attempt_i == native_retry_index:
+                    jobs[job_id]["message"] = (
+                        "aria2 고속 다운로드 오류 → 기본 다운로더로 다시 시도…"
+                    )
+                    jobs[job_id]["percent"] = min(
+                        30, max(2, float(jobs[job_id].get("percent") or 2))
+                    )
+                elif attempt_i:
                     jobs[job_id]["message"] = f"다른 화질로 재시도 ({attempt_i + 1}/{len(attempts)})…"
                     # Soft reset so bar can move again honestly
                     jobs[job_id]["percent"] = min(
@@ -1487,6 +1568,7 @@ def run_download(job_id: str, payload: dict) -> None:
             assert proc.stdout is not None
             last_line = ""
             printed_paths = []
+            aria2_failure_line = ""
             for line in proc.stdout:
                 with jobs_lock:
                     cancelled = bool(jobs.get(job_id, {}).get("cancel"))
@@ -1495,6 +1577,8 @@ def run_download(job_id: str, payload: dict) -> None:
                     break
                 line = line.rstrip()
                 last_line = line
+                if is_aria2_failure(1, line):
+                    aria2_failure_line = line
                 if line.startswith("/") or (len(line) > 3 and line[1:3] == ":\\"):
                     if is_media_output_path(line):
                         printed_paths.append(line)
@@ -1604,6 +1688,20 @@ def run_download(job_id: str, payload: dict) -> None:
                     return
             if code == 0:
                 break
+            # aria2 can be rejected by a CDN even though yt-dlp's native
+            # downloader works. Retry this exact format once without aria2,
+            # then keep every later format fallback native as well.
+            if should_retry_without_aria2(
+                using_aria2,
+                aria2_fallback_used,
+                code,
+                aria2_failure_line or last_line,
+            ):
+                aria2_fallback_used = True
+                aria2_for_job = False
+                native_retry_index = attempt_i + 1
+                attempts.insert(native_retry_index, (fmt_try, merge_try, extra))
+                continue
             # Retry only on format / DRM style failures
             err_l = (last_line or "").lower()
             if "format is not available" in err_l or "only images are available" in err_l or "drm" in err_l:
@@ -1776,6 +1874,16 @@ def run_download(job_id: str, payload: dict) -> None:
                     "login" in err.lower() or "cookie" in err.lower() or "rate-limit" in err.lower()
                 ):
                     err = "Instagram 로그인이 필요합니다. Chrome에서 로그인한 뒤 링크를 다시 붙여 넣어 주세요"
+                elif aria2_fallback_used:
+                    err = (
+                        "aria2 고속 다운로드가 실패해 기본 다운로더로 다시 시도했지만 "
+                        f"완료하지 못했습니다: {err}"
+                    )
+                elif is_aria2_failure(code, err):
+                    err = (
+                        "aria2 고속 다운로드에 실패했습니다. "
+                        "속도 설정을 안전 모드로 바꾼 뒤 다시 시도해 주세요"
+                    )
                 jobs[job_id].update(
                     {
                         "status": "error",
@@ -1934,6 +2042,8 @@ class Handler(BaseHTTPRequestHandler):
             if not url:
                 send_json(self, 400, {"ok": False, "error": "url required"})
                 return
+            site = (payload.get("site") or "").lower()
+            is_youtube = is_youtube_download(site, url)
             is_tt = "tiktok" in url.lower()
             cookies_file = None
             try:
@@ -1950,6 +2060,8 @@ class Handler(BaseHTTPRequestHandler):
                     "--ignore-config",
                     "-J",
                 ]
+                if is_youtube:
+                    cmd.extend(ytdlp_js_runtime_args())
                 if is_tt:
                     cmd.extend(["--impersonate", "chrome"])
                 if cookies_file:

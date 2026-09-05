@@ -108,6 +108,65 @@ def main() -> int:
         "helper subtitle track discovery",
         [track["id"] for track in subtitle_tracks] == ["ko", "ja"],
     )
+    youtube_page = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    googlevideo_media = "https://rr1---sn.example.googlevideo.com/videoplayback"
+    check(
+        "YouTube and googlevideo jobs prefer yt-dlp native downloader",
+        helper_server.is_youtube_download("", youtube_page)
+        and helper_server.is_youtube_download("", googlevideo_media)
+        and helper_server.is_youtube_download("youtube", "https://cdn.test/video")
+        and not helper_server.is_youtube_download(
+            "", "https://youtube.com.evil.example/video"
+        )
+        and not helper_server.should_use_aria2(
+            "/usr/local/bin/aria2c", "fast", True
+        ),
+    )
+    original_which = helper_server.shutil.which
+    try:
+        helper_server.shutil.which = lambda name: {
+            "deno": "/opt/homebrew/bin/deno",
+            "node": "/opt/homebrew/bin/node",
+        }.get(name)
+        js_runtime_args = helper_server.ytdlp_js_runtime_args()
+        helper_server.shutil.which = lambda _name: None
+        no_js_runtime_args = helper_server.ytdlp_js_runtime_args()
+    finally:
+        helper_server.shutil.which = original_which
+    check(
+        "yt-dlp receives each detected JavaScript runtime",
+        js_runtime_args
+        == [
+            "--js-runtimes",
+            "deno:/opt/homebrew/bin/deno",
+            "--js-runtimes",
+            "node:/opt/homebrew/bin/node",
+        ]
+        and not no_js_runtime_args,
+    )
+    check(
+        "aria2 is limited to fast-profile non-YouTube jobs",
+        helper_server.should_use_aria2(
+            "/usr/local/bin/aria2c", "fast", False
+        )
+        and not helper_server.should_use_aria2(
+            "/usr/local/bin/aria2c", "normal", False
+        )
+        and not helper_server.should_use_aria2(None, "fast", False),
+    )
+    aria2_error = "ERROR: aria2c exited with code 1"
+    check(
+        "aria2 failure gets exactly one native retry",
+        helper_server.should_retry_without_aria2(
+            True, False, 1, aria2_error
+        )
+        and not helper_server.should_retry_without_aria2(
+            True, True, 1, aria2_error
+        )
+        and not helper_server.should_retry_without_aria2(
+            False, False, 1, aria2_error
+        ),
+    )
 
     original_pair_file = helper_server.PAIR_FILE
     original_pairing = helper_server.auto_pairing
@@ -237,6 +296,13 @@ def main() -> int:
         "payload cannot point yt-dlp at local cookie jars / browser profiles",
         "cookiesFromBrowser" not in helper_source
         and 'payload.get("cookies")\n            if isinstance(cookies, str)' not in helper_source,
+    )
+    check(
+        "YouTube download and format commands attach JavaScript runtimes",
+        "youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []"
+        in helper_source
+        and "c.extend(youtube_js_args)" in helper_source
+        and "cmd.extend(ytdlp_js_runtime_args())" in helper_source,
     )
     # Pause → resume must share one work_dir so yt-dlp --continue applies.
     key_a = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")

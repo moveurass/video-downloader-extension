@@ -1368,7 +1368,8 @@ async function main() {
   );
   assert.equal(helperSource.includes('"--continue"'), true);
   assert.equal(helperSource.includes('"--part"'), true);
-  assert.equal(helperSource.includes("aria2c:-c true"), true);
+  assert.equal(helperSource.includes("aria2c:--continue=true"), true);
+  assert.equal(helperSource.includes("aria2c:-c true"), false);
   console.log("resume contract: HLS checkpoints, helper continuation, and direct Range passed");
 }
 
