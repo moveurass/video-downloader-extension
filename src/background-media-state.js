@@ -22,6 +22,7 @@
       isXUrl,
       isFacebookUrl,
       isBilibiliUrl,
+      isDownloadableSiteVideo,
       needsYtDlpHelper,
       siteKind,
       siteDefaultTitle,
@@ -110,8 +111,24 @@
       return map ? [...map.values()] : [];
     }
 
+    function isDownloadableHelperPage(pageUrl) {
+      if (!pageUrl || !/^https?:/i.test(pageUrl)) return false;
+      if (typeof isDownloadableSiteVideo === "function") {
+        return isDownloadableSiteVideo(pageUrl);
+      }
+      return !!(
+        isYoutubeUrl(pageUrl) ||
+        isTiktokUrl(pageUrl) ||
+        isInstagramPostUrl(pageUrl) ||
+        isXUrl(pageUrl) ||
+        isFacebookUrl(pageUrl) ||
+        isBilibiliUrl(pageUrl)
+      );
+    }
+
     function makeSitePlaceholder(tab) {
       const pageUrl = tab?.url || "";
+      if (!isDownloadableHelperPage(pageUrl)) return null;
       const kind = siteKind(pageUrl, pageUrl);
       if (!kind) return null;
       const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
@@ -653,13 +670,8 @@
       const titleHint = hint.title || "";
 
       if (
-        pageUrl &&
-        /^https?:/i.test(pageUrl) &&
-        (isYoutubeUrl(pageUrl) ||
-          isInstagramPostUrl(pageUrl) ||
-          isXUrl(pageUrl) ||
-          isFacebookUrl(pageUrl) ||
-          isBilibiliUrl(pageUrl))
+        isDownloadableHelperPage(pageUrl) &&
+        !isTiktokUrl(pageUrl)
       ) {
         const placeholder = makeSitePlaceholder({
           id: tabId,
@@ -691,11 +703,8 @@
         const url = tab?.url || tab?.pendingUrl || pageUrl;
         if (!url || !/^https?:/i.test(url)) return items;
         if (
-          isYoutubeUrl(url) ||
-          isInstagramPostUrl(url) ||
-          isXUrl(url) ||
-          isFacebookUrl(url) ||
-          isBilibiliUrl(url)
+          isDownloadableHelperPage(url) &&
+          !isTiktokUrl(url)
         ) {
           const placeholder = makeSitePlaceholder({
             id: tab.id,
@@ -801,6 +810,24 @@
       const meta = tabMeta.get(tabId);
       const pageUrl = meta?.lastUrl || "";
       const pageKey = meta?.pageKey || pageIdentityKey(pageUrl);
+      const immediatePlaceholder =
+        getMediaForTab(tabId).length === 0
+          ? makeSitePlaceholder({ id: tabId, url: pageUrl, title: "" })
+          : null;
+      if (immediatePlaceholder) {
+        chrome.runtime
+          .sendMessage({
+            type: "MEDIA_UPDATED",
+            tabId,
+            pageUrl,
+            pageKey,
+            videoId: meta?.videoId,
+            identityConfirmed: meta?.identityConfirmed === true,
+            items: [immediatePlaceholder]
+          })
+          .catch(() => {});
+        return;
+      }
       getMediaForTabAsync(tabId)
         .then((items) => {
           chrome.runtime
@@ -863,6 +890,21 @@
         }
       }
       broadcastUpdate(tabId);
+    }
+
+    function requestTabRescan(tabId, pageUrl) {
+      if (tabId == null || tabId < 0 || !chrome.tabs?.sendMessage) return;
+      try {
+        Promise.resolve(
+          chrome.tabs.sendMessage(tabId, {
+            type: "SCAN_NOW",
+            reason: "navigation",
+            pageUrl: pageUrl || ""
+          })
+        ).catch(() => {});
+      } catch {
+        // The content script may not be attached yet; popup load retries too.
+      }
     }
 
     function bind() {
@@ -971,6 +1013,7 @@
                   }
                 })()
               });
+              requestTabRescan(tabId, next);
             }
             updateSocialBadge(tabId, next);
           } catch {
@@ -992,6 +1035,7 @@
             })()
           });
           updateSocialBadge(tabId, tab.url);
+          requestTabRescan(tabId, tab.url);
         }
         if (changeInfo.title) {
           const title = Naming.cleanPageTitle(changeInfo.title);

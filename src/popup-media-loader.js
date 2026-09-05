@@ -272,7 +272,11 @@
           nextKey &&
           previousKey !== nextKey
         ) {
-          setAllItems([]);
+          const navigationTab =
+            isSitePage(nextTabUrl)
+              ? { ...tab, url: nextTabUrl, title: "" }
+              : { ...tab, url: nextTabUrl };
+          setAllItems(ensureSiteItems([], navigationTab));
           setAvailableQualities([{ id: "best", label: "최고" }]);
           setQualitiesLoading(false);
           render();

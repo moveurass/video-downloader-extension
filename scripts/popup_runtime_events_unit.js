@@ -173,11 +173,41 @@ check(typeof PopupRuntimeEvents.bind, "function");
     "https://www.youtube.com/watch?v=new",
     "SPA update adopts the newly reported watch URL"
   );
-  check(state.allItems, [], "SPA update clears the previous card immediately");
+  check(
+    state.allItems,
+    [
+      { ensured: true },
+      {
+        pageUrl: "https://www.youtube.com/watch?v=new",
+        title: undefined,
+        thumbnail: undefined,
+        pageTitle: undefined,
+        displayName: undefined,
+        filename: undefined
+      }
+    ],
+    "SPA update paints the new payload/placeholder instead of an empty list"
+  );
   check(calls, [
     "setCurrentTabUrl",
+    [
+      "ensureSiteItems",
+      [{
+        pageUrl: "https://www.youtube.com/watch?v=new",
+        title: undefined,
+        thumbnail: undefined,
+        pageTitle: undefined,
+        displayName: undefined,
+        filename: undefined
+      }],
+      {
+        url: "https://www.youtube.com/watch?v=new",
+        title: ""
+      }
+    ],
     "setAllItems",
     "render",
+    "refreshHelperStatus",
     "loadMedia"
   ]);
 }

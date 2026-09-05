@@ -274,7 +274,15 @@ async function main() {
       isPlaylistOnlyUrl: () => false,
       isWatchInPlaylistUrl: () => false
     },
-    ensureSiteItems: (items) => items,
+    ensureSiteItems: (items, tabLike) =>
+      items.length
+        ? items
+        : [{
+            url: tabLike.url,
+            pageUrl: tabLike.url,
+            isSiteDownload: true,
+            title: "YouTube 영상"
+          }],
     pageKey: spaPageKey,
     isInstagramUrl: () => false,
     isTiktokUrl: () => false,
@@ -313,7 +321,16 @@ async function main() {
   });
 
   await spaLoader.loadMedia();
-  check(spaRenders[0], [], "the old card is cleared before SPA metadata loads");
+  check(
+    spaRenders[0],
+    [{
+      url: newWatchUrl,
+      pageUrl: newWatchUrl,
+      isSiteDownload: true,
+      title: "YouTube 영상"
+    }],
+    "the old card is replaced immediately by the new-page placeholder"
+  );
   check(
     spaRuntimeMessages.find((message) => message.type === "GET_MEDIA")?.title,
     "",
@@ -340,6 +357,24 @@ async function main() {
     spaRuntimeMessages.find((message) => message.type === "PAGE_META")?.pageUrl,
     newWatchUrl,
     "refetched metadata is bound to the current watch URL"
+  );
+
+  spaCurrentTabUrl = oldWatchUrl;
+  spaItems = [{
+    pageUrl: oldWatchUrl,
+    title: "Previous video",
+    thumbnail: "https://i.ytimg.com/vi/previous/hqdefault.jpg"
+  }];
+  const raceRenderStart = spaRenders.length;
+  await Promise.all([spaLoader.loadMedia(), spaLoader.loadMedia()]);
+  const raceRenders = spaRenders.slice(raceRenderStart);
+  check(
+    raceRenders.length > 0 &&
+      raceRenders.every(
+        (items) => items.length > 0 && items[0].pageUrl === newWatchUrl
+      ),
+    true,
+    "a superseded load after navigation never strands the helper page empty"
   );
 
   const genericItem = {

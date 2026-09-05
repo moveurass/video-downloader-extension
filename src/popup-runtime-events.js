@@ -58,19 +58,11 @@
           ) {
             setCurrentTabUrl(reportedUrl);
           }
-          if (
+          const pageChanged = !!(
             previousKey &&
             reportedKey &&
             previousKey !== reportedKey
-          ) {
-            // Clear the old card before any async metadata request can paint.
-            setAllItems([]);
-            render();
-            if (typeof loadMedia === "function") {
-              Promise.resolve(loadMedia()).catch(() => {});
-            }
-            return;
-          }
+          );
 
           // Never carry identity-bound fields from another watch page.
           const currentTabUrl = reportedUrl || previousTabUrl;
@@ -113,6 +105,12 @@
           }));
           render();
           refreshHelperStatus();
+          if (pageChanged && typeof loadMedia === "function") {
+            // Paint the new MEDIA_UPDATED payload (or its site placeholder)
+            // before refreshing metadata. A superseded async load can then
+            // never strand a known helper page in the global empty state.
+            Promise.resolve(loadMedia()).catch(() => {});
+          }
         }
 
         // Global download jobs — multi-queue (concurrent + page leave)

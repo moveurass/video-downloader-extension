@@ -39,6 +39,7 @@ function makeHarness() {
   const badgeText = [];
   const badgeTitles = [];
   const messages = [];
+  const tabMessages = [];
   const detached = [];
   const tabs = new Map([
     [7, { id: 7, url: "https://example.com/watch/one", title: "Example video" }]
@@ -52,6 +53,10 @@ function makeHarness() {
       get: async (tabId) => {
         if (!tabs.has(tabId)) throw new Error("missing tab");
         return tabs.get(tabId);
+      },
+      sendMessage: async (tabId, message) => {
+        tabMessages.push({ tabId, message });
+        return { ok: true };
       }
     },
     action: {
@@ -98,6 +103,7 @@ function makeHarness() {
     badgeText,
     badgeTitles,
     messages,
+    tabMessages,
     detached,
     tabs
   };
@@ -110,7 +116,7 @@ async function flush() {
 
 async function main() {
   const harness = makeHarness();
-  const { store, events, detached, tabs } = harness;
+  const { store, events, detached, tabs, tabMessages } = harness;
 
   equal(store.pageIdentityKey("https://youtube.com/watch?v=alpha&t=3"), "yt:alpha");
   equal(store.pageIdentityKey("https://youtu.be/bravo?t=1"), "yt:bravo");
@@ -344,6 +350,24 @@ async function main() {
     navigationUpdate?.pageUrl,
     "https://youtube.com/watch?v=new",
     "media updates identify the SPA page they belong to"
+  );
+  equal(
+    navigationUpdate?.items?.[0]?.isSiteDownload,
+    true,
+    "a downloadable SPA URL broadcasts a placeholder instead of an empty list"
+  );
+  equal(
+    navigationUpdate?.items?.[0]?.pageUrl,
+    "https://youtube.com/watch?v=new"
+  );
+  ok(
+    tabMessages.some(
+      ({ tabId, message }) =>
+        tabId === 12 &&
+        message.type === "SCAN_NOW" &&
+        message.pageUrl === "https://youtube.com/watch?v=new"
+    ),
+    "identity changes trigger an in-tab rescan"
   );
 
   store.addMedia(12, {
