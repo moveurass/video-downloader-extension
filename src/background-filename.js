@@ -131,6 +131,15 @@
       return stripQ(na) === stripQ(nb) && stripQ(na).length >= 4;
     }
 
+    function isSiteShellTitle(value) {
+      const base = String(value || "")
+        .replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+        .trim();
+      return /^(?:(?:YouTube|TikTok|Instagram|Facebook|Bilibili|X|Twitter)\s*(?:영상|video)?|영상|동영상)$/i.test(
+        base
+      );
+    }
+
     /**
      * Lock the save filename at download START.
      * Must not be recomputed from the live tab later — user may navigate away
@@ -156,6 +165,7 @@
       const bound =
         cleanedTitle &&
         !UVD.isGenericSaveName(cleanedTitle) &&
+        !isSiteShellTitle(cleanedTitle) &&
         !Naming.isUglyBase?.(cleanedTitle)
           ? Naming.bindTitleToPage?.(pageUrl, cleanedTitle) || cleanedTitle
           : "";
@@ -170,10 +180,12 @@
       const usableTitle =
         bound &&
         !UVD.isGenericSaveName(bound) &&
+        !isSiteShellTitle(bound) &&
         !Naming.isUglyBase?.(bound);
       const usableHint =
         boundHint &&
         !UVD.isGenericSaveName(boundHint) &&
+        !isSiteShellTitle(boundHint) &&
         !Naming.isUglyBase?.(boundHint);
 
       // 1) The page/video title is authoritative, even when an older filename
@@ -282,6 +294,7 @@
         if (
           base &&
           !UVD.isGenericSaveName(base) &&
+          !isSiteShellTitle(base) &&
           !Naming.isUglyBase?.(base) &&
           base.length >= 2
         ) {
