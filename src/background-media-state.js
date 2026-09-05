@@ -117,11 +117,19 @@
 
     function isDownloadableHelperPage(pageUrl) {
       if (!pageUrl || !/^https?:/i.test(pageUrl)) return false;
-      if (
-        typeof isDownloadableSiteVideo === "function" &&
-        isDownloadableSiteVideo(pageUrl)
-      ) {
-        return true;
+      const knownCodePage = (() => {
+        try {
+          const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
+          return !!(
+            Naming.isKnownCodeSite?.(host) &&
+            Naming.extractProductCode?.(pageUrl)
+          );
+        } catch {
+          return false;
+        }
+      })();
+      if (typeof isDownloadableSiteVideo === "function") {
+        return isDownloadableSiteVideo(pageUrl) || knownCodePage;
       }
       return !!(
         isYoutubeUrl(pageUrl) ||
@@ -130,17 +138,7 @@
         isXUrl(pageUrl) ||
         isFacebookUrl(pageUrl) ||
         isBilibiliUrl(pageUrl) ||
-        (() => {
-          try {
-            const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
-            return !!(
-              Naming.isKnownCodeSite?.(host) &&
-              Naming.extractProductCode?.(pageUrl)
-            );
-          } catch {
-            return false;
-          }
-        })()
+        knownCodePage
       );
     }
 
