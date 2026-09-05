@@ -216,18 +216,20 @@
           (item.url && /\.m3u8(\?|$|#)/i.test(item.url))
         );
 
-      const itemPage = item.pageUrl || item.url || meta?.lastUrl || "";
+      const explicitPageUrl = item.pageUrl || "";
+      const itemPage =
+        explicitPageUrl || meta?.lastUrl || item.url || "";
       const samePage =
         !meta?.pageKey ||
         !itemPage ||
-        pageIdentityKey(itemPage) === meta.pageKey ||
-        pageIdentityKey(meta.lastUrl || "") === meta.pageKey;
+        pageIdentityKey(itemPage) === meta.pageKey;
       const identityReady =
         !String(meta?.pageKey || "").startsWith("yt:") ||
         meta?.identityConfirmed === true;
 
       const tabTitle = samePage && identityReady ? meta?.title || "" : "";
-      const pageRef = item.pageUrl || (samePage ? meta?.lastUrl : "") || "";
+      const pageRef =
+        explicitPageUrl || (samePage ? meta?.lastUrl : "") || "";
       let title = "";
       for (const candidate of identityReady
         ? [item.title, item.pageTitle]
@@ -318,6 +320,7 @@
 
       return {
         ...item,
+        pageUrl: pageRef || undefined,
         quality,
         isHls,
         isDash,

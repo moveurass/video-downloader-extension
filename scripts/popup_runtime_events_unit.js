@@ -151,6 +151,28 @@ check(typeof PopupRuntimeEvents.bind, "function");
 }
 
 {
+  const { handler, state } = makeHarness();
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl: state.currentTabUrl,
+    items: [{
+      url: "https://cdn.example/current-without-page.mp4",
+      thumbnail: "current.jpg"
+    }]
+  });
+  check(
+    state.allItems[1],
+    {
+      url: "https://cdn.example/current-without-page.mp4",
+      pageUrl: state.currentTabUrl,
+      thumbnail: "current.jpg"
+    },
+    "tab-scoped network media without pageUrl is bound to the current page"
+  );
+}
+
+{
   const { handler, state, calls } = makeHarness();
   state.allItems = [{
     pageUrl: "https://www.youtube.com/watch?v=old",

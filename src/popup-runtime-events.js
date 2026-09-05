@@ -71,10 +71,17 @@
             !isYoutubePageUrl(currentTabUrl) ||
             msg.identityConfirmed === true;
           const items = (msg.items || []).flatMap((i) => {
-            const k = pageKey(i.pageUrl || i.url || "");
-            if (curKey && k && k !== curKey && i.isSiteDownload) {
+            // MEDIA_UPDATED is tab-scoped. Network captures may not carry a
+            // pageUrl, so bind them to the broadcast page instead of treating
+            // their CDN hostname/path as a competing page identity.
+            const item =
+              !i.pageUrl && currentTabUrl
+                ? { ...i, pageUrl: currentTabUrl }
+                : i;
+            const k = pageKey(item.pageUrl || item.url || "");
+            if (curKey && k && k !== curKey && item.isSiteDownload) {
               return [{
-                ...i,
+                ...item,
                 url: currentTabUrl,
                 pageUrl: currentTabUrl,
                 thumbnail: undefined,
@@ -89,7 +96,7 @@
             }
             if (!identityReady) {
               return [{
-                ...i,
+                ...item,
                 thumbnail: undefined,
                 title: undefined,
                 pageTitle: undefined,
@@ -97,7 +104,7 @@
                 filename: undefined
               }];
             }
-            return [i];
+            return [item];
           });
           setAllItems(ensureSiteItems(items, {
             url: currentTabUrl,

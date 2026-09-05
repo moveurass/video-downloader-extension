@@ -375,6 +375,11 @@ async function main() {
     type: "video",
     duration: 100
   });
+  equal(
+    store.getTabItems(12)[0].pageUrl,
+    "https://youtube.com/watch?v=new",
+    "network captures without pageUrl inherit the current tab identity"
+  );
   events.onRemoved.listeners[0].listener(12);
   equal(store.getTabItems(12).length, 0);
   equal(store.getTabMeta(12), undefined);
