@@ -9,7 +9,11 @@
     const tabMedia = new Map();
     const tabMeta = new Map();
     const probedUrls = new Set();
+    const broadcastTimers = new Map();
     let bound = false;
+    const schedule = deps.setTimeout || setTimeout;
+    const unschedule = deps.clearTimeout || clearTimeout;
+    const BROADCAST_DELAY_MS = 200;
 
     const {
       chrome,
@@ -22,6 +26,7 @@
       isXUrl,
       isFacebookUrl,
       isBilibiliUrl,
+      isDownloadableSiteVideo,
       needsYtDlpHelper,
       siteKind,
       siteDefaultTitle,
@@ -96,6 +101,52 @@
       return !expected || !actual || expected === actual;
     }
 
+    function youtubeVideoId(rawUrl) {
+      try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (host === "youtu.be") {
+          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+        }
+        if (
+          !host.includes("youtube.com") &&
+          !host.includes("youtube-nocookie.com")
+        ) {
+          return "";
+        }
+        return (
+          url.searchParams.get("v") ||
+          url.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
+          ""
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    function youtubeThumbnailForPage(pageUrl) {
+      const videoId = youtubeVideoId(pageUrl);
+      return videoId
+        ? `https://i.ytimg.com/vi/${encodeURIComponent(
+            videoId
+          )}/hqdefault.jpg`
+        : "";
+    }
+
+    function usableProvisionalTitle(rawTitle) {
+      const title =
+        Naming.cleanPageTitle(rawTitle || "") ||
+        String(rawTitle || "").trim();
+      if (
+        !title ||
+        Naming.isUglyBase?.(title) ||
+        /^(?:youtube|youtube 영상|영상|동영상|video)$/i.test(title)
+      ) {
+        return "";
+      }
+      return title;
+    }
+
     function getTabMap(tabId) {
       if (!tabMedia.has(tabId)) tabMedia.set(tabId, new Map());
       return tabMedia.get(tabId);
@@ -110,28 +161,95 @@
       return map ? [...map.values()] : [];
     }
 
+    function isDownloadableHelperPage(pageUrl) {
+      if (!pageUrl || !/^https?:/i.test(pageUrl)) return false;
+      const knownCodePage = (() => {
+        try {
+          const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
+          return !!(
+            Naming.isKnownCodeSite?.(host) &&
+            Naming.extractProductCode?.(pageUrl)
+          );
+        } catch {
+          return false;
+        }
+      })();
+      if (typeof isDownloadableSiteVideo === "function") {
+        return isDownloadableSiteVideo(pageUrl) || knownCodePage;
+      }
+      return !!(
+        isYoutubeUrl(pageUrl) ||
+        isTiktokUrl(pageUrl) ||
+        isInstagramPostUrl(pageUrl) ||
+        isXUrl(pageUrl) ||
+        isFacebookUrl(pageUrl) ||
+        isBilibiliUrl(pageUrl) ||
+        knownCodePage
+      );
+    }
+
+    function isHelperSitePage(pageUrl) {
+      if (typeof isDownloadableSiteVideo === "function") {
+        return isDownloadableSiteVideo(pageUrl);
+      }
+      return !!(
+        isYoutubeUrl(pageUrl) ||
+        isTiktokUrl(pageUrl) ||
+        isInstagramPostUrl(pageUrl) ||
+        isXUrl(pageUrl) ||
+        isFacebookUrl(pageUrl) ||
+        isBilibiliUrl(pageUrl)
+      );
+    }
+
     function makeSitePlaceholder(tab) {
       const pageUrl = tab?.url || "";
+      if (!isDownloadableHelperPage(pageUrl)) return null;
       const kind = siteKind(pageUrl, pageUrl);
-      if (!kind) return null;
+      const code = Naming.extractProductCode?.(pageUrl) || "";
+      if (!kind && !code) return null;
       const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
+      const currentPageKey = pageIdentityKey(pageUrl);
       const identityReady =
         kind !== "youtube" || meta?.identityConfirmed === true;
+      const youtubeId =
+        kind === "youtube" ? youtubeVideoId(pageUrl) : "";
+      const trustedMetaTitle =
+        identityReady ||
+        (meta?.titlePageKey &&
+          meta.titlePageKey === currentPageKey)
+          ? usableProvisionalTitle(meta?.title)
+          : "";
+      const provisionalTabTitle =
+        kind !== "youtube" ||
+        identityReady ||
+        meta?.provisionalTitleBlocked !== true
+          ? usableProvisionalTitle(tab?.title)
+          : "";
       const title =
-        (identityReady ? meta?.title : "") ||
-        (identityReady ? Naming.cleanPageTitle(tab?.title || "") : "") ||
+        trustedMetaTitle ||
+        provisionalTabTitle ||
+        code ||
         siteDefaultTitle(kind);
+      const thumbnail =
+        (meta?.thumbnail &&
+        thumbnailMatchesPageKey(meta.thumbnail, currentPageKey)
+          ? meta.thumbnail
+          : "") ||
+        (youtubeId ? youtubeThumbnailForPage(pageUrl) : "");
       return enrichItem(tab.id, {
         url: pageUrl,
-        type: "stream",
+        type: kind ? "stream" : "page",
         isHls: false,
-        isSiteDownload: true,
-        site: kind,
-        source: kind,
+        isSiteDownload: !!kind,
+        isPagePlaceholder: !kind,
+        site: kind || undefined,
+        source: kind || "page-placeholder",
         title,
         pageTitle: title,
         pageUrl,
-        thumbnail: identityReady ? meta?.thumbnail : undefined,
+        thumbnail: thumbnail || undefined,
+        provisionalIdentitySafe: !!youtubeId,
         host: hostOf(pageUrl),
         quality: "best",
         format: "MP4"
@@ -164,8 +282,10 @@
           lastUrl: prevUrl,
           pageKey: pageIdentityKey(prevUrl),
           title: undefined,
+          titlePageKey: undefined,
           thumbnail: undefined,
           identityConfirmed: false,
+          provisionalTitleBlocked: true,
           host: (() => {
             try {
               return new URL(prevUrl).hostname;
@@ -176,7 +296,7 @@
         });
       }
       updateBadge(tabId);
-      broadcastUpdate(tabId);
+      broadcastUpdate(tabId, { immediate: true });
     }
 
     function enrichItem(tabId, item) {
@@ -199,18 +319,24 @@
           (item.url && /\.m3u8(\?|$|#)/i.test(item.url))
         );
 
-      const itemPage = item.pageUrl || item.url || meta?.lastUrl || "";
+      const explicitPageUrl = item.pageUrl || "";
+      const itemPage =
+        explicitPageUrl || meta?.lastUrl || item.url || "";
       const samePage =
         !meta?.pageKey ||
         !itemPage ||
-        pageIdentityKey(itemPage) === meta.pageKey ||
-        pageIdentityKey(meta.lastUrl || "") === meta.pageKey;
+        pageIdentityKey(itemPage) === meta.pageKey;
       const identityReady =
         !String(meta?.pageKey || "").startsWith("yt:") ||
-        meta?.identityConfirmed === true;
+        meta?.identityConfirmed === true ||
+        (samePage && item.provisionalIdentitySafe === true) ||
+        (samePage &&
+          !!meta?.title &&
+          meta?.titlePageKey === meta?.pageKey);
 
       const tabTitle = samePage && identityReady ? meta?.title || "" : "";
-      const pageRef = item.pageUrl || (samePage ? meta?.lastUrl : "") || "";
+      const pageRef =
+        explicitPageUrl || (samePage ? meta?.lastUrl : "") || "";
       let title = "";
       for (const candidate of identityReady
         ? [item.title, item.pageTitle]
@@ -301,6 +427,7 @@
 
       return {
         ...item,
+        pageUrl: pageRef || undefined,
         quality,
         isHls,
         isDash,
@@ -398,12 +525,23 @@
       const prevKey =
         prev.pageKey || (prev.lastUrl ? pageIdentityKey(prev.lastUrl) : "");
       const pageChanged = !!(prevKey && nextKey && prevKey !== nextKey);
+      const currentYoutubeId = youtubeVideoId(nextUrl);
+      const incomingVideoId = String(meta.videoId || "");
+      const incomingTitle =
+        (!currentYoutubeId ||
+          !incomingVideoId ||
+          currentYoutubeId === incomingVideoId) &&
+        usableProvisionalTitle(meta.title)
+          ? usableProvisionalTitle(meta.title)
+          : "";
 
       let title;
       if (pageChanged) {
-        title = meta.title || undefined;
+        title = incomingTitle || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "title")) {
-        title = meta.title || undefined;
+        // Empty/unconfirmed metadata is common during YouTube SPA startup.
+        // Keep a title already associated with this exact page identity.
+        title = incomingTitle || prev.title;
       } else {
         title = prev.title;
       }
@@ -418,13 +556,20 @@
       if (pageChanged) {
         thumbnail = incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
-        thumbnail = incomingThumbnail || undefined;
+        thumbnail = incomingThumbnail || prev.thumbnail;
       } else {
         thumbnail = prev.thumbnail;
       }
 
       const next = {
         title,
+        titlePageKey: title
+          ? incomingTitle
+            ? nextKey
+            : pageChanged
+              ? undefined
+              : prev.titlePageKey
+          : undefined,
         thumbnail,
         host: meta.host || prev.host,
         lastUrl: nextUrl || prev.lastUrl,
@@ -438,7 +583,12 @@
           ? meta.identityConfirmed === true
           : Object.prototype.hasOwnProperty.call(meta, "identityConfirmed")
             ? meta.identityConfirmed === true
-            : prev.identityConfirmed
+            : prev.identityConfirmed,
+        provisionalTitleBlocked: pageChanged
+          ? !incomingTitle
+          : incomingTitle || meta.identityConfirmed === true
+            ? false
+            : prev.provisionalTitleBlocked === true
       };
 
       if (pageChanged) tabMedia.delete(tabId);
@@ -448,7 +598,7 @@
       if (!map) {
         if (pageChanged) {
           updateBadge(tabId);
-          broadcastUpdate(tabId);
+          broadcastUpdate(tabId, { immediate: true });
         }
         return;
       }
@@ -489,7 +639,7 @@
       }
       if (changed) {
         updateBadge(tabId);
-        broadcastUpdate(tabId);
+        broadcastUpdate(tabId, { immediate: pageChanged });
       }
     }
 
@@ -653,14 +803,10 @@
       const titleHint = hint.title || "";
 
       if (
-        pageUrl &&
-        /^https?:/i.test(pageUrl) &&
-        (isYoutubeUrl(pageUrl) ||
-          isInstagramPostUrl(pageUrl) ||
-          isXUrl(pageUrl) ||
-          isFacebookUrl(pageUrl) ||
-          isBilibiliUrl(pageUrl))
+        isDownloadableHelperPage(pageUrl) &&
+        !isTiktokUrl(pageUrl)
       ) {
+        if (items.length && !isHelperSitePage(pageUrl)) return items;
         const placeholder = makeSitePlaceholder({
           id: tabId,
           url: pageUrl,
@@ -691,12 +837,10 @@
         const url = tab?.url || tab?.pendingUrl || pageUrl;
         if (!url || !/^https?:/i.test(url)) return items;
         if (
-          isYoutubeUrl(url) ||
-          isInstagramPostUrl(url) ||
-          isXUrl(url) ||
-          isFacebookUrl(url) ||
-          isBilibiliUrl(url)
+          isDownloadableHelperPage(url) &&
+          !isTiktokUrl(url)
         ) {
+          if (items.length && !isHelperSitePage(url)) return items;
           const placeholder = makeSitePlaceholder({
             id: tab.id,
             url,
@@ -797,12 +941,38 @@
         });
     }
 
-    function broadcastUpdate(tabId) {
+    function sendBroadcastUpdate(tabId) {
       const meta = tabMeta.get(tabId);
       const pageUrl = meta?.lastUrl || "";
       const pageKey = meta?.pageKey || pageIdentityKey(pageUrl);
+      const stillCurrent = () => {
+        const current = tabMeta.get(tabId);
+        const currentUrl = current?.lastUrl || "";
+        const currentKey =
+          current?.pageKey || pageIdentityKey(currentUrl);
+        return currentUrl === pageUrl && currentKey === pageKey;
+      };
+      const immediatePlaceholder =
+        getMediaForTab(tabId).length === 0
+          ? makeSitePlaceholder({ id: tabId, url: pageUrl, title: "" })
+          : null;
+      if (immediatePlaceholder) {
+        chrome.runtime
+          .sendMessage({
+            type: "MEDIA_UPDATED",
+            tabId,
+            pageUrl,
+            pageKey,
+            videoId: meta?.videoId,
+            identityConfirmed: meta?.identityConfirmed === true,
+            items: [immediatePlaceholder]
+          })
+          .catch(() => {});
+        return;
+      }
       getMediaForTabAsync(tabId)
         .then((items) => {
+          if (!stillCurrent()) return;
           chrome.runtime
             .sendMessage({
               type: "MEDIA_UPDATED",
@@ -816,6 +986,7 @@
             .catch(() => {});
         })
         .catch(() => {
+          if (!stillCurrent()) return;
           chrome.runtime
             .sendMessage({
               type: "MEDIA_UPDATED",
@@ -830,12 +1001,42 @@
         });
     }
 
+    function broadcastUpdate(tabId, options = {}) {
+      const existingTimer = broadcastTimers.get(tabId);
+      if (existingTimer) {
+        unschedule(existingTimer);
+        broadcastTimers.delete(tabId);
+      }
+
+      if (options.immediate) {
+        const meta = tabMeta.get(tabId);
+        const pageUrl = meta?.lastUrl || "";
+        const placeholder =
+          getMediaForTab(tabId).length === 0
+            ? makeSitePlaceholder({ id: tabId, url: pageUrl, title: "" })
+            : null;
+        if (placeholder) {
+          sendBroadcastUpdate(tabId);
+          return;
+        }
+      }
+
+      const timer = schedule(() => {
+        broadcastTimers.delete(tabId);
+        sendBroadcastUpdate(tabId);
+      }, BROADCAST_DELAY_MS);
+      broadcastTimers.set(tabId, timer);
+    }
+
     function clearMedia(tabId) {
       tabMedia.delete(tabId);
       updateBadge(tabId);
     }
 
     function deleteTab(tabId) {
+      const timer = broadcastTimers.get(tabId);
+      if (timer) unschedule(timer);
+      broadcastTimers.delete(tabId);
       tabMedia.delete(tabId);
       tabMeta.delete(tabId);
     }
@@ -863,6 +1064,21 @@
         }
       }
       broadcastUpdate(tabId);
+    }
+
+    function requestTabRescan(tabId, pageUrl) {
+      if (tabId == null || tabId < 0 || !chrome.tabs?.sendMessage) return;
+      try {
+        Promise.resolve(
+          chrome.tabs.sendMessage(tabId, {
+            type: "SCAN_NOW",
+            reason: "navigation",
+            pageUrl: pageUrl || ""
+          })
+        ).catch(() => {});
+      } catch {
+        // The content script may not be attached yet; popup load retries too.
+      }
     }
 
     function bind() {
@@ -934,6 +1150,7 @@
       });
 
       chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+        let acceptTitleUpdate = !changeInfo.url;
         if (changeInfo.url) {
           try {
             const prev = tabMeta.get(tabId)?.lastUrl || "";
@@ -951,6 +1168,7 @@
                 : prevPath && prevPath === nextPath;
 
             if (sameVideo) {
+              acceptTitleUpdate = true;
               setTabMeta(tabId, {
                 lastUrl: next,
                 pageKey: nextKey || prevKey
@@ -971,6 +1189,7 @@
                   }
                 })()
               });
+              requestTabRescan(tabId, next);
             }
             updateSocialBadge(tabId, next);
           } catch {
@@ -992,8 +1211,9 @@
             })()
           });
           updateSocialBadge(tabId, tab.url);
+          requestTabRescan(tabId, tab.url);
         }
-        if (changeInfo.title) {
+        if (changeInfo.title && acceptTitleUpdate) {
           const title = Naming.cleanPageTitle(changeInfo.title);
           if (title && !Naming.isUglyBase(title)) applyTabTitle(tabId, title);
         }

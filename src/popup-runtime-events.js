@@ -20,6 +20,41 @@
       }
     }
 
+    function youtubeVideoId(rawUrl) {
+      try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (host === "youtu.be") {
+          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+        }
+        if (!host.includes("youtube")) return "";
+        return (
+          url.searchParams.get("v") ||
+          url.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
+          ""
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    function youtubeThumbnailForPage(pageUrl) {
+      const videoId = youtubeVideoId(pageUrl);
+      return videoId
+        ? `https://i.ytimg.com/vi/${encodeURIComponent(
+            videoId
+          )}/hqdefault.jpg`
+        : "";
+    }
+
+    function youtubeThumbnailMatches(thumbnail, videoId) {
+      if (!thumbnail || !videoId) return false;
+      const actual = String(thumbnail).match(
+        /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
+      )?.[1];
+      return actual === videoId;
+    }
+
     function createHandler(deps) {
       const {
         $,
@@ -42,8 +77,77 @@
         setWatchlistItems,
         getActiveTabName,
         getTrackedJobIds,
-        loadMedia
+        getAllItems,
+        getAvailableQualities,
+        loadMedia,
+        patchMedia
       } = deps;
+      const setTimeoutFn = deps.setTimeout || setTimeout;
+      const clearTimeoutFn = deps.clearTimeout || clearTimeout;
+      let mediaRenderTimer = null;
+      let pendingMediaSignature = "";
+      let lastPaintedMediaSignature = "";
+
+      function mediaSignature() {
+        const item = getAllItems?.()?.[0] || null;
+        const qualities =
+          typeof getAvailableQualities === "function"
+            ? getAvailableQualities()
+            : [];
+        return JSON.stringify({
+          pageKey: pageKey(item?.pageUrl || getCurrentTabUrl() || ""),
+          url: item?.url || "",
+          title: item?.title || item?.pageTitle || item?.displayName || "",
+          thumbnail: item?.thumbnail || "",
+          quality: item?.quality || "",
+          width: item?.width || 0,
+          height: item?.height || 0,
+          duration: item?.duration || 0,
+          estimatedSize: item?.estimatedSize || item?.size || 0,
+          placeholder: item?.isPagePlaceholder === true,
+          qualities: (qualities || []).map((quality) => [
+            quality.id || "",
+            quality.label || "",
+            quality.height || 0
+          ])
+        });
+      }
+
+      function scheduleMediaRender(pageChanged, signature) {
+        if (
+          !pageChanged &&
+          signature &&
+          (signature === lastPaintedMediaSignature ||
+            (mediaRenderTimer && signature === pendingMediaSignature))
+        ) {
+          return;
+        }
+        if (mediaRenderTimer) {
+          clearTimeoutFn(mediaRenderTimer);
+          mediaRenderTimer = null;
+        }
+        pendingMediaSignature = signature;
+        const paint = () => {
+          mediaRenderTimer = null;
+          if (
+            !pageChanged &&
+            typeof patchMedia === "function" &&
+            patchMedia()
+          ) {
+            lastPaintedMediaSignature = pendingMediaSignature;
+            pendingMediaSignature = "";
+            return;
+          }
+          render();
+          lastPaintedMediaSignature = pendingMediaSignature;
+          pendingMediaSignature = "";
+        };
+        if (pageChanged) {
+          paint();
+        } else {
+          mediaRenderTimer = setTimeoutFn(paint, 120);
+        }
+      }
 
       return function handleRuntimeMessage(msg) {
         if (msg.type === "MEDIA_UPDATED" && msg.tabId === getCurrentTabId()) {
@@ -58,19 +162,11 @@
           ) {
             setCurrentTabUrl(reportedUrl);
           }
-          if (
+          const pageChanged = !!(
             previousKey &&
             reportedKey &&
             previousKey !== reportedKey
-          ) {
-            // Clear the old card before any async metadata request can paint.
-            setAllItems([]);
-            render();
-            if (typeof loadMedia === "function") {
-              Promise.resolve(loadMedia()).catch(() => {});
-            }
-            return;
-          }
+          );
 
           // Never carry identity-bound fields from another watch page.
           const currentTabUrl = reportedUrl || previousTabUrl;
@@ -79,10 +175,17 @@
             !isYoutubePageUrl(currentTabUrl) ||
             msg.identityConfirmed === true;
           const items = (msg.items || []).flatMap((i) => {
-            const k = pageKey(i.pageUrl || i.url || "");
-            if (curKey && k && k !== curKey && i.isSiteDownload) {
+            // MEDIA_UPDATED is tab-scoped. Network captures may not carry a
+            // pageUrl, so bind them to the broadcast page instead of treating
+            // their CDN hostname/path as a competing page identity.
+            const item =
+              !i.pageUrl && currentTabUrl
+                ? { ...i, pageUrl: currentTabUrl }
+                : i;
+            const k = pageKey(item.pageUrl || item.url || "");
+            if (curKey && k && k !== curKey && item.isSiteDownload) {
               return [{
-                ...i,
+                ...item,
                 url: currentTabUrl,
                 pageUrl: currentTabUrl,
                 thumbnail: undefined,
@@ -96,23 +199,39 @@
               return [];
             }
             if (!identityReady) {
+              const currentYoutubeId = youtubeVideoId(currentTabUrl);
+              const provisionalSafe =
+                item.provisionalIdentitySafe === true &&
+                !!currentYoutubeId;
+              const safeThumbnail = youtubeThumbnailMatches(
+                item.thumbnail,
+                currentYoutubeId
+              )
+                ? item.thumbnail
+                : youtubeThumbnailForPage(currentTabUrl);
               return [{
-                ...i,
-                thumbnail: undefined,
-                title: undefined,
-                pageTitle: undefined,
-                displayName: undefined,
-                filename: undefined
+                ...item,
+                thumbnail: safeThumbnail || undefined,
+                title: provisionalSafe ? item.title : undefined,
+                pageTitle: provisionalSafe ? item.pageTitle : undefined,
+                displayName: provisionalSafe ? item.displayName : undefined,
+                filename: provisionalSafe ? item.filename : undefined
               }];
             }
-            return [i];
+            return [item];
           });
           setAllItems(ensureSiteItems(items, {
             url: currentTabUrl,
             title: (items[0] && items[0].title) || ""
           }));
-          render();
-          refreshHelperStatus();
+          scheduleMediaRender(pageChanged, mediaSignature());
+          if (pageChanged) refreshHelperStatus(true);
+          if (pageChanged && typeof loadMedia === "function") {
+            // Paint the new MEDIA_UPDATED payload (or its site placeholder)
+            // before refreshing metadata. A superseded async load can then
+            // never strand a known helper page in the global empty state.
+            Promise.resolve(loadMedia({ navigation: true })).catch(() => {});
+          }
         }
 
         // Global download jobs — multi-queue (concurrent + page leave)

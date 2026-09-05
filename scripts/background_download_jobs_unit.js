@@ -346,6 +346,33 @@ async function main() {
   );
   equal(lateCalls.saveCompanionThumbnail, 2);
 
+  const detachedId = manager.createDownloadJob({
+    tabId: 77,
+    title: "Background queue item",
+    pageUrl: "https://example.test/watch/background",
+    filename: "background.mp4"
+  });
+  manager.detachJobsFromTab(77);
+  equal(manager.activeDownloads.get(detachedId).tabId, -1);
+  equal(manager.tabJobMap.has(77), false);
+  ok(
+    manager.listActiveDownloads().some(
+      (candidate) =>
+        candidate.id === detachedId &&
+        candidate.tabId === -1 &&
+        candidate.status === "running"
+    ),
+    "detaching a navigated tab keeps the running job in the global queue"
+  );
+  ok(
+    messages.some(
+      (message) =>
+        message.type === "DOWNLOAD_JOB" &&
+        message.job?.id === detachedId &&
+        message.job?.tabId === -1
+    )
+  );
+
   const notified = makeHarness({ notifyOnComplete: true });
   const helperResult = {
     downloadId: null,

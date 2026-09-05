@@ -192,17 +192,22 @@ const YtDlp = (() => {
   }
 
   /**
-   * Cancel a running helper download (kills yt-dlp and its children).
-   * `purge` also deletes the job's partial files; omit it for a pause so the
-   * next job with the same resumeKey can --continue.
+   * Stop a running helper download (kills yt-dlp and its children).
+   * `pause` keeps the work directory and reports PAUSED. `purge` is reserved
+   * for an explicit user cancellation that must delete partial files.
    */
   async function cancelJob(jobId, options = {}) {
     if (!jobId) return { ok: false };
     try {
+      const body = options.pause
+        ? { pause: true }
+        : options.purge
+          ? { purge: true }
+          : {};
       const res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ purge: !!options.purge })
+        body: JSON.stringify(body)
       });
       const data = await res.json().catch(() => ({}));
       return { ok: !!(res.ok && data.ok), ...data };
@@ -257,7 +262,8 @@ const YtDlp = (() => {
       percent: 3,
       message: "다운로드 시작…",
       status: "running",
-      outDir: started.outDir
+      outDir: started.outDir,
+      helperJobId: jobId
     });
 
     // A helper restart wipes its in-memory job table (404), and a dead helper
@@ -311,8 +317,15 @@ const YtDlp = (() => {
           method: "yt-dlp"
         };
       }
+      if (job.status === "paused" || job.pause) {
+        const error = new Error("PAUSED");
+        error.code = "PAUSED";
+        throw error;
+      }
       if (job.status === "cancelled" || job.cancel) {
-        throw new Error("CANCELLED");
+        const error = new Error("CANCELLED");
+        error.code = "CANCELLED";
+        throw error;
       }
       if (job.status === "error") {
         throw new Error(job.error || job.message || "다운로드 실패");

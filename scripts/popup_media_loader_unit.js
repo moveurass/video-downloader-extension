@@ -36,6 +36,18 @@ async function main() {
   let currentTabUrl = null;
   let qualitiesLoading = false;
   let renderCount = 0;
+  const renderedItemCounts = [];
+  let mediaResponseItems = [{
+    url: "https://cdn.test/cawb-035.mp4",
+    pageUrl,
+    title: "",
+    pageTitle: "",
+    displayName: "영상",
+    filename: "동영상_720p.mp4",
+    quality: "720p",
+    type: "video"
+  }];
+  let stablePageItems = [];
 
   const elements = {
     quickBox: { classList: classList() },
@@ -62,16 +74,7 @@ async function main() {
         runtimeMessages.push(message);
         if (message.type === "GET_MEDIA") {
           return {
-            items: [{
-              url: "https://cdn.test/cawb-035.mp4",
-              pageUrl,
-              title: "",
-              pageTitle: "",
-              displayName: "영상",
-              filename: "동영상_720p.mp4",
-              quality: "720p",
-              type: "video"
-            }]
+            items: mediaResponseItems.map((item) => ({ ...item }))
           };
         }
         return { ok: true };
@@ -88,7 +91,21 @@ async function main() {
       isPlaylistOnlyUrl: () => false,
       isWatchInPlaylistUrl: () => false
     },
-    ensureSiteItems: (items) => items,
+    ensureSiteItems: (items, tabLike) => {
+      if (items.length) {
+        stablePageItems = items.map((item) => ({ ...item }));
+      }
+      if (stablePageItems.length) {
+        return stablePageItems.map((item) => ({ ...item }));
+      }
+      return [{
+        url: tabLike.url,
+        pageUrl: tabLike.url,
+        type: "page",
+        isPagePlaceholder: true,
+        title: "CAWB-035"
+      }];
+    },
     pageKey: (url) => String(url || "").replace(/[?#].*$/, ""),
     isInstagramUrl: () => false,
     isTiktokUrl: () => false,
@@ -103,6 +120,7 @@ async function main() {
     refreshHelperStatus: async () => {},
     render: () => {
       renderCount += 1;
+      renderedItemCounts.push(allItems.length);
     },
     loadAvailableQualities: async () => {},
     loadPlaylistInfo: async () => {},
@@ -163,6 +181,23 @@ async function main() {
     "fresh fallback title is returned to background state"
   );
   check(renderCount, 2, "loader renders before and after quality discovery");
+
+  mediaResponseItems = [];
+  const rapidRenderStart = renderedItemCounts.length;
+  await Promise.all([loader.loadMedia(), loader.loadMedia()]);
+  check(
+    allItems.length > 0,
+    true,
+    "aborted/empty reload restores the last good 123av card"
+  );
+  check(
+    renderedItemCounts.slice(rapidRenderStart).length > 0 &&
+      renderedItemCounts
+        .slice(rapidRenderStart)
+        .every((itemCount) => itemCount > 0),
+    true,
+    "rapid 123av reloads never paint the global empty state"
+  );
 
   check(
     MediaLoader.youtubeVideoId(
@@ -274,7 +309,15 @@ async function main() {
       isPlaylistOnlyUrl: () => false,
       isWatchInPlaylistUrl: () => false
     },
-    ensureSiteItems: (items) => items,
+    ensureSiteItems: (items, tabLike) =>
+      items.length
+        ? items
+        : [{
+            url: tabLike.url,
+            pageUrl: tabLike.url,
+            isSiteDownload: true,
+            title: "YouTube 영상"
+          }],
     pageKey: spaPageKey,
     isInstagramUrl: () => false,
     isTiktokUrl: () => false,
@@ -313,7 +356,16 @@ async function main() {
   });
 
   await spaLoader.loadMedia();
-  check(spaRenders[0], [], "the old card is cleared before SPA metadata loads");
+  check(
+    spaRenders[0],
+    [{
+      url: newWatchUrl,
+      pageUrl: newWatchUrl,
+      isSiteDownload: true,
+      title: "YouTube 영상"
+    }],
+    "the old card is replaced immediately by the new-page placeholder"
+  );
   check(
     spaRuntimeMessages.find((message) => message.type === "GET_MEDIA")?.title,
     "",
@@ -341,6 +393,97 @@ async function main() {
     newWatchUrl,
     "refetched metadata is bound to the current watch URL"
   );
+
+  spaCurrentTabUrl = null;
+  spaItems = [];
+  spaTab.title = "Current video - YouTube";
+  const firstPaintMessageStart = spaRuntimeMessages.length;
+  await spaLoader.loadMedia();
+  check(
+    spaRuntimeMessages
+      .slice(firstPaintMessageStart)
+      .find((message) => message.type === "GET_MEDIA")?.title,
+    "Current video - YouTube",
+    "initial YouTube load forwards the real tab title for filename locking"
+  );
+
+  spaCurrentTabUrl = oldWatchUrl;
+  spaItems = [{
+    pageUrl: oldWatchUrl,
+    title: "Previous video",
+    thumbnail: "https://i.ytimg.com/vi/previous/hqdefault.jpg"
+  }];
+  const raceRenderStart = spaRenders.length;
+  await Promise.all([
+    spaLoader.loadMedia({ navigation: true }),
+    spaLoader.loadMedia({ navigation: true })
+  ]);
+  const raceRenders = spaRenders.slice(raceRenderStart);
+  check(
+    raceRenders.length > 0 &&
+      raceRenders.every(
+        (items) => items.length > 0 && items[0].pageUrl === newWatchUrl
+      ),
+    true,
+    "a superseded load after navigation never strands the helper page empty"
+  );
+
+  let patchedItems = [{
+    url: "https://cdn.test/snos-342/master.m3u8",
+    pageUrl: "https://123av.com/ko/v/snos-342",
+    title: "SNOS-342 긴 실제 영상 제목",
+    thumbnail: "https://img.test/snos-342.jpg"
+  }];
+  let imageSrc = patchedItems[0].thumbnail;
+  let imageSrcWrites = 0;
+  let mediaRebuilds = 0;
+  const patchElements = {
+    ".name": { textContent: patchedItems[0].title, title: patchedItems[0].title },
+    ".meta-grid": { innerHTML: "meta" },
+    ".filename-value": { textContent: "SNOS-342.mp4" },
+    ".btn-dl": { textContent: "받기", disabled: false },
+    ".thumb": { innerHTML: "" },
+    ".thumb-img": {
+      getAttribute: (name) => name === "src" ? imageSrc : "",
+      setAttribute: (name, value) => {
+        if (name === "src") {
+          imageSrc = value;
+          imageSrcWrites += 1;
+        }
+      }
+    }
+  };
+  const patchCard = {
+    dataset: { mediaIdentity: "code:SNOS-342\nmedia" },
+    querySelector: (selector) => patchElements[selector] || null
+  };
+  const patchList = {
+    querySelector: (selector) => selector === ".card" ? patchCard : null
+  };
+  Object.defineProperty(patchList, "innerHTML", {
+    set() {
+      mediaRebuilds += 1;
+    }
+  });
+  const patchRenderer = MediaRenderer.createRenderer({
+    listEl: patchList,
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "code:SNOS-342",
+    displayName: (item) => item.title,
+    downloadFilename: () => "SNOS-342.mp4",
+    siteLabel: () => "123av.com",
+    thumbHtml: () => "",
+    metaRowsHtml: () => "meta",
+    getAllItems: () => patchedItems,
+    setAllItems: (items) => {
+      patchedItems = items;
+    },
+    getCurrentTabUrl: () => patchedItems[0].pageUrl
+  });
+  check(patchRenderer.patch(), true, "same-page card supports incremental patching");
+  check(imageSrcWrites, 0, "unchanged thumbnail src is preserved");
+  check(mediaRebuilds, 0, "incremental patch does not clear the media pane");
 
   const genericItem = {
     filename: "동영상_720p.mp4",

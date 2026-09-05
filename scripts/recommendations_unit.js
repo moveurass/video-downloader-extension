@@ -203,6 +203,34 @@ async function testHelperPollingFailsFast() {
     "six consecutive 404s are terminal"
   );
 
+  const pausedCalls = [];
+  const paused = loadYtDlp(async (url, options = {}) => {
+    pausedCalls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "paused-job" }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true,
+        job: { status: "paused", pause: true, percent: 35 }
+      })
+    };
+  });
+  let firstProgress;
+  await assert.rejects(
+    () =>
+      paused.downloadAndWait(
+        { url: "https://x.test/v" },
+        (progress) => {
+          firstProgress ||= progress;
+        },
+        60_000
+      ),
+    (error) => error?.code === "PAUSED" && error.message === "PAUSED"
+  );
+  assert.equal(firstProgress.helperJobId, "paused-job");
+
   // UI timeout: the helper job is cancelled instead of running untracked.
   const timeoutCalls = [];
   const slow = loadYtDlp(async (url, options = {}) => {
@@ -224,7 +252,7 @@ async function testHelperPollingFailsFast() {
   );
   const cancel = timeoutCalls.find((c) => c.url.endsWith("/job/j2/cancel"));
   assert.ok(cancel, "timeout cancels the helper job");
-  assert.deepEqual(JSON.parse(cancel.options.body), { purge: false });
+  assert.deepEqual(JSON.parse(cancel.options.body), {});
 
   // Explicit user cancel asks the helper to purge partial files.
   const purgeCalls = [];
@@ -234,6 +262,11 @@ async function testHelperPollingFailsFast() {
   });
   await purging.cancelJob("j3", { purge: true });
   assert.deepEqual(JSON.parse(purgeCalls[0].options.body), { purge: true });
+
+  await purging.cancelJob("j4", { pause: true });
+  const pauseBody = JSON.parse(purgeCalls[1].options.body);
+  assert.deepEqual(pauseBody, { pause: true });
+  assert.equal("purge" in pauseBody, false);
 }
 
 async function testHistoryCap() {

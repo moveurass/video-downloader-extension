@@ -15,6 +15,7 @@
       getCookieHeaderForUrl,
       collectCookiesForUrl,
       ytdlpFilenameHint,
+      lockHelperResumeIdentity,
       throwIfJobStopped,
       emitDownloadProgress,
       safeDownloadName,
@@ -87,10 +88,58 @@
       };
     }
 
-    async function downloadDirectViaHelper(tabId, url, pageUrl, filename, jid) {
+    function helperRunIdentity(jid, filename, runOptions = {}) {
+      const job = jid ? activeDownloads.get(jid) : null;
+      const runGeneration =
+        runOptions.runGeneration ??
+        (job ? Number(job.runGeneration) || 1 : null);
+      if (jid) throwIfJobStopped(jid, runGeneration);
+      const proposed = ytdlpFilenameHint(filename, job?.title || "");
+      const locked =
+        jid && typeof lockHelperResumeIdentity === "function"
+          ? lockHelperResumeIdentity(jid, proposed || "")
+          : { resumeKey: jid || "", titleHint: proposed || "" };
+      return {
+        runGeneration,
+        resumeKey: locked.resumeKey || jid || undefined,
+        titleHint: locked.titleHint || undefined
+      };
+    }
+
+    function assignHelperJobId(progress, jid, runGeneration) {
+      if (!progress.helperJobId || !jid) return;
+      const job = activeDownloads.get(jid);
+      if (
+        !job ||
+        (runGeneration != null &&
+          Number(job.runGeneration || 1) !== Number(runGeneration))
+      ) {
+        return;
+      }
+      job.helperJobId = progress.helperJobId;
+      if (job.pauseRequested || job.status === "paused") {
+        Promise.resolve(
+          YtDlp.cancelJob(progress.helperJobId, { pause: true })
+        ).catch(() => {});
+      } else if (job.cancelRequested || job.status === "cancelled") {
+        Promise.resolve(
+          YtDlp.cancelJob(progress.helperJobId, { purge: true })
+        ).catch(() => {});
+      }
+    }
+
+    async function downloadDirectViaHelper(
+      tabId,
+      url,
+      pageUrl,
+      filename,
+      jid,
+      runOptions = {}
+    ) {
       const cookies = await helperCookies(pageUrl || url);
       const settings = await UVD.getSettings().catch(() => ({}));
-      const nameHint = ytdlpFilenameHint(filename);
+      const identity = helperRunIdentity(jid, filename, runOptions);
+      const nameHint = identity.titleHint;
       const result = await YtDlp.downloadAndWait(
         {
           url,
@@ -98,24 +147,23 @@
           directFile: true,
           filename: nameHint || undefined,
           title: nameHint || undefined,
-          resumeKey: jid || undefined,
+          resumeKey: identity.resumeKey,
+          outputStem: nameHint || undefined,
           subfolder: settings?.subfolder || undefined,
           ...cookies,
           speedProfile: settings?.downloadSpeed || "fast"
         },
         (p) => {
-          throwIfJobStopped(jid);
-          if (p.helperJobId && jid) {
-            const job = activeDownloads.get(jid);
-            if (job) job.helperJobId = p.helperJobId;
-          }
+          assignHelperJobId(p, jid, identity.runGeneration);
+          throwIfJobStopped(jid, identity.runGeneration);
           const pct = Math.min(98, Math.max(16, Number(p.percent) || 16));
           emitDownloadProgress(
             tabId,
             pct,
             p.message || "도우미로 받는 중…",
             p.status || "download",
-            jid
+            jid,
+            { runGeneration: identity.runGeneration }
           );
         },
         40 * 60 * 1000
@@ -155,7 +203,8 @@
       }
       const cookies = await helperCookies(pageUrl || url);
       const settings = await UVD.getSettings().catch(() => ({}));
-      const nameHint = ytdlpFilenameHint(filename);
+      const identity = helperRunIdentity(jid, filename, trackOptions);
+      const nameHint = identity.titleHint;
       const result = await YtDlp.downloadAndWait(
         {
           url,
@@ -164,7 +213,8 @@
           manifest: true,
           filename: nameHint || undefined,
           title: nameHint || undefined,
-          resumeKey: jid || undefined,
+          resumeKey: identity.resumeKey,
+          outputStem: nameHint || undefined,
           subfolder: settings?.subfolder || undefined,
           quality: quality || "best",
           audioTrackId: trackOptions.audioTrackId || undefined,
@@ -176,17 +226,15 @@
           speedProfile: settings?.downloadSpeed || "fast"
         },
         (p) => {
-          throwIfJobStopped(jid);
-          if (p.helperJobId && jid) {
-            const job = activeDownloads.get(jid);
-            if (job) job.helperJobId = p.helperJobId;
-          }
+          assignHelperJobId(p, jid, identity.runGeneration);
+          throwIfJobStopped(jid, identity.runGeneration);
           emitDownloadProgress(
             tabId,
             Math.min(98, Math.max(3, Number(p.percent) || 3)),
             p.message || "DASH 트랙 받는 중…",
             p.status || "download",
-            jid
+            jid,
+            { runGeneration: identity.runGeneration }
           );
         },
         40 * 60 * 1000

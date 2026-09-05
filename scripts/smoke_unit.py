@@ -318,6 +318,23 @@ def main() -> int:
         and helper_server.resume_key_for({"resumeKey": "../evil/x"}, "u") == "___evil_x",
         f"{key_a} {key_c} {key_e}",
     )
+    stable_template_a = helper_server.output_template_basename(
+        {
+            "outputStem": "Stable title.mp4",
+            "title": "Original title.mp4",
+        }
+    )
+    stable_template_b = helper_server.output_template_basename(
+        {
+            "outputStem": "Stable title.mp4",
+            "title": "Changed title.mp4",
+        }
+    )
+    check(
+        "helper resume output template keeps the locked stem",
+        stable_template_a == stable_template_b == "Stable title.%(ext)s",
+        f"{stable_template_a} {stable_template_b}",
+    )
     original_tmp_root = helper_server.TMP_ROOT
     with tempfile.TemporaryDirectory() as tmp:
         helper_server.TMP_ROOT = Path(tmp) / ".uvd-tmp"
@@ -353,12 +370,18 @@ def main() -> int:
         wd.mkdir(parents=True)
         (wd / "v.part").write_bytes(b"x")
         helper_server.jobs["smoke-cancel"] = {"status": "error", "workDir": str(wd)}
-        helper_server.request_cancel_job("smoke-cancel", purge=False)
+        helper_server.request_cancel_job("smoke-cancel", pause=True)
+        paused = dict(helper_server.jobs["smoke-cancel"])
         kept = wd.exists()
         helper_server.request_cancel_job("smoke-cancel", purge=True)
         check(
-            "cancel purge flag controls partial-file removal",
-            kept and not wd.exists() and helper_server.jobs["smoke-cancel"]["purge"] is True,
+            "pause keeps partials without user-cancel semantics; cancel purges",
+            kept
+            and paused["status"] == "paused"
+            and paused["pause"] is True
+            and "error" not in paused
+            and not wd.exists()
+            and helper_server.jobs["smoke-cancel"]["purge"] is True,
         )
         helper_server.jobs.pop("smoke-cancel", None)
     helper_server.TMP_ROOT = original_tmp_root

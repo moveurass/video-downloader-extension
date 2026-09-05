@@ -155,17 +155,35 @@ exit 1
                 mediaMode: settings.mediaMode,
                 quality: preferQuality
               });
+              const runGeneration =
+                deps.getJobRunGeneration?.(jobId) || 1;
               const keep = deps.startKeepAlive();
               started.push(jobId);
               deps.withJobContext(jobId, () =>
-                deps.downloadPageFromUi(tid, pageUrl, preferQuality, jobId)
+                deps.downloadPageFromUi(
+                  tid,
+                  pageUrl,
+                  preferQuality,
+                  jobId,
+                  { runGeneration }
+                )
               )
                 .then((r) => {
-                  deps.finishDownloadJob(jobId, r, null);
+                  (deps.settleTrackedJob || deps.finishDownloadJob)(
+                    jobId,
+                    r,
+                    null,
+                    runGeneration
+                  );
                   deps.stopKeepAlive(keep);
                 })
                 .catch((err) => {
-                  deps.finishDownloadJob(jobId, null, err);
+                  (deps.settleTrackedJob || deps.finishDownloadJob)(
+                    jobId,
+                    null,
+                    err,
+                    runGeneration
+                  );
                   deps.stopKeepAlive(keep);
                 });
             }

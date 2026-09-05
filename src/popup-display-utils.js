@@ -16,9 +16,64 @@
       const getUvdSettings = deps.getUvdSettings || (() => ({}));
       const getSelectedQuality = deps.getSelectedQuality || (() => "");
       const now = deps.now || (() => Date.now());
+      const lastGoodItemsByPage = new Map();
 
-      const buildLocalSiteItem = (tab) =>
-        deps.UVDSites.buildSiteItem(tab, getCurrentTabUrl());
+      const isKnownDownloadablePage = (url) =>
+        typeof deps.isKnownDownloadablePage === "function"
+          ? deps.isKnownDownloadablePage(url)
+          : deps.isSitePage(url);
+
+      function buildLocalSiteItem(tab = {}) {
+        const pageUrl = tab.url || getCurrentTabUrl() || "";
+        const helperItem = deps.UVDSites.buildSiteItem(tab, pageUrl);
+        if (helperItem) return helperItem;
+        if (!isKnownDownloadablePage(pageUrl)) return null;
+
+        const host = (() => {
+          try {
+            return new URLCtor(pageUrl).hostname.replace(/^www\./i, "");
+          } catch {
+            return "";
+          }
+        })();
+        const code = deps.Naming.extractProductCode?.(pageUrl) || "";
+        const rawTitle =
+          deps.Naming.cleanPageTitle?.(tab.title || "") ||
+          String(tab.title || "").trim();
+        const title =
+          (rawTitle &&
+          !deps.UVDPopupMedia.isUglyName?.(rawTitle) &&
+          !deps.UVD.isGenericSaveName?.(rawTitle)
+            ? deps.Naming.bindTitleToPage?.(pageUrl, rawTitle) || rawTitle
+            : "") ||
+          code ||
+          "영상";
+        const filename =
+          deps.Naming.buildFilename?.({
+            title,
+            pageTitle: title,
+            pageUrl,
+            url: pageUrl,
+            type: "video",
+            isHls: false
+          }) || `${title}.mp4`;
+        return {
+          url: pageUrl,
+          pageUrl,
+          type: "page",
+          isHls: false,
+          isSiteDownload: false,
+          isPagePlaceholder: true,
+          source: "page-placeholder",
+          title,
+          pageTitle: title,
+          displayName: title,
+          filename,
+          quality: "",
+          format: "MP4",
+          host
+        };
+      }
 
       function toast(msg, kind = "") {
         const el = documentRef.createElement("div");
@@ -250,26 +305,121 @@
             if (m) return `ig:${m[1]}:${m[2]}`;
             return `ig:${path}`;
           }
+          if (deps.Naming.isKnownCodeSite?.(host)) {
+            const code = deps.Naming.extractProductCode?.(u.href) || "";
+            if (code) return `${host}:code:${code.toUpperCase()}`;
+          }
           return `${host}${path}`;
         } catch {
           return String(url).slice(0, 120);
         }
       }
 
+      function textScore(value) {
+        const raw = String(value || "").trim();
+        if (!raw) return -1000;
+        const base = raw.replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "");
+        if (
+          deps.UVD.isGenericSaveName?.(base) ||
+          deps.UVDPopupMedia.isUglyName?.(base)
+        ) {
+          return -500 + base.length;
+        }
+        const qualityOnly = /[_\s-](?:4k|\d{3,4}p)$/i.test(base);
+        return base.length + (qualityOnly ? -20 : 20);
+      }
+
+      function preferStableText(previous, incoming) {
+        return textScore(incoming) >= textScore(previous)
+          ? incoming
+          : previous;
+      }
+
+      function mergeStableItem(previous, incoming) {
+        if (!previous) return { ...incoming };
+        if (!incoming) return { ...previous };
+        if (incoming.isPagePlaceholder && !previous.isPagePlaceholder) {
+          return { ...previous };
+        }
+        return {
+          ...previous,
+          ...incoming,
+          isPagePlaceholder: incoming.isPagePlaceholder === true,
+          title: preferStableText(previous.title, incoming.title),
+          pageTitle: preferStableText(
+            previous.pageTitle,
+            incoming.pageTitle
+          ),
+          displayName: preferStableText(
+            previous.displayName,
+            incoming.displayName
+          ),
+          filename: preferStableText(previous.filename, incoming.filename),
+          thumbnail: incoming.thumbnail || previous.thumbnail,
+          quality: incoming.quality || previous.quality,
+          duration: incoming.duration || previous.duration,
+          estimatedSize: incoming.estimatedSize || previous.estimatedSize
+        };
+      }
+
+      function rememberStableItems(key, items) {
+        if (!key || !items?.length) return;
+        lastGoodItemsByPage.set(
+          key,
+          items.map((item) => ({ ...item }))
+        );
+        if (lastGoodItemsByPage.size > 12) {
+          lastGoodItemsByPage.delete(lastGoodItemsByPage.keys().next().value);
+        }
+      }
+
       function ensureSiteItems(items, tabLike) {
         const source = items == null ? getAllItems() : items;
-        const list = Array.isArray(source) ? source.slice() : [];
+        let list = Array.isArray(source)
+          ? source.map((item) => ({ ...item }))
+          : [];
         const url = getCurrentTabUrl() || tabLike?.url || "";
-        if (!deps.isSitePage(url)) return list;
+        const curKey = pageKey(url);
+        const cached = lastGoodItemsByPage.get(curKey) || [];
+        if (!isKnownDownloadablePage(url)) return list;
+
+        if (!list.length && cached.length) {
+          return cached.map((item) => ({
+            ...item,
+            pageUrl: url || item.pageUrl
+          }));
+        }
 
         const local = buildLocalSiteItem(tabLike || { url, title: "" });
         if (!local) return list;
-        if (!list.length) return [local];
+        if (!list.length) {
+          const fallback = [local];
+          rememberStableItems(curKey, fallback);
+          return fallback;
+        }
 
-        const top = list[0];
-        const curKey = pageKey(url);
+        let top = list[0];
         const topKey = pageKey(top.pageUrl || top.url || "");
         const samePage = !topKey || !curKey || topKey === curKey;
+        if (samePage && cached[0]) {
+          top = mergeStableItem(cached[0], top);
+        }
+        const helperPage =
+          local.isSiteDownload === true || deps.isSitePage(url);
+        if (!helperPage) {
+          const stable = samePage
+            ? {
+                ...local,
+                ...top,
+                pageUrl: url || top.pageUrl,
+                isSiteDownload: false,
+                isPagePlaceholder: !!top.isPagePlaceholder
+              }
+            : local;
+          const result = [stable];
+          rememberStableItems(curKey, result);
+          return result;
+        }
         const thumb = samePage
           ? top.thumbnail || local.thumbnail
           : local.thumbnail;
@@ -280,7 +430,7 @@
           ? top.pageTitle || local.pageTitle
           : local.pageTitle || top.pageTitle;
 
-        return [
+        const result = [
           {
             ...local,
             ...(samePage ? top : {}),
@@ -299,6 +449,8 @@
             thumbnail: thumb || undefined
           }
         ];
+        rememberStableItems(curKey, result);
+        return result;
       }
 
       return {

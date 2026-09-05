@@ -91,6 +91,7 @@
           isBilibiliUrl(item.url) ||
           ((item.site === "tiktok" || isTiktokUrl(pageUrl) || isTiktokUrl(item.url)) &&
             !hasTiktokCdn);
+        const usePageFallback = item.isPagePlaceholder === true;
 
         try {
           if (useHelper) {
@@ -133,12 +134,12 @@
           );
 
           const res = await sendMessage({
-            type: useHelper
+            type: useHelper || usePageFallback
               ? "DOWNLOAD_PAGE"
               : isHlsItem(item)
                 ? "DOWNLOAD_HLS"
                 : "DOWNLOAD",
-            url: useHelper ? pageUrl : item.url,
+            url: useHelper || usePageFallback ? pageUrl : item.url,
             pageUrl,
             filename: saveName,
             tabId: getCurrentTabId(),

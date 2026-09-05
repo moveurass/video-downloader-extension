@@ -10,6 +10,27 @@
   function createController(deps) {
     let bound = false;
 
+    function trackedOptions(base, jobId, runGeneration) {
+      return {
+        ...base,
+        ...(jobId != null ? { jobId } : {}),
+        ...(runGeneration != null ? { runGeneration } : {})
+      };
+    }
+
+    function downloadTrackedPage(tabId, pageUrl, jobId, runGeneration) {
+      if (jobId == null) {
+        return deps.downloadPageFromUi(tabId, pageUrl, "best");
+      }
+      return deps.downloadPageFromUi(
+        tabId,
+        pageUrl,
+        "best",
+        jobId,
+        runGeneration != null ? { runGeneration } : {}
+      );
+    }
+
     function setupContextMenus() {
       deps.chrome.contextMenus.removeAll(() => {
         deps.chrome.contextMenus.create({
@@ -57,7 +78,7 @@
               pageUrl: tab.url,
               filename: fname
             },
-            () =>
+            (jobId, runGeneration) =>
               deps.downloadSmart(
                 tabId,
                 info.srcUrl,
@@ -65,7 +86,7 @@
                 "best",
                 item?.type || "video",
                 item,
-                { pageUrl: tab.url }
+                trackedOptions({ pageUrl: tab.url }, jobId, runGeneration)
               )
           );
           return;
@@ -79,7 +100,13 @@
               pageUrl: info.linkUrl,
               filename: ""
             },
-            () => deps.downloadPageFromUi(tabId, info.linkUrl, "best")
+            (jobId, runGeneration) =>
+              downloadTrackedPage(
+                tabId,
+                info.linkUrl,
+                jobId,
+                runGeneration
+              )
           );
           return;
         }
@@ -93,7 +120,8 @@
           }
           await deps.runTrackedDownloadAsync(
             { tabId, title: "", pageUrl: link, filename: "" },
-            () => deps.downloadPageFromUi(tabId, link, "best")
+            (jobId, runGeneration) =>
+              downloadTrackedPage(tabId, link, jobId, runGeneration)
           );
           return;
         }
@@ -113,7 +141,13 @@
                 pageUrl: tab.url,
                 filename
               },
-              () => deps.downloadPageFromUi(tabId, tab.url, "best")
+              (jobId, runGeneration) =>
+                downloadTrackedPage(
+                  tabId,
+                  tab.url,
+                  jobId,
+                  runGeneration
+                )
             );
             return;
           }
@@ -143,7 +177,7 @@
               pageUrl: tab.url,
               filename
             },
-            () =>
+            (jobId, runGeneration) =>
               deps.downloadSmart(
                 tabId,
                 best.url,
@@ -151,7 +185,7 @@
                 "best",
                 best.type,
                 best,
-                { pageUrl: tab.url }
+                trackedOptions({ pageUrl: tab.url }, jobId, runGeneration)
               )
           );
         }

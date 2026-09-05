@@ -48,7 +48,7 @@
               ? message.subtitleLanguages
               : []
           },
-          async (jobId) => {
+          async (jobId, runGeneration) => {
             const result = await deps.downloadPageFromUi(
               tabId,
               pageUrl,
@@ -59,6 +59,7 @@
                 mediaUrl: message.mediaUrl || "",
                 title: message.title || title,
                 filename: filename || "",
+                ...(runGeneration != null ? { runGeneration } : {}),
                 audioTrackId: message.audioTrackId || "",
                 subtitleLanguages: Array.isArray(message.subtitleLanguages)
                   ? message.subtitleLanguages

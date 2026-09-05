@@ -313,6 +313,9 @@ async function main() {
   equal(helperPayload.cookieHeader, "auth=yes");
   equal(helperPayload.cookiesList.length, 1);
   equal(helperPayload.filename, "Readable.mp4");
+  equal(helperPayload.title, "Readable.mp4");
+  equal(helperPayload.outputStem, "Readable.mp4");
+  equal(helperPayload.resumeKey, "job-1");
   equal(helperPayload.quality, "1080p");
   equal(helperPayload.writeSubs, true);
   equal(helperPayload.writeThumbnail, true);
@@ -335,6 +338,107 @@ async function main() {
     writeThumbnail: true,
     thumbnailPath: "/tmp/video.jpg"
   });
+
+  const stablePayloads = [];
+  const stableJob = {
+    id: "stable-job",
+    title: "Original title",
+    runGeneration: 1
+  };
+  let lockedIdentity = null;
+  const stableRunner = createRunner(baseDeps({
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        stablePayloads.push(payload);
+        return { filename: payload.filename, size: 200_000 };
+      }
+    },
+    getActiveDownload: () => stableJob,
+    lockHelperResumeIdentity: (jobId, titleHint) => {
+      lockedIdentity ||= { resumeKey: jobId, titleHint };
+      return lockedIdentity;
+    }
+  }));
+  await stableRunner.downloadViaYtDlp(
+    9,
+    "https://www.youtube.com/watch?v=stable",
+    "https://www.youtube.com/watch?v=stable",
+    "Original title.mp4",
+    "best",
+    "stable-job"
+  );
+  stableJob.title = "Changed page title";
+  await stableRunner.downloadViaYtDlp(
+    9,
+    "https://www.youtube.com/watch?v=stable",
+    "https://www.youtube.com/watch?v=stable",
+    "Changed page title.mp4",
+    "best",
+    "stable-job"
+  );
+  deepEqual(
+    stablePayloads.map(({ resumeKey, outputStem, title, filename }) => ({
+      resumeKey,
+      outputStem,
+      title,
+      filename
+    })),
+    [
+      {
+        resumeKey: "stable-job",
+        outputStem: "Original title.mp4",
+        title: "Original title.mp4",
+        filename: "Original title.mp4"
+      },
+      {
+        resumeKey: "stable-job",
+        outputStem: "Original title.mp4",
+        title: "Original title.mp4",
+        filename: "Original title.mp4"
+      }
+    ],
+    "resume reuses the exact helper output identity"
+  );
+
+  let provisionalPayload;
+  const provisionalRunner = createRunner(baseDeps({
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        provisionalPayload = payload;
+        return { filename: payload.filename, size: 200_000 };
+      }
+    },
+    getActiveDownload: () => ({
+      id: "youtube-first-paint",
+      title: "Current provisional title",
+      runGeneration: 1
+    }),
+    ytdlpFilenameHint: (filename, title) =>
+      filename || (title ? `${title}.mp4` : undefined),
+    lockHelperResumeIdentity: (jobId, titleHint) => ({
+      resumeKey: jobId,
+      titleHint
+    })
+  }));
+  await provisionalRunner.downloadViaYtDlp(
+    9,
+    "https://www.youtube.com/watch?v=current",
+    "https://www.youtube.com/watch?v=current",
+    "",
+    "best",
+    "youtube-first-paint"
+  );
+  equal(
+    provisionalPayload.outputStem,
+    "Current provisional title.mp4",
+    "helper output identity uses the provisional video title on first start"
+  );
+  equal(
+    provisionalPayload.title,
+    "Current provisional title.mp4"
+  );
 
   console.log(`background_site_helper_unit: ${assertions} assertions passed`);
 }

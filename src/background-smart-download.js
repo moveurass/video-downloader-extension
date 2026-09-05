@@ -37,6 +37,7 @@
       if (!url) throw new Error("받을 주소가 없습니다");
       const errors = [];
       const jid = options.jobId || getCurrentJobContext();
+      const runGeneration = options.runGeneration ?? null;
       const pageUrl =
         options.pageUrl || itemHint?.pageUrl || (await resolvePageUrl(tabId, ""));
 
@@ -59,6 +60,7 @@
           jid,
           {
             mediaMode: options.forceMediaMode,
+            ...(runGeneration != null ? { runGeneration } : {}),
             audioTrackId: options.audioTrackId || "",
             subtitleLanguages: Array.isArray(options.subtitleLanguages)
               ? options.subtitleLanguages
@@ -88,6 +90,7 @@
             jid,
             {
               mediaMode: options.forceMediaMode,
+              ...(runGeneration != null ? { runGeneration } : {}),
               audioTrackId: options.audioTrackId || "",
               subtitleLanguages: Array.isArray(options.subtitleLanguages)
                 ? options.subtitleLanguages
@@ -329,7 +332,8 @@
               workUrl,
               pageUrl,
               filename,
-              jid
+              jid,
+              runGeneration != null ? { runGeneration } : {}
             );
             emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
             return saved;
@@ -337,7 +341,7 @@
         }
       } catch (e) {
         const m = String(e?.message || e);
-        if (/PAUSED|CANCELLED/.test(m)) throw e;
+        if (/PAUSED|CANCELLED|STALE_RUN/.test(m)) throw e;
         errors.push(m);
         emitDownloadProgress(tabId, 15, "브라우저 방식으로 다시 받는 중…", "download", jid, {
           progressReset: true

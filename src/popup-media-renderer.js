@@ -66,6 +66,29 @@
         getSeriesPending
       } = deps;
 
+      function mediaIdentity(item, currentTabUrl) {
+        const pageUrl = item?.pageUrl || currentTabUrl || "";
+        const key =
+          (typeof deps.pageKey === "function" && deps.pageKey(pageUrl)) ||
+          pageUrl;
+        return `${key}\n${
+          item?.isPagePlaceholder ? "placeholder" : "media"
+        }`;
+      }
+
+      function bindThumbFallback(card) {
+        const img = card?.querySelector?.(".thumb-img");
+        if (!img) return;
+        img.addEventListener("error", () => {
+          img.replaceWith(
+            Object.assign(document.createElement("span"), {
+              className: "thumb-fallback",
+              textContent: "🎬"
+            })
+          );
+        });
+      }
+
       function render() {
         const currentTabUrl = getCurrentTabUrl();
         let allItems = getAllItems();
@@ -143,6 +166,9 @@
         const item = items[0];
         const card = document.createElement("article");
         card.className = "card";
+        if (card.dataset) {
+          card.dataset.mediaIdentity = mediaIdentity(item, currentTabUrl);
+        }
 
         const name = displayName(item);
         const file = downloadFilename(item);
@@ -176,17 +202,7 @@
     </details>
   `;
 
-        const img = card.querySelector(".thumb-img");
-        if (img) {
-          img.addEventListener("error", () => {
-            img.replaceWith(
-              Object.assign(document.createElement("span"), {
-                className: "thumb-fallback",
-                textContent: "🎬"
-              })
-            );
-          });
-        }
+        bindThumbFallback(card);
 
         card.querySelectorAll(".q-chip").forEach((chip) => {
           chip.addEventListener("click", async () => {
@@ -256,7 +272,7 @@
           const prev = btn.textContent;
           btn.textContent = "추가됨";
           try {
-            await downloadItem(item);
+            await downloadItem(getAllItems()[0] || item);
           } finally {
             // Re-enable quickly so another file can be queued
             setTimeout(() => {
@@ -270,23 +286,31 @@
           .querySelector(".btn-watch")
           ?.addEventListener("click", async () => {
             // Prefer page URL for sites; fall back to media URL (HLS/mp4)
+            const latestItem = getAllItems()[0] || item;
             const url =
-              (item.pageUrl &&
-                isWatchlistableUrl(item.pageUrl) &&
-                item.pageUrl) ||
-              (item.url && isWatchlistableUrl(item.url) && item.url) ||
+              (latestItem.pageUrl &&
+                isWatchlistableUrl(latestItem.pageUrl) &&
+                latestItem.pageUrl) ||
+              (latestItem.url &&
+                isWatchlistableUrl(latestItem.url) &&
+                latestItem.url) ||
               getCurrentTabUrl() ||
-              item.pageUrl ||
-              item.url;
+              latestItem.pageUrl ||
+              latestItem.url;
             await addCurrentToWatchlist(url);
           });
 
         card
           .querySelector(".btn-series")
           ?.addEventListener("click", async () => {
-            const title = item.title || item.pageTitle || name;
+            const latestItem = getAllItems()[0] || item;
+            const title =
+              latestItem.title || latestItem.pageTitle || name;
             const pageUrl =
-              item.pageUrl || item.url || getCurrentTabUrl() || "";
+              latestItem.pageUrl ||
+              latestItem.url ||
+              getCurrentTabUrl() ||
+              "";
             toast("받을 목록을 준비 중…", "ok");
             await offerSeriesComplete(title, pageUrl);
             const seriesPending = getSeriesPending();
@@ -312,7 +336,69 @@
         syncGlobalQualityBox(true);
       }
 
-      return { render };
+      function patch() {
+        const currentTabUrl = getCurrentTabUrl();
+        const allItems = ensureSiteItems(getAllItems(), {
+          url: currentTabUrl,
+          title: getAllItems()[0]?.title || ""
+        });
+        setAllItems(allItems);
+        const item = allItems[0];
+        const card = listEl.querySelector?.(".card");
+        if (!item || !card?.dataset) return false;
+        const identity = mediaIdentity(item, currentTabUrl);
+        if (
+          card.dataset.mediaIdentity &&
+          card.dataset.mediaIdentity !== identity
+        ) {
+          return false;
+        }
+        card.dataset.mediaIdentity = identity;
+
+        const name = displayName(item);
+        const file = downloadFilename(item);
+        item._saveAs = file;
+        const nameEl = card.querySelector(".name");
+        if (nameEl) {
+          if (nameEl.textContent !== name) nameEl.textContent = name;
+          if (nameEl.title !== name) nameEl.title = name;
+        }
+        const metaEl = card.querySelector(".meta-grid");
+        const nextMetaHtml = metaRowsHtml(item);
+        if (metaEl && metaEl.innerHTML !== nextMetaHtml) {
+          metaEl.innerHTML = nextMetaHtml;
+        }
+        const filenameEl = card.querySelector(".filename-value");
+        if (filenameEl && filenameEl.textContent !== file) {
+          filenameEl.textContent = file;
+        }
+        const downloadButton = card.querySelector(".btn-dl");
+        if (downloadButton && !downloadButton.disabled) {
+          const nextLabel = primaryDownloadLabel(
+            name,
+            siteLabel(currentTabUrl, item)
+          );
+          if (downloadButton.textContent !== nextLabel) {
+            downloadButton.textContent = nextLabel;
+          }
+        }
+
+        if (item.thumbnail) {
+          const thumb = card.querySelector(".thumb");
+          const image = card.querySelector(".thumb-img");
+          if (image) {
+            if (image.getAttribute("src") !== item.thumbnail) {
+              image.setAttribute("src", item.thumbnail);
+            }
+          } else if (thumb) {
+            thumb.innerHTML = thumbHtml(item);
+            bindThumbFallback(card);
+          }
+        }
+        return true;
+      }
+
+      return { render, patch };
     }
 
     return { createRenderer, primaryDownloadLabel };

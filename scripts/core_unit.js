@@ -250,6 +250,16 @@ assert.equal(
 );
 assert.equal(Sites.isDownloadableSiteVideo("https://www.youtube.com/"), false);
 assert.equal(Sites.isDownloadableSiteVideo("https://www.facebook.com/"), false);
+const youtubePlaceholder = Sites.buildSiteItem({
+  url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  title: "Actual video title - YouTube"
+});
+assert.equal(youtubePlaceholder.title, "Actual video title");
+assert.equal(
+  youtubePlaceholder.thumbnail,
+  "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+);
+assert.equal(youtubePlaceholder.filename, "Actual video title.mp4");
 
 const queuePresenter = PopupQueueUI.createPresenter({
   UVD,

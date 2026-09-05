@@ -115,6 +115,7 @@ async function main() {
 
   equal(manager.ytdlpFilenameHint("video.mp4"), undefined);
   equal(manager.ytdlpFilenameHint("dQw4w9WgXcQ.mp4"), undefined);
+  equal(manager.ytdlpFilenameHint("YouTube 영상.mp4"), undefined);
   equal(manager.ytdlpFilenameHint("host_12891.mp4"), undefined);
   equal(manager.ytdlpFilenameHint("9f8e7d6c5b4a3210.mp4"), undefined);
   equal(
@@ -140,6 +141,22 @@ async function main() {
       mediaUrl: "https://cdn.test/files/opaque.webm"
     }),
     "Readable direct title.webm"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "YouTube 영상",
+      filenameHint: "dQw4w9WgXcQ.mp4",
+      pageUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    }),
+    "",
+    "YouTube shell/id placeholders are never locked as filenames"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "Actual video title",
+      pageUrl: "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    }),
+    "Actual video title.mp4"
   );
   equal(
     manager.applyQualityToLockedName("Readable title.webm", "720p"),

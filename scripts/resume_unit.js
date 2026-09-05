@@ -6,6 +6,7 @@ const path = require("node:path");
 const HLS = require("../src/hls-downloader.js");
 const HlsRuntime = require("../src/background-hls-runtime.js");
 const DirectMedia = require("../src/background-direct-media.js");
+const DownloadExecution = require("../src/background-download-execution.js");
 const UVDProgress = require("../src/progress-protocol.js");
 const { createManager } = require("../src/background-download-jobs.js");
 const SavePipeline = require("../src/background-save-pipeline.js");
@@ -1347,6 +1348,153 @@ async function testRefererRuleOnlyTargetsExtensionRequests() {
   assert.deepEqual(calls[1], { removeRuleIds: [rule.id] });
 }
 
+async function testHelperPauseResumeIgnoresStaleCancellation() {
+  const helperStops = [];
+  let resumedResolve;
+  let oldReject;
+  let started;
+  const chrome = {
+    runtime: {
+      sendMessage: async () => {},
+      getPlatformInfo: (callback) => callback?.(),
+      getURL: (value) => value
+    },
+    alarms: {
+      create() {},
+      clear() {}
+    },
+    storage: {
+      session: { set: async () => {} }
+    },
+    tabs: { sendMessage: async () => {} },
+    downloads: {
+      cancel: async () => {},
+      search: async () => [],
+      show() {},
+      showDefaultFolder() {}
+    },
+    notifications: {
+      onClicked: { addListener() {} },
+      create: async () => {},
+      clear: async () => {}
+    },
+    action: {
+      setBadgeText() {},
+      setBadgeBackgroundColor() {},
+      setTitle() {}
+    }
+  };
+  const UVD = {
+    classifyError: () => ({}),
+    formatSpeed: () => "",
+    isGenericSaveName: () => false,
+    getSettings: async () => ({ showBadge: false }),
+    appendHistory: async () => {},
+    siteFromUrl: () => "youtube"
+  };
+  const manager = createManager({
+    chrome,
+    UVD,
+    UVDProgress,
+    Naming: { cleanPageTitle: (value) => value },
+    YtDlp: {
+      cancelJob: async (helperJobId, options) => {
+        helperStops.push({ helperJobId, options: { ...options } });
+        return { ok: true, status: "paused" };
+      }
+    },
+    parseSpeedFromMessage: () => 0,
+    getTabMeta: () => ({}),
+    saveCompanionThumbnail: async () => {},
+    downloadPageFromUi: async (_tabId, _pageUrl, _quality, _jobId, options) => {
+      assert.equal(options.resume, true);
+      assert.equal(options.runGeneration, 2);
+      return new Promise((resolve) => {
+        resumedResolve = resolve;
+      });
+    },
+    startKeepAlive: () => true,
+    stopKeepAlive: () => {},
+    setTimeout: () => 1
+  });
+  await manager.ready;
+
+  const executor = DownloadExecution.createExecutor({
+    chrome,
+    activeDownloads: manager.activeDownloads,
+    createDownloadJob: manager.createDownloadJob,
+    getJobRunGeneration: manager.getJobRunGeneration,
+    isCurrentJobRun: manager.isCurrentJobRun,
+    withJobContext: manager.withJobContext,
+    finalizePausedJob: manager.finalizePausedJob,
+    finishCancelledJob: manager.finishCancelledJob,
+    finishDownloadJob: manager.finishDownloadJob
+  });
+  executor.runTrackedDownload(
+    {
+      tabId: 7,
+      title: "Stable YouTube title",
+      pageUrl: "https://www.youtube.com/watch?v=resume",
+      filename: "Stable YouTube title.mp4",
+      quality: "best"
+    },
+    () =>
+      new Promise((_resolve, reject) => {
+        oldReject = reject;
+      }),
+    (response) => {
+      started = response;
+    }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const jobId = started.jobId;
+  const job = manager.activeDownloads.get(jobId);
+  job.helperJobId = "helper-before-pause";
+  const firstIdentity = manager.lockHelperResumeIdentity(
+    jobId,
+    "Stable YouTube title.mp4"
+  );
+  const secondIdentity = manager.lockHelperResumeIdentity(
+    jobId,
+    "Changed title must not win.mp4"
+  );
+  assert.deepEqual(secondIdentity, firstIdentity);
+
+  await manager.pauseDownloadJob(jobId);
+  assert.equal(job.status, "paused");
+  assert.deepEqual(helperStops, [
+    {
+      helperJobId: "helper-before-pause",
+      options: { pause: true }
+    }
+  ]);
+  assert.equal("purge" in helperStops[0].options, false);
+
+  await manager.resumeDownloadJob(jobId);
+  assert.equal(job.status, "running");
+  assert.equal(job.runGeneration, 2);
+
+  oldReject(new Error("CANCELLED"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    job.status,
+    "running",
+    "the cancelled poll from generation 1 cannot cancel generation 2"
+  );
+
+  resumedResolve({
+    ok: true,
+    ytdlp: true,
+    method: "yt-dlp",
+    path: "/Downloads/Stable YouTube title.mp4",
+    filename: "Stable YouTube title.mp4",
+    size: 200_000
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(job.status, "done");
+}
+
 async function main() {
   await testHlsSkipsCheckpointedSegments();
   await testLiveHlsRequiresSequenceIdentity();
@@ -1362,6 +1510,7 @@ async function main() {
   await testManifestsRouteByMime();
   await testRefererRuleOnlyTargetsExtensionRequests();
   await testNativeDirectPauseResume();
+  await testHelperPauseResumeIgnoresStaleCancellation();
   const helperSource = fs.readFileSync(
     path.join(__dirname, "../helper/yt_dlp_server.py"),
     "utf8"

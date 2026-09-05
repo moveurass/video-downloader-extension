@@ -31,10 +31,11 @@
             filename: "",
             quality: item.quality || "best"
           },
-          (jobId) =>
+          (jobId, runGeneration) =>
             deps.downloadPageFromUi(-1, pageUrl, item.quality || "best", jobId, {
               mediaUrl: item.mediaUrl || "",
-              title: item.title || ""
+              title: item.title || "",
+              ...(runGeneration != null ? { runGeneration } : {})
             })
         );
       } catch (e) {

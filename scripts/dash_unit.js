@@ -77,6 +77,7 @@ async function main() {
     manifest: true,
     filename: "episode.mp4",
     title: "episode.mp4",
+    outputStem: "episode.mp4",
     // Same key across pause → resume so the helper's --continue finds .part
     // files, and the user's folder setting reaches helper saves too.
     resumeKey: "job-1",
