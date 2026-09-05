@@ -355,7 +355,7 @@ async function main() {
     setTimeout: (callback) => callback()
   });
 
-  await spaLoader.loadMedia({ navigation: true });
+  await spaLoader.loadMedia();
   check(
     spaRenders[0],
     [{

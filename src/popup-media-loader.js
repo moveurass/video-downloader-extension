@@ -289,14 +289,17 @@
           tab.url || tab.pendingUrl || previousTabUrl || null;
         const previousKey = pageKey(previousTabUrl);
         const nextKey = pageKey(nextTabUrl);
-        setCurrentTabId(tab.id);
-        setCurrentTabUrl(nextTabUrl);
-        let currentTabUrl = getCurrentTabUrl();
-        if (
+        const navigationChanged = !!(
           previousKey &&
           nextKey &&
           previousKey !== nextKey
-        ) {
+        );
+        const suppressProvisionalTitle =
+          options.navigation === true || navigationChanged;
+        setCurrentTabId(tab.id);
+        setCurrentTabUrl(nextTabUrl);
+        let currentTabUrl = getCurrentTabUrl();
+        if (navigationChanged) {
           const navigationTab =
             isSitePage(nextTabUrl)
               ? { ...tab, url: nextTabUrl, title: "" }
@@ -361,7 +364,7 @@
             pageUrl: currentTabUrl,
             // Browser tab titles can lag behind a YouTube pushState URL.
             title:
-              youtubeId && options.navigation
+              youtubeId && suppressProvisionalTitle
                 ? ""
                 : tab.title || ""
           });
@@ -395,7 +398,7 @@
             };
           });
         const siteTab =
-          youtubeId && options.navigation
+          youtubeId && suppressProvisionalTitle
             ? { ...tab, title: "" }
             : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));

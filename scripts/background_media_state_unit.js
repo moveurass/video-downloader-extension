@@ -402,7 +402,10 @@ async function main() {
 
   events.onUpdated.listeners[0].listener(
     12,
-    { url: "https://youtube.com/watch?v=new" },
+    {
+      url: "https://youtube.com/watch?v=new",
+      title: "Old video"
+    },
     tabs.get(12)
   );
   equal(store.getTabItems(12).length, 0);

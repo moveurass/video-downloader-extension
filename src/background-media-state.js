@@ -1150,6 +1150,7 @@
       });
 
       chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+        let acceptTitleUpdate = !changeInfo.url;
         if (changeInfo.url) {
           try {
             const prev = tabMeta.get(tabId)?.lastUrl || "";
@@ -1167,6 +1168,7 @@
                 : prevPath && prevPath === nextPath;
 
             if (sameVideo) {
+              acceptTitleUpdate = true;
               setTabMeta(tabId, {
                 lastUrl: next,
                 pageKey: nextKey || prevKey
@@ -1211,7 +1213,7 @@
           updateSocialBadge(tabId, tab.url);
           requestTabRescan(tabId, tab.url);
         }
-        if (changeInfo.title) {
+        if (changeInfo.title && acceptTitleUpdate) {
           const title = Naming.cleanPageTitle(changeInfo.title);
           if (title && !Naming.isUglyBase(title)) applyTabTitle(tabId, title);
         }
