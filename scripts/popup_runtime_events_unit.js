@@ -64,6 +64,11 @@ function makeHarness(overrides = {}) {
     getActiveTabName: () => state.activeTabName,
     getTrackedJobIds: () => state.trackedJobIds,
     loadMedia: () => calls.push("loadMedia"),
+    setTimeout: (callback) => {
+      callback();
+      return 1;
+    },
+    clearTimeout: () => {},
     ...overrides
   };
   return {
@@ -170,6 +175,73 @@ check(typeof PopupRuntimeEvents.bind, "function");
     },
     "tab-scoped network media without pageUrl is bound to the current page"
   );
+}
+
+{
+  let stableItems = [{
+    url: "https://cdn.test/snos-342/master.m3u8",
+    pageUrl: "https://123av.com/ko/v/snos-342-uncensore",
+    title: "SNOS-342 긴 실제 영상 제목",
+    thumbnail: "https://img.test/snos-342.jpg"
+  }];
+  const timers = new Map();
+  let timerId = 0;
+  let patchCount = 0;
+  let renderCount = 0;
+  const harness = makeHarness({
+    ensureSiteItems: (items) => {
+      if (items.length) stableItems = items;
+      return stableItems.map((item) => ({ ...item }));
+    },
+    render: () => {
+      renderCount += 1;
+    },
+    patchMedia: () => {
+      patchCount += 1;
+      return true;
+    },
+    setTimeout: (callback) => {
+      const id = ++timerId;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id)
+  });
+  harness.state.currentTabUrl =
+    "https://123av.com/ko/v/snos-342-uncensore";
+  harness.state.allItems = stableItems;
+
+  for (const items of [
+    [],
+    [{
+      url: "https://cdn.test/snos-342/master.m3u8",
+      pageUrl: harness.state.currentTabUrl,
+      title: "SNOS-342_720p"
+    }],
+    []
+  ]) {
+    harness.handler({
+      type: "MEDIA_UPDATED",
+      tabId: 7,
+      pageUrl: harness.state.currentTabUrl,
+      items
+    });
+    check(
+      harness.state.allItems.length > 0,
+      true,
+      "rapid same-page media updates never expose an empty state"
+    );
+  }
+  check(timers.size, 1, "rapid media updates coalesce into one paint");
+  [...timers.values()][0]();
+  check(patchCount, 1, "same-page media update patches the card in place");
+  check(renderCount, 0, "same-page updates avoid full media rebuilds");
+
+  harness.handler({
+    type: "DOWNLOAD_JOB",
+    job: { id: "rapid-job", status: "running", percent: 30 }
+  });
+  check(renderCount, 0, "job progress does not rebuild the media pane");
 }
 
 {

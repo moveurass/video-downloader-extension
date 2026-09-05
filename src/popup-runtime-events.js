@@ -42,8 +42,35 @@
         setWatchlistItems,
         getActiveTabName,
         getTrackedJobIds,
-        loadMedia
+        loadMedia,
+        patchMedia
       } = deps;
+      const setTimeoutFn = deps.setTimeout || setTimeout;
+      const clearTimeoutFn = deps.clearTimeout || clearTimeout;
+      let mediaRenderTimer = null;
+
+      function scheduleMediaRender(pageChanged) {
+        if (mediaRenderTimer) {
+          clearTimeoutFn(mediaRenderTimer);
+          mediaRenderTimer = null;
+        }
+        const paint = () => {
+          mediaRenderTimer = null;
+          if (
+            !pageChanged &&
+            typeof patchMedia === "function" &&
+            patchMedia()
+          ) {
+            return;
+          }
+          render();
+        };
+        if (pageChanged) {
+          paint();
+        } else {
+          mediaRenderTimer = setTimeoutFn(paint, 60);
+        }
+      }
 
       return function handleRuntimeMessage(msg) {
         if (msg.type === "MEDIA_UPDATED" && msg.tabId === getCurrentTabId()) {
@@ -110,7 +137,7 @@
             url: currentTabUrl,
             title: (items[0] && items[0].title) || ""
           }));
-          render();
+          scheduleMediaRender(pageChanged);
           refreshHelperStatus();
           if (pageChanged && typeof loadMedia === "function") {
             // Paint the new MEDIA_UPDATED payload (or its site placeholder)

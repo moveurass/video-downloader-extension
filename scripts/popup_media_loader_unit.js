@@ -36,6 +36,18 @@ async function main() {
   let currentTabUrl = null;
   let qualitiesLoading = false;
   let renderCount = 0;
+  const renderedItemCounts = [];
+  let mediaResponseItems = [{
+    url: "https://cdn.test/cawb-035.mp4",
+    pageUrl,
+    title: "",
+    pageTitle: "",
+    displayName: "영상",
+    filename: "동영상_720p.mp4",
+    quality: "720p",
+    type: "video"
+  }];
+  let stablePageItems = [];
 
   const elements = {
     quickBox: { classList: classList() },
@@ -62,16 +74,7 @@ async function main() {
         runtimeMessages.push(message);
         if (message.type === "GET_MEDIA") {
           return {
-            items: [{
-              url: "https://cdn.test/cawb-035.mp4",
-              pageUrl,
-              title: "",
-              pageTitle: "",
-              displayName: "영상",
-              filename: "동영상_720p.mp4",
-              quality: "720p",
-              type: "video"
-            }]
+            items: mediaResponseItems.map((item) => ({ ...item }))
           };
         }
         return { ok: true };
@@ -88,7 +91,21 @@ async function main() {
       isPlaylistOnlyUrl: () => false,
       isWatchInPlaylistUrl: () => false
     },
-    ensureSiteItems: (items) => items,
+    ensureSiteItems: (items, tabLike) => {
+      if (items.length) {
+        stablePageItems = items.map((item) => ({ ...item }));
+      }
+      if (stablePageItems.length) {
+        return stablePageItems.map((item) => ({ ...item }));
+      }
+      return [{
+        url: tabLike.url,
+        pageUrl: tabLike.url,
+        type: "page",
+        isPagePlaceholder: true,
+        title: "CAWB-035"
+      }];
+    },
     pageKey: (url) => String(url || "").replace(/[?#].*$/, ""),
     isInstagramUrl: () => false,
     isTiktokUrl: () => false,
@@ -103,6 +120,7 @@ async function main() {
     refreshHelperStatus: async () => {},
     render: () => {
       renderCount += 1;
+      renderedItemCounts.push(allItems.length);
     },
     loadAvailableQualities: async () => {},
     loadPlaylistInfo: async () => {},
@@ -163,6 +181,23 @@ async function main() {
     "fresh fallback title is returned to background state"
   );
   check(renderCount, 2, "loader renders before and after quality discovery");
+
+  mediaResponseItems = [];
+  const rapidRenderStart = renderedItemCounts.length;
+  await Promise.all([loader.loadMedia(), loader.loadMedia()]);
+  check(
+    allItems.length > 0,
+    true,
+    "aborted/empty reload restores the last good 123av card"
+  );
+  check(
+    renderedItemCounts.slice(rapidRenderStart).length > 0 &&
+      renderedItemCounts
+        .slice(rapidRenderStart)
+        .every((itemCount) => itemCount > 0),
+    true,
+    "rapid 123av reloads never paint the global empty state"
+  );
 
   check(
     MediaLoader.youtubeVideoId(

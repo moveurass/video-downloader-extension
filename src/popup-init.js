@@ -111,6 +111,18 @@
         siteKind: siteKindFromUrl
       } = UVDSites;
       const isSitePage = isDownloadableSiteVideo;
+      const isKnownDownloadablePage = (url) => {
+        if (isDownloadableSiteVideo(url)) return true;
+        try {
+          const host = new URL(url).hostname.replace(/^www\./i, "");
+          return !!(
+            Naming.isKnownCodeSite?.(host) &&
+            Naming.extractProductCode?.(url)
+          );
+        } catch {
+          return false;
+        }
+      };
       const { formatSize, formatDuration, formatKind, estimateSize } =
         UVDPopupMedia;
       const isHlsItem = UVDPopupMedia.isHlsItem;
@@ -143,6 +155,7 @@
         Naming,
         UVD,
         isSitePage,
+        isKnownDownloadablePage,
         getCurrentTabUrl: () => currentTabUrl,
         getAllItems: () => allItems,
         getUvdSettings: () => uvdSettings,
@@ -690,6 +703,7 @@
         chrome,
         document,
         ensureSiteItems,
+        pageKey,
         syncGlobalQualityBox,
         isInstagramHost,
         isInstagramPostUrl,
@@ -735,6 +749,7 @@
         getSeriesPending: () => seriesPending
       });
       const render = mediaRenderer.render;
+      const patchMedia = mediaRenderer.patch;
 
       const {
         resolveActiveTab,
@@ -762,6 +777,7 @@
         isUglyName,
         refreshHelperStatus,
         render,
+        patchMedia,
         loadAvailableQualities,
         loadPlaylistInfo,
         hidePlaylistBox,
@@ -915,6 +931,7 @@
         pageKey,
         ensureSiteItems,
         render,
+        patchMedia,
         loadMedia,
         refreshHelperStatus,
         applyJobProgress,
@@ -951,7 +968,9 @@
         getTrackedJobIds: () => trackedJobIds,
         setTrackedJobIds: (value) => {
           trackedJobIds = value;
-        }
+        },
+        setTimeout,
+        clearTimeout
       });
 
       // Restore settings + in-flight downloads, then load page media

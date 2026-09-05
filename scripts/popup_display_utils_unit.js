@@ -57,6 +57,9 @@ function makeHarness() {
     },
     classifyError(error) {
       return classifyError(error);
+    },
+    isGenericSaveName(value) {
+      return /^(?:영상|동영상|video)$/i.test(String(value || ""));
     }
   };
   const UVDPopupMedia = {
@@ -71,9 +74,21 @@ function makeHarness() {
     downloadFilename(item, options) {
       mediaCalls.push(["downloadFilename", item, options]);
       return "download.mp4";
-    }
+    },
+    isUglyName: () => false
   };
-  const Naming = { marker: "naming" };
+  const Naming = {
+    marker: "naming",
+    isKnownCodeSite: (host) => /123av/i.test(host),
+    extractProductCode: (url) => {
+      const match = String(url).match(/([a-z]{2,12})[-_](\d{2,5})/i);
+      return match ? `${match[1].toUpperCase()}-${match[2]}` : "";
+    },
+    cleanPageTitle: (value) =>
+      String(value || "").replace(/\s*-\s*123AV.*$/i, "").trim(),
+    bindTitleToPage: (_url, title) => title,
+    buildFilename: ({ title }) => `${title}.mp4`
+  };
   const pageHost = {
     textContent: "www.youtube.com/watch?v=current"
   };
@@ -89,13 +104,18 @@ function makeHarness() {
     pageHost,
     UVDSites: {
       buildSiteItem(tab, url) {
-        return localItem ? { ...localItem, tabTitle: tab?.title, builtFor: url } : null;
+        return localItem && /youtube|tiktok|instagram/.test(url || "")
+          ? { ...localItem, tabTitle: tab?.title, builtFor: url }
+          : null;
       }
     },
     UVDPopupMedia,
     Naming,
     UVD,
     isSitePage: (url) => /youtube|tiktok|instagram/.test(url),
+    isKnownDownloadablePage: (url) =>
+      /youtube|tiktok|instagram/.test(url) ||
+      /123av\.com\/.*[a-z]{2,12}[-_]\d{2,5}/i.test(url),
     getCurrentTabUrl: () => currentTabUrl,
     getAllItems: () => allItems,
     getUvdSettings: () => uvdSettings,
@@ -216,6 +236,11 @@ function main() {
     "example.com/path",
     "generic identity ignores query and www"
   );
+  check(
+    u.pageKey("https://123av.com/ko/v/snos-342-uncensore"),
+    u.pageKey("https://123av.com/ko/v/snos-342"),
+    "known-code suffix variants share one page identity"
+  );
   check(u.pageKey("not a url"), "not a url", "invalid identity fallback");
   check(u.pageKey(""), "", "empty identity");
 
@@ -288,6 +313,53 @@ function main() {
   h.setAllItems([{ pageUrl: "https://youtu.be/current", title: "Getter title" }]);
   const getterResult = u.ensureSiteItems(null, {})[0];
   check(getterResult.title, "Getter title", "lazy allItems getter");
+
+  const codePage =
+    "https://123av.com/ko/v/snos-342-uncensore";
+  h.setCurrentTabUrl(codePage);
+  const codePlaceholder = u.ensureSiteItems([], {
+    url: codePage,
+    title: "SNOS-342 긴 영상 제목 - 123AV"
+  })[0];
+  check(codePlaceholder.isPagePlaceholder, true, "known code page gets a placeholder");
+  check(codePlaceholder.title, "SNOS-342 긴 영상 제목", "placeholder uses page title");
+
+  const codeMedia = u.ensureSiteItems([{
+    url: "https://cdn.test/snos-342/master.m3u8",
+    pageUrl: codePage,
+    type: "stream",
+    isHls: true,
+    title: "SNOS-342 훨씬 긴 실제 영상 제목",
+    thumbnail: "https://img.test/snos-342.jpg",
+    quality: "720p"
+  }], { url: codePage })[0];
+  check(codeMedia.isPagePlaceholder, false, "real media replaces the placeholder");
+  const afterEmpty = u.ensureSiteItems([], { url: codePage })[0];
+  check(
+    afterEmpty.url,
+    "https://cdn.test/snos-342/master.m3u8",
+    "empty refresh restores last good media"
+  );
+  const afterGeneric = u.ensureSiteItems([{
+    url: "https://cdn.test/snos-342/master.m3u8",
+    pageUrl: codePage,
+    title: "SNOS-342_720p",
+    quality: "720p"
+  }], { url: codePage })[0];
+  check(
+    afterGeneric.title,
+    "SNOS-342 훨씬 긴 실제 영상 제목",
+    "short generic metadata cannot replace a richer same-page title"
+  );
+  h.setCurrentTabUrl("https://123av.com/ko/v/snos-342");
+  const suffixVariant = u.ensureSiteItems([], {
+    url: "https://123av.com/ko/v/snos-342"
+  })[0];
+  check(
+    suffixVariant.thumbnail,
+    "https://img.test/snos-342.jpg",
+    "suffix variant retains same-page title and thumbnail"
+  );
 
   h.elements.linkInput.value = "";
   check(u.updateLinkCount(), [], "empty link parse result");

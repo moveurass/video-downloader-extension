@@ -67,6 +67,7 @@
         isUglyName,
         refreshHelperStatus,
         render,
+        patchMedia,
         loadAvailableQualities,
         loadPlaylistInfo,
         hidePlaylistBox,
@@ -86,6 +87,22 @@
           (deps.setTimeout || setTimeout)(resolve, ms)
         );
       let loadSequence = 0;
+
+      function restoreStablePage(tabLike = {}) {
+        const current = getAllItems();
+        const stable = ensureSiteItems(current, {
+          ...tabLike,
+          url: getCurrentTabUrl() || tabLike.url || ""
+        });
+        if (stable.length || current.length) setAllItems(stable);
+        return stable;
+      }
+
+      function isSuperseded(requestId, tabLike = {}) {
+        if (requestId === loadSequence) return false;
+        restoreStablePage(tabLike);
+        return true;
+      }
 
       function usablePageTitle(raw) {
         const value =
@@ -240,8 +257,16 @@
       async function loadMedia() {
         const requestId = ++loadSequence;
         let tab = await resolveActiveTab();
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab || {})) return;
         if (!tab?.id) {
+          const stable = restoreStablePage({
+            url: getCurrentTabUrl() || "",
+            title: ""
+          });
+          if (stable.length) {
+            if (!(typeof patchMedia === "function" && patchMedia())) render();
+            return;
+          }
           listEl.innerHTML = `
       <div class="empty">
         <div class="empty-icon" aria-hidden="true">▶</div>
@@ -257,7 +282,7 @@
         } catch {
           /* keep query result */
         }
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
 
         const previousTabUrl = getCurrentTabUrl();
         const nextTabUrl =
@@ -309,7 +334,7 @@
         } catch {
           /* restricted / not injected */
         }
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
 
         // TikTok: SnapTik-style page JSON extract (playAddr / downloadAddr)
         if (isTiktokUrl(currentTabUrl)) {
@@ -325,7 +350,7 @@
             /* ignore */
           }
         }
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
 
         let res = null;
         try {
@@ -339,7 +364,7 @@
         } catch {
           res = null;
         }
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
 
         const curKey = pageKey(currentTabUrl);
         const youtubeId = youtubeVideoId(currentTabUrl);
@@ -373,7 +398,7 @@
         // URL before its player/title DOM; retry until both identities agree.
         if (getAllItems()[0]) {
           const meta = await loadCurrentPageMeta(tab.id, currentTabUrl);
-          if (requestId !== loadSequence) return;
+          if (isSuperseded(requestId, tab)) return;
 
           try {
             const latestTab = await chrome.tabs.get(tab.id);
@@ -385,7 +410,7 @@
           } catch {
             /* keep the URL captured at the start of this request */
           }
-          if (requestId !== loadSequence) return;
+          if (isSuperseded(requestId, tab)) return;
 
           const metaUrl = meta?.pageUrl || meta?.lastUrl || "";
           const metaKey = pageKey(metaUrl);
@@ -480,22 +505,24 @@
               tabId: getCurrentTabId(),
               pageUrl: currentTabUrl
             });
-            if (res?.items?.length) setAllItems(res.items);
+            if (res?.items?.length) {
+              setAllItems(ensureSiteItems(res.items, tab));
+            }
           } catch {
             /* ignore */
           }
         }
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
 
         await refreshHelperStatus();
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
         updateQuickPageUi();
         // Auto-fill link input with current social page URL
         autofillLinkFromCurrentTab();
 
         // First paint (may show "화질 확인 중…")
         setQualitiesLoading(true);
-        render();
+        if (!(typeof patchMedia === "function" && patchMedia())) render();
         // Then resolve real available qualities for this video
         if (getAllItems()[0]) {
           await loadAvailableQualities(getAllItems()[0]);
@@ -503,7 +530,7 @@
           setAvailableQualities([{ id: "best", label: "최고" }]);
           setQualitiesLoading(false);
         }
-        if (requestId !== loadSequence) return;
+        if (isSuperseded(requestId, tab)) return;
         render();
 
         currentTabUrl = getCurrentTabUrl();
