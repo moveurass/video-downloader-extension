@@ -9,7 +9,11 @@
     const tabMedia = new Map();
     const tabMeta = new Map();
     const probedUrls = new Set();
+    const broadcastTimers = new Map();
     let bound = false;
+    const schedule = deps.setTimeout || setTimeout;
+    const unschedule = deps.clearTimeout || clearTimeout;
+    const BROADCAST_DELAY_MS = 200;
 
     const {
       chrome,
@@ -113,6 +117,34 @@
 
     function isDownloadableHelperPage(pageUrl) {
       if (!pageUrl || !/^https?:/i.test(pageUrl)) return false;
+      if (
+        typeof isDownloadableSiteVideo === "function" &&
+        isDownloadableSiteVideo(pageUrl)
+      ) {
+        return true;
+      }
+      return !!(
+        isYoutubeUrl(pageUrl) ||
+        isTiktokUrl(pageUrl) ||
+        isInstagramPostUrl(pageUrl) ||
+        isXUrl(pageUrl) ||
+        isFacebookUrl(pageUrl) ||
+        isBilibiliUrl(pageUrl) ||
+        (() => {
+          try {
+            const host = new URL(pageUrl).hostname.replace(/^www\./i, "");
+            return !!(
+              Naming.isKnownCodeSite?.(host) &&
+              Naming.extractProductCode?.(pageUrl)
+            );
+          } catch {
+            return false;
+          }
+        })()
+      );
+    }
+
+    function isHelperSitePage(pageUrl) {
       if (typeof isDownloadableSiteVideo === "function") {
         return isDownloadableSiteVideo(pageUrl);
       }
@@ -130,21 +162,24 @@
       const pageUrl = tab?.url || "";
       if (!isDownloadableHelperPage(pageUrl)) return null;
       const kind = siteKind(pageUrl, pageUrl);
-      if (!kind) return null;
+      const code = Naming.extractProductCode?.(pageUrl) || "";
+      if (!kind && !code) return null;
       const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
       const identityReady =
         kind !== "youtube" || meta?.identityConfirmed === true;
       const title =
         (identityReady ? meta?.title : "") ||
         (identityReady ? Naming.cleanPageTitle(tab?.title || "") : "") ||
+        code ||
         siteDefaultTitle(kind);
       return enrichItem(tab.id, {
         url: pageUrl,
-        type: "stream",
+        type: kind ? "stream" : "page",
         isHls: false,
-        isSiteDownload: true,
-        site: kind,
-        source: kind,
+        isSiteDownload: !!kind,
+        isPagePlaceholder: !kind,
+        site: kind || undefined,
+        source: kind || "page-placeholder",
         title,
         pageTitle: title,
         pageUrl,
@@ -193,7 +228,7 @@
         });
       }
       updateBadge(tabId);
-      broadcastUpdate(tabId);
+      broadcastUpdate(tabId, { immediate: true });
     }
 
     function enrichItem(tabId, item) {
@@ -468,7 +503,7 @@
       if (!map) {
         if (pageChanged) {
           updateBadge(tabId);
-          broadcastUpdate(tabId);
+          broadcastUpdate(tabId, { immediate: true });
         }
         return;
       }
@@ -509,7 +544,7 @@
       }
       if (changed) {
         updateBadge(tabId);
-        broadcastUpdate(tabId);
+        broadcastUpdate(tabId, { immediate: pageChanged });
       }
     }
 
@@ -676,6 +711,7 @@
         isDownloadableHelperPage(pageUrl) &&
         !isTiktokUrl(pageUrl)
       ) {
+        if (items.length && !isHelperSitePage(pageUrl)) return items;
         const placeholder = makeSitePlaceholder({
           id: tabId,
           url: pageUrl,
@@ -709,6 +745,7 @@
           isDownloadableHelperPage(url) &&
           !isTiktokUrl(url)
         ) {
+          if (items.length && !isHelperSitePage(url)) return items;
           const placeholder = makeSitePlaceholder({
             id: tab.id,
             url,
@@ -809,7 +846,7 @@
         });
     }
 
-    function broadcastUpdate(tabId) {
+    function sendBroadcastUpdate(tabId) {
       const meta = tabMeta.get(tabId);
       const pageUrl = meta?.lastUrl || "";
       const pageKey = meta?.pageKey || pageIdentityKey(pageUrl);
@@ -869,12 +906,42 @@
         });
     }
 
+    function broadcastUpdate(tabId, options = {}) {
+      const existingTimer = broadcastTimers.get(tabId);
+      if (existingTimer) {
+        unschedule(existingTimer);
+        broadcastTimers.delete(tabId);
+      }
+
+      if (options.immediate) {
+        const meta = tabMeta.get(tabId);
+        const pageUrl = meta?.lastUrl || "";
+        const placeholder =
+          getMediaForTab(tabId).length === 0
+            ? makeSitePlaceholder({ id: tabId, url: pageUrl, title: "" })
+            : null;
+        if (placeholder) {
+          sendBroadcastUpdate(tabId);
+          return;
+        }
+      }
+
+      const timer = schedule(() => {
+        broadcastTimers.delete(tabId);
+        sendBroadcastUpdate(tabId);
+      }, BROADCAST_DELAY_MS);
+      broadcastTimers.set(tabId, timer);
+    }
+
     function clearMedia(tabId) {
       tabMedia.delete(tabId);
       updateBadge(tabId);
     }
 
     function deleteTab(tabId) {
+      const timer = broadcastTimers.get(tabId);
+      if (timer) unschedule(timer);
+      broadcastTimers.delete(tabId);
       tabMedia.delete(tabId);
       tabMeta.delete(tabId);
     }

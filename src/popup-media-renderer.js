@@ -360,19 +360,27 @@
         item._saveAs = file;
         const nameEl = card.querySelector(".name");
         if (nameEl) {
-          nameEl.textContent = name;
-          nameEl.title = name;
+          if (nameEl.textContent !== name) nameEl.textContent = name;
+          if (nameEl.title !== name) nameEl.title = name;
         }
         const metaEl = card.querySelector(".meta-grid");
-        if (metaEl) metaEl.innerHTML = metaRowsHtml(item);
+        const nextMetaHtml = metaRowsHtml(item);
+        if (metaEl && metaEl.innerHTML !== nextMetaHtml) {
+          metaEl.innerHTML = nextMetaHtml;
+        }
         const filenameEl = card.querySelector(".filename-value");
-        if (filenameEl) filenameEl.textContent = file;
+        if (filenameEl && filenameEl.textContent !== file) {
+          filenameEl.textContent = file;
+        }
         const downloadButton = card.querySelector(".btn-dl");
         if (downloadButton && !downloadButton.disabled) {
-          downloadButton.textContent = primaryDownloadLabel(
+          const nextLabel = primaryDownloadLabel(
             name,
             siteLabel(currentTabUrl, item)
           );
+          if (downloadButton.textContent !== nextLabel) {
+            downloadButton.textContent = nextLabel;
+          }
         }
 
         if (item.thumbnail) {

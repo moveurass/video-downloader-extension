@@ -42,18 +42,56 @@
         setWatchlistItems,
         getActiveTabName,
         getTrackedJobIds,
+        getAllItems,
+        getAvailableQualities,
         loadMedia,
         patchMedia
       } = deps;
       const setTimeoutFn = deps.setTimeout || setTimeout;
       const clearTimeoutFn = deps.clearTimeout || clearTimeout;
       let mediaRenderTimer = null;
+      let pendingMediaSignature = "";
+      let lastPaintedMediaSignature = "";
 
-      function scheduleMediaRender(pageChanged) {
+      function mediaSignature() {
+        const item = getAllItems?.()?.[0] || null;
+        const qualities =
+          typeof getAvailableQualities === "function"
+            ? getAvailableQualities()
+            : [];
+        return JSON.stringify({
+          pageKey: pageKey(item?.pageUrl || getCurrentTabUrl() || ""),
+          url: item?.url || "",
+          title: item?.title || item?.pageTitle || item?.displayName || "",
+          thumbnail: item?.thumbnail || "",
+          quality: item?.quality || "",
+          width: item?.width || 0,
+          height: item?.height || 0,
+          duration: item?.duration || 0,
+          estimatedSize: item?.estimatedSize || item?.size || 0,
+          placeholder: item?.isPagePlaceholder === true,
+          qualities: (qualities || []).map((quality) => [
+            quality.id || "",
+            quality.label || "",
+            quality.height || 0
+          ])
+        });
+      }
+
+      function scheduleMediaRender(pageChanged, signature) {
+        if (
+          !pageChanged &&
+          signature &&
+          (signature === lastPaintedMediaSignature ||
+            (mediaRenderTimer && signature === pendingMediaSignature))
+        ) {
+          return;
+        }
         if (mediaRenderTimer) {
           clearTimeoutFn(mediaRenderTimer);
           mediaRenderTimer = null;
         }
+        pendingMediaSignature = signature;
         const paint = () => {
           mediaRenderTimer = null;
           if (
@@ -61,14 +99,18 @@
             typeof patchMedia === "function" &&
             patchMedia()
           ) {
+            lastPaintedMediaSignature = pendingMediaSignature;
+            pendingMediaSignature = "";
             return;
           }
           render();
+          lastPaintedMediaSignature = pendingMediaSignature;
+          pendingMediaSignature = "";
         };
         if (pageChanged) {
           paint();
         } else {
-          mediaRenderTimer = setTimeoutFn(paint, 60);
+          mediaRenderTimer = setTimeoutFn(paint, 120);
         }
       }
 
@@ -137,8 +179,8 @@
             url: currentTabUrl,
             title: (items[0] && items[0].title) || ""
           }));
-          scheduleMediaRender(pageChanged);
-          refreshHelperStatus();
+          scheduleMediaRender(pageChanged, mediaSignature());
+          if (pageChanged) refreshHelperStatus(true);
           if (pageChanged && typeof loadMedia === "function") {
             // Paint the new MEDIA_UPDATED payload (or its site placeholder)
             // before refreshing metadata. A superseded async load can then

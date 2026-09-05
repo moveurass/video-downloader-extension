@@ -969,6 +969,7 @@
         setTrackedJobIds: (value) => {
           trackedJobIds = value;
         },
+        getAvailableQualities,
         setTimeout,
         clearTimeout
       });

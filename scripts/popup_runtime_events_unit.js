@@ -45,6 +45,8 @@ function makeHarness(overrides = {}) {
     renderWatchlist: () => calls.push("renderWatchlist"),
     getCurrentTabId: () => state.currentTabId,
     getCurrentTabUrl: () => state.currentTabUrl,
+    getAllItems: () => state.allItems,
+    getAvailableQualities: () => [{ id: "best", label: "최고" }],
     setCurrentTabUrl: (value) => {
       calls.push("setCurrentTabUrl");
       state.currentTabUrl = value;
@@ -146,8 +148,7 @@ check(typeof PopupRuntimeEvents.bind, "function");
   check(calls.map((call) => Array.isArray(call) ? call[0] : call), [
     "ensureSiteItems",
     "setAllItems",
-    "render",
-    "refreshHelperStatus"
+    "render"
   ]);
   check(calls[0][2], {
     url: state.currentTabUrl,
@@ -233,15 +234,35 @@ check(typeof PopupRuntimeEvents.bind, "function");
     );
   }
   check(timers.size, 1, "rapid media updates coalesce into one paint");
-  [...timers.values()][0]();
+  const [scheduledId, scheduledPaint] = [...timers.entries()][0];
+  timers.delete(scheduledId);
+  scheduledPaint();
   check(patchCount, 1, "same-page media update patches the card in place");
   check(renderCount, 0, "same-page updates avoid full media rebuilds");
+
+  const identicalItems = stableItems.map((item) => ({ ...item }));
+  for (let index = 0; index < 10; index += 1) {
+    harness.handler({
+      type: "MEDIA_UPDATED",
+      tabId: 7,
+      pageUrl: harness.state.currentTabUrl,
+      items: identicalItems
+    });
+  }
+  check(timers.size, 0, "semantically identical updates schedule no extra paint");
+  check(patchCount, 1, "identical updates do not touch the card again");
+  check(
+    harness.calls.filter((call) => call === "refreshHelperStatus").length,
+    0,
+    "same-page MEDIA_UPDATED does not flash helper checking state"
+  );
 
   harness.handler({
     type: "DOWNLOAD_JOB",
     job: { id: "rapid-job", status: "running", percent: 30 }
   });
   check(renderCount, 0, "job progress does not rebuild the media pane");
+  check(patchCount, 1, "job progress does not patch the media card");
 }
 
 {
@@ -332,6 +353,42 @@ check(typeof PopupRuntimeEvents.bind, "function");
       filename: undefined
     },
     "unconfirmed YouTube updates cannot repaint old identity-bound metadata"
+  );
+}
+
+{
+  const pageUrl = "https://www.youtube.com/watch?v=current";
+  const previous = {
+    pageUrl,
+    title: "Current video title",
+    thumbnail: "https://i.ytimg.com/vi/current/hqdefault.jpg"
+  };
+  const harness = makeHarness({
+    ensureSiteItems: (items) => [{
+      ...previous,
+      ...(items[0] || {}),
+      title: items[0]?.title || previous.title,
+      thumbnail: items[0]?.thumbnail || previous.thumbnail
+    }]
+  });
+  harness.state.currentTabUrl = pageUrl;
+  harness.state.allItems = [previous];
+  harness.handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl,
+    identityConfirmed: false,
+    items: [{ pageUrl, title: "stale", thumbnail: "stale.jpg" }]
+  });
+  check(
+    harness.state.allItems[0].title,
+    previous.title,
+    "same-page unconfirmed identity keeps the last good title"
+  );
+  check(
+    harness.state.allItems[0].thumbnail,
+    previous.thumbnail,
+    "same-page unconfirmed identity keeps the last good thumbnail"
   );
 }
 

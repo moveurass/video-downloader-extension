@@ -412,6 +412,63 @@ async function main() {
     "a superseded load after navigation never strands the helper page empty"
   );
 
+  let patchedItems = [{
+    url: "https://cdn.test/snos-342/master.m3u8",
+    pageUrl: "https://123av.com/ko/v/snos-342",
+    title: "SNOS-342 긴 실제 영상 제목",
+    thumbnail: "https://img.test/snos-342.jpg"
+  }];
+  let imageSrc = patchedItems[0].thumbnail;
+  let imageSrcWrites = 0;
+  let mediaRebuilds = 0;
+  const patchElements = {
+    ".name": { textContent: patchedItems[0].title, title: patchedItems[0].title },
+    ".meta-grid": { innerHTML: "meta" },
+    ".filename-value": { textContent: "SNOS-342.mp4" },
+    ".btn-dl": { textContent: "받기", disabled: false },
+    ".thumb": { innerHTML: "" },
+    ".thumb-img": {
+      getAttribute: (name) => name === "src" ? imageSrc : "",
+      setAttribute: (name, value) => {
+        if (name === "src") {
+          imageSrc = value;
+          imageSrcWrites += 1;
+        }
+      }
+    }
+  };
+  const patchCard = {
+    dataset: { mediaIdentity: "code:SNOS-342\nmedia" },
+    querySelector: (selector) => patchElements[selector] || null
+  };
+  const patchList = {
+    querySelector: (selector) => selector === ".card" ? patchCard : null
+  };
+  Object.defineProperty(patchList, "innerHTML", {
+    set() {
+      mediaRebuilds += 1;
+    }
+  });
+  const patchRenderer = MediaRenderer.createRenderer({
+    listEl: patchList,
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "code:SNOS-342",
+    displayName: (item) => item.title,
+    downloadFilename: () => "SNOS-342.mp4",
+    siteLabel: () => "123av.com",
+    thumbHtml: () => "",
+    metaRowsHtml: () => "meta",
+    getAllItems: () => patchedItems,
+    setAllItems: (items) => {
+      patchedItems = items;
+    },
+    getCurrentTabUrl: () => patchedItems[0].pageUrl
+  });
+  check(patchRenderer.patch(), true, "same-page card supports incremental patching");
+  check(imageSrcWrites, 0, "unchanged thumbnail src is preserved");
+  check(mediaRebuilds, 0, "incremental patch does not clear the media pane");
+
   const genericItem = {
     filename: "동영상_720p.mp4",
     pageUrl,

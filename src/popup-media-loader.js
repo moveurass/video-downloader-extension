@@ -514,7 +514,7 @@
         }
         if (isSuperseded(requestId, tab)) return;
 
-        await refreshHelperStatus();
+        await refreshHelperStatus(true);
         if (isSuperseded(requestId, tab)) return;
         updateQuickPageUi();
         // Auto-fill link input with current social page URL

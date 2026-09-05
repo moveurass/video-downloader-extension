@@ -41,6 +41,8 @@ function makeHarness() {
   const messages = [];
   const tabMessages = [];
   const detached = [];
+  const timers = new Map();
+  let timerId = 0;
   const tabs = new Map([
     [7, { id: 7, url: "https://example.com/watch/one", title: "Example video" }]
   ]);
@@ -94,6 +96,12 @@ function makeHarness() {
     },
     withTabReferer: async (_tabId, operation) => operation(),
     detachJobsFromTab: (tabId) => detached.push(tabId),
+    setTimeout: (callback) => {
+      const id = ++timerId;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout: (id) => timers.delete(id),
     now: () => 1234,
     console: { warn: () => {} }
   });
@@ -105,7 +113,13 @@ function makeHarness() {
     messages,
     tabMessages,
     detached,
-    tabs
+    tabs,
+    runTimers() {
+      const pending = [...timers.entries()];
+      timers.clear();
+      for (const [, callback] of pending) callback();
+    },
+    pendingTimerCount: () => timers.size
   };
 }
 
@@ -288,6 +302,38 @@ async function main() {
   });
   equal(store.getTabItems(11).length, 1);
 
+  harness.runTimers();
+  await flush();
+  const messagesBeforeBurst = harness.messages.length;
+  for (let index = 0; index < 8; index += 1) {
+    store.addMedia(11, {
+      url: "https://cdn.example.com/captured.mp4",
+      type: "video",
+      duration: 120,
+      size: 1_000_000 + index
+    });
+  }
+  equal(
+    harness.pendingTimerCount(),
+    1,
+    "rapid tab updates coalesce into one trailing broadcast"
+  );
+  equal(
+    harness.messages.length,
+    messagesBeforeBurst,
+    "coalesced updates do not broadcast before the trailing window"
+  );
+  harness.runTimers();
+  await flush();
+  equal(
+    harness.messages
+      .slice(messagesBeforeBurst)
+      .filter((message) => message.type === "MEDIA_UPDATED" && message.tabId === 11)
+      .length,
+    1,
+    "a rapid update burst emits one MEDIA_UPDATED message"
+  );
+
   tabs.set(12, {
     id: 12,
     url: "https://youtube.com/watch?v=old",
@@ -368,6 +414,21 @@ async function main() {
         message.pageUrl === "https://youtube.com/watch?v=new"
     ),
     "identity changes trigger an in-tab rescan"
+  );
+
+  const oldCodeUrl = "https://123av.com/ko/v/snos-341-uncensore";
+  const newCodeUrl = "https://123av.com/ko/v/snos-342";
+  store.setTabMeta(15, { lastUrl: oldCodeUrl, title: "SNOS-341" });
+  store.setTabMeta(15, { lastUrl: newCodeUrl, title: undefined });
+  const codeNavigationUpdate = harness.messages
+    .filter((message) => message.type === "MEDIA_UPDATED" && message.tabId === 15)
+    .at(-1);
+  equal(codeNavigationUpdate?.pageUrl, newCodeUrl);
+  equal(codeNavigationUpdate?.items?.length, 1);
+  equal(
+    codeNavigationUpdate?.items?.[0]?.isPagePlaceholder,
+    true,
+    "known-code navigation immediately broadcasts a non-empty placeholder"
   );
 
   store.addMedia(12, {
