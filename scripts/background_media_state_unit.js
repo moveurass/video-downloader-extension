@@ -688,6 +688,35 @@ async function main() {
     "stale PAGE_MEDIA from the previous code is ignored"
   );
 
+  store.setTabMeta(33, {
+    lastUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  });
+  store.addMedia(33, {
+    url: "https://cdn.example.com/tv/sample.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "script-sniff",
+    duration: 30,
+    height: 480,
+    pageUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  });
+  store.addMedia(33, {
+    url: "https://cdn.example.com/fst/master.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "injected",
+    pageUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  });
+  await flush();
+  equal(
+    store.getMediaForTab(33)[0].url,
+    "https://cdn.example.com/fst/master.m3u8",
+    "iframe-injected feature rebound to the watch URL enters tabMedia and wins"
+  );
+
   store.setTabMeta(21, {
     lastUrl: "https://supjav.com/only-preview.html",
     host: "supjav.com"

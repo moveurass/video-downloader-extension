@@ -145,6 +145,7 @@ async function main() {
   assert.match(settings, /captureAlways:\s*false/, "capture is opt-in by default");
   const content = fs.readFileSync(path.join(__dirname, "../src/content.js"), "utf8");
   assert.match(content, /captureAlways === true\) armPageCapture\(\)/);
+  assert.match(content, /\.player-wrap/, "known-code cover reads player-wrap background");
 
   console.log("injected capture: opt-in retention, budget, export handshake passed");
 }

@@ -479,16 +479,10 @@ async function main() {
     (value) => { response = value; }
   );
   assert.deepEqual(response, { ok: true });
-  assert.deepEqual(
-    mediaMeta[1],
-    [
-      7,
-      {
-        lastUrl: "https://example.com/watch/1",
-        pageKey: "key:https://example.com/watch/1"
-      }
-    ],
-    "subframe metadata must not clear the top-page title"
+  assert.equal(
+    mediaMeta.length,
+    1,
+    "subframe PAGE_META must not change pageKey or lastUrl"
   );
 
   response = null;
@@ -506,7 +500,7 @@ async function main() {
     { handled: true, keepChannel: false }
   );
   assert.deepEqual(response, { ok: true });
-  assert.deepEqual(mediaMeta[2], [
+  assert.deepEqual(mediaMeta[1], [
     7,
     {
       title: "영상 페이지",
@@ -524,6 +518,7 @@ async function main() {
   ]);
 
   response = null;
+  const metaBeforeFrameMedia = mediaMeta.length;
   mediaHandler(
     {
       type: "PAGE_MEDIA",
@@ -538,14 +533,101 @@ async function main() {
     (value) => { response = value; }
   );
   assert.deepEqual(response, { ok: true });
-  assert.deepEqual(mediaMeta[3], [
+  assert.equal(
+    mediaMeta.length,
+    metaBeforeFrameMedia,
+    "iframe PAGE_MEDIA does not rewrite tab identity"
+  );
+  assert.equal(pageMedia[1][1].url, "https://cdn.example.com/frame.m3u8");
+  assert.equal(
+    pageMedia[1][1].pageUrl,
+    "https://example.com/watch/2",
+    "iframe PAGE_MEDIA binds media to the tab watch URL"
+  );
+
+  const iframeWatch = "https://supjav.com/455636.html";
+  const iframePlayer = "https://lk1.supremejav.com/supjav.php?l=token&bg=1";
+  const metaBeforeNested = mediaMeta.length;
+  response = null;
+  mediaHandler(
+    {
+      type: "PAGE_MEDIA",
+      pageUrl: iframePlayer,
+      pageMeta: {
+        lastUrl: iframePlayer,
+        pageUrl: iframePlayer,
+        thumbnail: "https://voe.example/player.jpg"
+      },
+      items: [{
+        url: "https://cdn.example.com/feature/master.m3u8",
+        type: "stream",
+        source: "injected"
+      }]
+    },
     7,
     {
-      lastUrl: "https://example.com/watch/2",
-      pageKey: "key:https://example.com/watch/2"
-    }
-  ]);
-  assert.equal(pageMedia[1][1].url, "https://cdn.example.com/frame.m3u8");
+      frameId: 12,
+      tab: { url: iframeWatch }
+    },
+    (value) => { response = value; }
+  );
+  assert.deepEqual(response, { ok: true });
+  assert.equal(
+    mediaMeta.length,
+    metaBeforeNested,
+    "iframe PAGE_MEDIA with a foreign pageUrl does not change pageKey"
+  );
+  assert.equal(
+    pageMedia.at(-1)[1].url,
+    "https://cdn.example.com/feature/master.m3u8"
+  );
+  assert.equal(
+    pageMedia.at(-1)[1].pageUrl,
+    iframeWatch,
+    "nested player HLS is bound to the top watch URL"
+  );
+
+  response = null;
+  mediaHandler(
+    {
+      type: "PAGE_META",
+      pageMeta: {
+        lastUrl: iframePlayer,
+        pageUrl: iframePlayer,
+        title: "voe player",
+        thumbnail: "https://voe.example/player.jpg"
+      }
+    },
+    7,
+    {
+      frameId: 12,
+      tab: { url: iframeWatch }
+    },
+    (value) => { response = value; }
+  );
+  assert.deepEqual(response, { ok: true });
+  assert.equal(
+    mediaMeta.length,
+    metaBeforeNested,
+    "iframe PAGE_META does not change pageKey"
+  );
+
+  const mediaBeforeStale = pageMedia.length;
+  mediaHandler(
+    {
+      type: "PAGE_MEDIA",
+      pageUrl: "https://supjav.com/111.html",
+      items: [{ url: "https://cdn.example.com/old.m3u8" }]
+    },
+    7,
+    { tab: { url: iframeWatch } },
+    (value) => { response = value; }
+  );
+  assert.equal(
+    pageMedia.length,
+    mediaBeforeStale,
+    "top-frame PAGE_MEDIA from another watch id is dropped"
+  );
 
   const descriptorUrl = "https://123av.com/ko/v/cawb-035-uncensore";
   response = null;
@@ -564,7 +646,7 @@ async function main() {
     { handled: true, keepChannel: true }
   );
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(mediaMeta[4], [
+  assert.deepEqual(mediaMeta[2], [
     7,
     {
       lastUrl: descriptorUrl,

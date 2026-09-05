@@ -339,7 +339,10 @@
         if (!previous) return { ...incoming };
         if (!incoming) return { ...previous };
         if (incoming.isPagePlaceholder && !previous.isPagePlaceholder) {
-          return { ...previous };
+          return {
+            ...previous,
+            thumbnail: previous.thumbnail || incoming.thumbnail
+          };
         }
         const previousKey = pageKey(previous.pageUrl || previous.url || "");
         const incomingKey = pageKey(incoming.pageUrl || incoming.url || "");

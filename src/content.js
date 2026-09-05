@@ -309,6 +309,36 @@
     );
   }
 
+  function cssBackgroundImageUrl(el) {
+    if (!el) return "";
+    const fromStyle = String(el.getAttribute("style") || "").match(
+      /background(?:-image)?\s*:\s*url\(\s*(['"]?)(https?:\/\/[^'")]+)\1\s*\)/i
+    );
+    if (fromStyle?.[2]) return fromStyle[2];
+    try {
+      const computed = getComputedStyle(el).backgroundImage || "";
+      const match = computed.match(
+        /url\(\s*(['"]?)(https?:\/\/[^'")]+)\1\s*\)/i
+      );
+      return match?.[2] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function playerWrapCover() {
+    const nodes = document.querySelectorAll(
+      ".player-wrap, #dz_video, [style*='background-image']"
+    );
+    for (const el of nodes) {
+      const url = cssBackgroundImageUrl(el);
+      if (url && !/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(url)) {
+        return url;
+      }
+    }
+    return "";
+  }
+
   function pageThumbnail() {
     const youtubeId = youtubeVideoId();
     const knownCode = !youtubeId && isKnownCodeHostName();
@@ -320,6 +350,7 @@
       document.querySelector('meta[property="og:video:poster"]')?.content,
       document.querySelector('link[rel="image_src"]')?.href,
       document.querySelector("video[poster]")?.getAttribute("poster"),
+      playerWrapCover(),
       ...(knownCode
         ? []
         : [
@@ -666,7 +697,9 @@
       });
     }
 
-    // Script sniff — critical for 123av / missav-style players
+    // Script sniff — parent HTML on server-button sites (Supjav TV/FST/VOE)
+    // often has no feature m3u8. Nested iframe inject/FOUND_MEDIA is the
+    // capture path once the user plays FST/VOE; do not auto-click servers.
     const playerDim = bestPlayerDimensions();
     for (const u of sniffUrlsFromPageText()) {
       const isStream = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(u);

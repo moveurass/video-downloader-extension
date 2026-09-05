@@ -76,25 +76,16 @@
           return { handled: true, keepChannel: false };
         }
         case "PAGE_META": {
-          if (tabId != null && msg.pageMeta) {
+          if (tabId != null && msg.pageMeta && isTopFrame(sender)) {
             const pageUrl =
-              msg.pageMeta.lastUrl || sender.tab?.url || msg.pageUrl || "";
-            if (isTopFrame(sender)) {
-              deps.setTabMeta(tabId, {
-                ...msg.pageMeta,
-                lastUrl: pageUrl || msg.pageMeta.lastUrl,
-                pageKey: pageUrl
-                  ? deps.pageIdentityKey(pageUrl)
-                  : msg.pageMeta.pageKey
-              });
-            } else if (pageUrl) {
-              // all_frames content scripts may report an empty player title.
-              // Keep the top-page identity without clearing its real metadata.
-              deps.setTabMeta(tabId, {
-                lastUrl: pageUrl,
-                pageKey: deps.pageIdentityKey(pageUrl)
-              });
-            }
+              sender.tab?.url || msg.pageUrl || msg.pageMeta.lastUrl || "";
+            deps.setTabMeta(tabId, {
+              ...msg.pageMeta,
+              lastUrl: pageUrl || msg.pageMeta.lastUrl,
+              pageKey: pageUrl
+                ? deps.pageIdentityKey(pageUrl)
+                : msg.pageMeta.pageKey
+            });
           }
           sendResponse({ ok: true });
           return { handled: true, keepChannel: false };
@@ -109,23 +100,22 @@
             msg.pageMeta?.pageUrl ||
             msg.pageMeta?.lastUrl ||
             "";
+          const topFrame = isTopFrame(sender);
           const tabKey = tabUrl ? deps.pageIdentityKey(tabUrl) : "";
           const scanKey = scanUrl ? deps.pageIdentityKey(scanUrl) : "";
-          if (tabKey && scanKey && tabKey !== scanKey) {
+          // Top-frame reports from a previous watch id are stale. Nested
+          // player frames (lk1 / voe / fst) have a different pageKey but
+          // belong to this tab — rebind them to the watch URL.
+          if (topFrame && tabKey && scanKey && tabKey !== scanKey) {
             sendResponse({ ok: true });
             return { handled: true, keepChannel: false };
           }
           const pageUrl = tabUrl || scanUrl || "";
-          if (msg.pageMeta && isTopFrame(sender)) {
+          if (msg.pageMeta && topFrame) {
             deps.setTabMeta(tabId, {
               ...msg.pageMeta,
               lastUrl: pageUrl || msg.pageMeta.lastUrl,
               pageKey: pageUrl ? deps.pageIdentityKey(pageUrl) : undefined
-            });
-          } else if (pageUrl) {
-            deps.setTabMeta(tabId, {
-              lastUrl: pageUrl,
-              pageKey: deps.pageIdentityKey(pageUrl)
             });
           }
           for (const item of msg.items || []) {

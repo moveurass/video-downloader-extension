@@ -434,6 +434,18 @@ function main() {
     "numeric Supjav page change does not flash the previous thumb"
   );
 
+  h.setCurrentTabUrl(supjavPage);
+  const keepThumb = u.ensureSiteItems([{
+    url: supjavPage,
+    pageUrl: supjavPage,
+    isPagePlaceholder: true
+  }], { url: supjavPage })[0];
+  check(
+    keepThumb.thumbnail,
+    "https://img.test/supjav-current.jpg",
+    "same-pageKey placeholder never blanks the last-good thumb"
+  );
+
   h.elements.linkInput.value = "";
   check(u.updateLinkCount(), [], "empty link parse result");
   check(h.elements.linkCount.textContent, "0개 링크", "empty link label");
