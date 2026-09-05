@@ -656,11 +656,20 @@ const Naming = (() => {
     if (/\d+_\d{2,4}x\d{2,4}/i.test(path)) return true;
     if (/\/\d{2,4}x\d{2,4}\.(mp4|webm)/i.test(path)) return true;
 
-    // Common ad/preview path tokens
+    const isStream = !!(item.isHls || item.type === "stream");
+
+    // Hard-junk obvious ad slots. Preview/trailer/sample/teaser/promo tokens
+    // on HLS/stream are soft-demoted in mediaScore so a lone clip still shows.
     if (
-      /\/(preroll|midroll|postroll|promo|banner|splash|teaser|preview|trailer[_-]?ad|advert|vast|vmap|ima)[\/._-]/i.test(
+      /\/(preroll|midroll|postroll|banner|splash|advert|vast|vmap|ima|trailer[_-]?ad)[\/._-]/i.test(
         path
       )
+    ) {
+      return true;
+    }
+    if (
+      !isStream &&
+      /\/(promo|teaser|preview|sample|trailer)[\/._-]/i.test(path)
     ) {
       return true;
     }
@@ -694,6 +703,45 @@ const Naming = (() => {
     return false;
   }
 
+  const PREVIEW_URL_TOKEN =
+    /(?:^|[/?#._=&-])(?:preview|trailer|sample|teaser|promo)(?:[/?#._=&-]|$)/i;
+
+  function looksLikePreviewMedia(item = {}) {
+    if (item.previewHint) return true;
+    const url = item.url || "";
+    const hay = (() => {
+      try {
+        const parsed = new URL(url);
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        return url;
+      }
+    })();
+    return PREVIEW_URL_TOKEN.test(hay);
+  }
+
+  /**
+   * Duration-first ranking used when a known-code HLS page (or any page with
+   * two or more stream URLs) must prefer the feature over a short sniff.
+   * Returns 0 when duration/height/bandwidth/size/segments all tie.
+   */
+  function compareMediaCandidates(a = {}, b = {}) {
+    const duration = (item) =>
+      typeof item.duration === "number" && item.duration > 0 ? item.duration : 0;
+    const durDelta = duration(b) - duration(a);
+    if (durDelta) return durDelta;
+    const heightDelta = (Number(b.height) || 0) - (Number(a.height) || 0);
+    if (heightDelta) return heightDelta;
+    const bandwidth = (item) =>
+      Number(item.bandwidth || item.estimateBandwidth) || 0;
+    const bwDelta = bandwidth(b) - bandwidth(a);
+    if (bwDelta) return bwDelta;
+    const bytes = (item) => Number(item.estimatedSize || item.size) || 0;
+    const sizeDelta = bytes(b) - bytes(a);
+    if (sizeDelta) return sizeDelta;
+    return (Number(b.segmentCount) || 0) - (Number(a.segmentCount) || 0);
+  }
+
   /** Score for ranking main content higher */
   function mediaScore(item = {}) {
     let s = 0;
@@ -702,14 +750,19 @@ const Naming = (() => {
     if (item.type === "audio") s += 40;
     if (item.source === "page") s += 25;
     if (item.variants?.length) s += 40;
-    if (item.segmentCount) s += Math.min(item.segmentCount, 30);
-    if (item.size) s += Math.min(item.size / 1e6, 80);
+    if (item.segmentCount) s += Math.min(Number(item.segmentCount) || 0, 80);
+    const bytes = Number(item.estimatedSize || item.size) || 0;
+    if (bytes) s += Math.min(bytes / 1e6, 120);
     if (item.width && item.height) s += (item.width * item.height) / 80_000;
-    if (item.duration && item.duration > 60) s += Math.min(item.duration / 10, 40);
+    const dur = Number(item.duration) || 0;
+    if (dur > 0) s += Math.min(dur / 5, 400);
     if (item.thumbnail) s += 5;
     // Prefer page-titled items
     if (item.title && !isUglyBase(item.title)) s += 15;
     if (item.pageTitle && !isUglyBase(item.pageTitle)) s += 10;
+    const isStream = !!(item.isHls || item.type === "stream");
+    if (isStream && dur > 0 && dur < 90) s -= 220;
+    if (looksLikePreviewMedia(item)) s -= 180;
     return s;
   }
 
@@ -727,6 +780,8 @@ const Naming = (() => {
     buildSeriesFilename,
     displayTitle,
     isJunkMedia,
+    looksLikePreviewMedia,
+    compareMediaCandidates,
     mediaScore
   };
 })();

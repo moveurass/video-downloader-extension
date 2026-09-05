@@ -49,4 +49,34 @@ assert.equal(
   null
 );
 
+const Naming = require("../src/naming.js");
+const durationSelect = createAlternativeSelector({
+  getTabItems() {
+    return [
+      {
+        url: "https://cdn.test/preview.m3u8",
+        duration: 30,
+        height: 480,
+        score: 900
+      },
+      {
+        url: "https://cdn.test/feature.m3u8",
+        duration: 7200,
+        height: 1080,
+        score: 100
+      }
+    ];
+  },
+  Naming: {
+    isJunkMedia: () => false,
+    mediaScore: (item) => item.score,
+    compareMediaCandidates: Naming.compareMediaCandidates
+  }
+});
+assert.equal(
+  durationSelect(7, "blob:local").url,
+  "https://cdn.test/feature.m3u8",
+  "duration-first ranking prefers the full HLS over a short preview"
+);
+
 console.log("background media utils: labels, hashes, and alternatives passed");

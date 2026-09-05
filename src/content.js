@@ -33,6 +33,20 @@
     return `${h}p`;
   }
 
+  function looksLikePreviewUrl(url) {
+    const hay = (() => {
+      try {
+        const parsed = new URL(absUrl(url) || url);
+        return `${parsed.pathname}${parsed.search}`;
+      } catch {
+        return String(url || "");
+      }
+    })();
+    return /(?:^|[/?#._=&-])(?:preview|trailer|sample|teaser|promo)(?:[/?#._=&-]|$)/i.test(
+      hay
+    );
+  }
+
   /** Guess height from m3u8/CDN path tokens */
   function heightFromUrl(url) {
     const s = String(url || "");
@@ -638,8 +652,9 @@
     const playerDim = bestPlayerDimensions();
     for (const u of sniffUrlsFromPageText()) {
       const isStream = /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(u);
+      const previewHint = looksLikePreviewUrl(u);
       const fromUrl = heightFromUrl(u);
-      const h = fromUrl || playerDim.height || 0;
+      const h = fromUrl || (previewHint ? 0 : playerDim.height) || 0;
       const q = qualityFromHeight(h);
       items.push({
         url: u,
@@ -650,6 +665,7 @@
         type: isStream ? "stream" : "video",
         source: "script-sniff",
         isHls: isStream,
+        previewHint: previewHint || undefined,
         width: h ? playerDim.width || undefined : undefined,
         height: h || undefined,
         quality: q,
@@ -661,6 +677,7 @@
     if (playerDim.height >= 240) {
       const q = qualityFromHeight(playerDim.height);
       for (const it of items) {
+        if (it.previewHint) continue;
         if (!(it.height >= 240) && (it.isHls || it.type === "stream" || /\.m3u8/i.test(it.url || ""))) {
           it.height = playerDim.height;
           it.width = playerDim.width || it.width;

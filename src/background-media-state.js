@@ -778,17 +778,64 @@
       if (hasReal) items = items.filter((item) => !item.url.startsWith("blob:"));
 
       items = items.map((item) => enrichItem(item.tabId, item));
+      const isHlsOrStream = (item) =>
+        !!(
+          item.isHls ||
+          item.type === "stream" ||
+          /\.m3u8/i.test(item.url || "")
+        );
+      const hlsItems = items.filter(isHlsOrStream);
+      const pageHost = (() => {
+        const sample = items[0] || {};
+        const meta = sample.tabId != null ? tabMeta.get(sample.tabId) : null;
+        const raw =
+          sample.host ||
+          (typeof hostOf === "function" ? hostOf(sample.pageUrl || "") : "") ||
+          meta?.host ||
+          (typeof hostOf === "function" ? hostOf(meta?.lastUrl || "") : "") ||
+          "";
+        return String(raw).replace(/^www\./i, "");
+      })();
+      const preferDuration =
+        !!Naming.isKnownCodeSite?.(pageHost) || hlsItems.length >= 2;
+      const hasLongerHls = (item) =>
+        hlsItems.some(
+          (other) =>
+            other !== item &&
+            (Number(other.duration) || 0) > (Number(item.duration) || 0)
+        );
       const score = (item) => {
         let value = Naming.mediaScore(item);
         if ((item.url || "").startsWith("blob:")) value -= 300;
         if (/\.m3u8/i.test(item.url || "")) value += 450;
         if (item.source === "script-sniff" && /\.m3u8/i.test(item.url || "")) {
-          value += 150;
+          if (preferDuration && hasLongerHls(item)) {
+            value += 0;
+          } else if (preferDuration) {
+            value += 20;
+          } else {
+            value += 150;
+          }
         }
-        if (item.duration && item.duration > 60) value += 80;
+        if (!preferDuration && item.duration && item.duration > 60) value += 80;
+        if (preferDuration) {
+          value += (Number(item.height) || 0) / 10;
+          value += Math.min((Number(item.bandwidth) || 0) / 1e5, 80);
+          value += Math.min(
+            (Number(item.estimatedSize || item.size) || 0) / 1e6,
+            80
+          );
+          value += Math.min(Number(item.segmentCount) || 0, 50);
+        }
         return value;
       };
-      items.sort((a, b) => score(b) - score(a));
+      items.sort((a, b) => {
+        if (preferDuration && typeof Naming.compareMediaCandidates === "function") {
+          const ranked = Naming.compareMediaCandidates(a, b);
+          if (ranked) return ranked;
+        }
+        return score(b) - score(a);
+      });
       return items[0] ? [items[0]] : [];
     }
 

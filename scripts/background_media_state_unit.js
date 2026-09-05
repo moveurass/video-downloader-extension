@@ -30,7 +30,7 @@ function listenerEvent() {
   };
 }
 
-function makeHarness() {
+function makeHarness(overrides = {}) {
   const onHeadersReceived = listenerEvent();
   const onBeforeRequest = listenerEvent();
   const onRemoved = listenerEvent();
@@ -75,7 +75,7 @@ function makeHarness() {
   const store = createStore({
     chrome,
     Naming,
-    HLS: {
+    HLS: overrides.HLS || {
       probe: async () => null,
       heightFromString: () => 0
     },
@@ -467,6 +467,224 @@ async function main() {
         message.pageUrl === "https://youtube.com/watch?v=new"
     ),
     "identity changes trigger an in-tab rescan"
+  );
+
+  const sniffPreview = {
+    url: "https://cdn.example.com/preview/480p/playlist.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "script-sniff",
+    duration: 30,
+    height: 480,
+    width: 854,
+    segmentCount: 6,
+    pageUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  };
+  const networkFeature = {
+    url: "https://cdn.example.com/feature/1080p/index.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "network",
+    duration: 7200,
+    height: 1080,
+    width: 1920,
+    bandwidth: 5_000_000,
+    estimatedSize: 4_500_000_000,
+    segmentCount: 1200,
+    pageUrl: "https://supjav.com/455636.html",
+    host: "supjav.com"
+  };
+
+  ok(
+    Naming.mediaScore(networkFeature) > Naming.mediaScore(sniffPreview),
+    "full-length HLS outscores a 30s sniff preview"
+  );
+  equal(
+    Naming.isJunkMedia(sniffPreview),
+    false,
+    "short HLS previews are not hard-deleted"
+  );
+  equal(
+    Naming.isJunkMedia({
+      url: "https://cdn.example.com/sample/trailer/playlist.m3u8",
+      type: "stream",
+      isHls: true,
+      duration: 28
+    }),
+    false,
+    "HLS URLs with preview tokens stay available when they are the only stream"
+  );
+  ok(
+    Naming.compareMediaCandidates(sniffPreview, networkFeature) > 0,
+    "duration-first compare ranks the feature ahead of the sniff"
+  );
+
+  store.setTabMeta(20, {
+    lastUrl: "https://supjav.com/455636.html",
+    host: "supjav.com",
+    title: "SNOS-309"
+  });
+  store.addMedia(20, sniffPreview);
+  store.addMedia(20, networkFeature);
+  await flush();
+  equal(store.getTabItems(20).length, 2, "both HLS captures stay in the tab map");
+  const rankedKnownCode = store.getMediaForTab(20);
+  equal(rankedKnownCode.length, 1, "popup still shows a single primary item");
+  equal(
+    rankedKnownCode[0].url,
+    networkFeature.url,
+    "A: sniff 30s 480p loses to network 7200s 1080p on known-code hosts"
+  );
+  const asyncKnownCode = await store.getMediaForTabAsync(20, {
+    pageUrl: "https://supjav.com/455636.html",
+    title: "SNOS-309"
+  });
+  equal(
+    asyncKnownCode[0]?.url,
+    networkFeature.url,
+    "known-code pages stay on the HLS capture path (not a yt-dlp placeholder)"
+  );
+  equal(asyncKnownCode[0]?.isSiteDownload, undefined);
+
+  store.setTabMeta(21, {
+    lastUrl: "https://supjav.com/only-preview.html",
+    host: "supjav.com"
+  });
+  store.addMedia(21, {
+    ...sniffPreview,
+    url: "https://cdn.example.com/only/preview/playlist.m3u8",
+    pageUrl: "https://supjav.com/only-preview.html"
+  });
+  await flush();
+  const onlyPreview = store.getMediaForTab(21);
+  equal(onlyPreview.length, 1, "B: a lone 30s preview is still shown");
+  equal(
+    onlyPreview[0].url,
+    "https://cdn.example.com/only/preview/playlist.m3u8"
+  );
+
+  const harnessProbe = makeHarness({
+    HLS: {
+      probe: async (url) => {
+        if (/preview/.test(url)) {
+          return {
+            kind: "media",
+            duration: 30,
+            segmentCount: 8,
+            inferredHeight: 480
+          };
+        }
+        if (/feature/.test(url)) {
+          return {
+            kind: "media",
+            duration: 7200,
+            segmentCount: 1200,
+            inferredHeight: 1080
+          };
+        }
+        return null;
+      },
+      heightFromString: () => 0
+    }
+  });
+  harnessProbe.store.setTabMeta(22, {
+    lastUrl: "https://123av.com/ko/v/snos-309",
+    host: "123av.com"
+  });
+  harnessProbe.store.addMedia(22, {
+    url: "https://cdn.example.com/preview/playlist.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "script-sniff",
+    height: 480,
+    pageUrl: "https://123av.com/ko/v/snos-309",
+    host: "123av.com"
+  });
+  harnessProbe.store.addMedia(22, {
+    url: "https://cdn.example.com/feature/playlist.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "network",
+    pageUrl: "https://123av.com/ko/v/snos-309",
+    host: "123av.com"
+  });
+  await flush();
+  await flush();
+  const afterProbe = harnessProbe.store.getMediaForTab(22);
+  equal(afterProbe.length, 1);
+  equal(
+    afterProbe[0].url,
+    "https://cdn.example.com/feature/playlist.m3u8",
+    "C: after maybeProbeHls fills durations, the longest HLS wins"
+  );
+  equal(afterProbe[0].duration, 7200);
+  equal(afterProbe[0].height, 1080);
+
+  store.addMedia(23, {
+    url: "https://cdn.example.com/bumper.mp4",
+    type: "video",
+    duration: 5,
+    width: 640,
+    height: 360
+  });
+  equal(
+    store.getTabItems(23).length,
+    0,
+    "D: progressive short mp4 junk is still discarded"
+  );
+  store.addMedia(23, {
+    url: "https://cdn.example.com/clip.mp4",
+    type: "video",
+    duration: 12,
+    width: 640,
+    height: 360
+  });
+  equal(
+    store.getTabItems(23).length,
+    0,
+    "D: sub-15s low-res progressive clips stay junk"
+  );
+  store.addMedia(23, {
+    url: "https://cdn.example.com/preview/promo/ad.mp4",
+    type: "video",
+    duration: 45,
+    width: 1280,
+    height: 720
+  });
+  equal(
+    store.getTabItems(23).length,
+    0,
+    "D: progressive preview-path mp4 junk is unchanged"
+  );
+
+  store.setTabMeta(24, {
+    lastUrl: "https://example.net/watch/clip",
+    host: "example.net"
+  });
+  store.addMedia(24, {
+    url: "https://cdn.example.net/sniff/playlist.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "script-sniff",
+    duration: 30,
+    height: 480,
+    pageUrl: "https://example.net/watch/clip"
+  });
+  store.addMedia(24, {
+    url: "https://cdn.example.net/play/master.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "network",
+    duration: 1800,
+    height: 720,
+    pageUrl: "https://example.net/watch/clip"
+  });
+  await flush();
+  equal(
+    store.getMediaForTab(24)[0].url,
+    "https://cdn.example.net/play/master.m3u8",
+    "two HLS URLs on a generic host still prefer the longest duration"
   );
 
   const oldCodeUrl = "https://123av.com/ko/v/snos-341-uncensore";
