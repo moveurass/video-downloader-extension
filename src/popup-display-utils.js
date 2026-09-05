@@ -404,7 +404,9 @@
         if (samePage && cached[0]) {
           top = mergeStableItem(cached[0], top);
         }
-        if (!local.isSiteDownload) {
+        const helperPage =
+          local.isSiteDownload === true || deps.isSitePage(url);
+        if (!helperPage) {
           const stable = samePage
             ? {
                 ...local,
