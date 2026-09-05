@@ -401,6 +401,45 @@ async function main() {
     "resume reuses the exact helper output identity"
   );
 
+  let provisionalPayload;
+  const provisionalRunner = createRunner(baseDeps({
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        provisionalPayload = payload;
+        return { filename: payload.filename, size: 200_000 };
+      }
+    },
+    getActiveDownload: () => ({
+      id: "youtube-first-paint",
+      title: "Current provisional title",
+      runGeneration: 1
+    }),
+    ytdlpFilenameHint: (filename, title) =>
+      filename || (title ? `${title}.mp4` : undefined),
+    lockHelperResumeIdentity: (jobId, titleHint) => ({
+      resumeKey: jobId,
+      titleHint
+    })
+  }));
+  await provisionalRunner.downloadViaYtDlp(
+    9,
+    "https://www.youtube.com/watch?v=current",
+    "https://www.youtube.com/watch?v=current",
+    "",
+    "best",
+    "youtube-first-paint"
+  );
+  equal(
+    provisionalPayload.outputStem,
+    "Current provisional title.mp4",
+    "helper output identity uses the provisional video title on first start"
+  );
+  equal(
+    provisionalPayload.title,
+    "Current provisional title.mp4"
+  );
+
   console.log(`background_site_helper_unit: ${assertions} assertions passed`);
 }
 

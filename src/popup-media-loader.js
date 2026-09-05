@@ -254,7 +254,7 @@
         }
       }
 
-      async function loadMedia() {
+      async function loadMedia(options = {}) {
         const requestId = ++loadSequence;
         let tab = await resolveActiveTab();
         if (isSuperseded(requestId, tab || {})) return;
@@ -353,13 +353,17 @@
         if (isSuperseded(requestId, tab)) return;
 
         let res = null;
+        const youtubeId = youtubeVideoId(currentTabUrl);
         try {
           res = await chrome.runtime.sendMessage({
             type: "GET_MEDIA",
             tabId: getCurrentTabId(),
             pageUrl: currentTabUrl,
             // Browser tab titles can lag behind a YouTube pushState URL.
-            title: youtubeVideoId(currentTabUrl) ? "" : tab.title || ""
+            title:
+              youtubeId && options.navigation
+                ? ""
+                : tab.title || ""
           });
         } catch {
           res = null;
@@ -367,7 +371,6 @@
         if (isSuperseded(requestId, tab)) return;
 
         const curKey = pageKey(currentTabUrl);
-        const youtubeId = youtubeVideoId(currentTabUrl);
         const rawItems = (Array.isArray(res?.items) ? res.items : [])
           .filter((item) => {
             const itemKey = pageKey(item.pageUrl || item.url || "");
@@ -391,7 +394,10 @@
                 : undefined
             };
           });
-        const siteTab = youtubeId ? { ...tab, title: "" } : tab;
+        const siteTab =
+          youtubeId && options.navigation
+            ? { ...tab, title: "" }
+            : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));
 
         // Ask the live top frame again after SCAN_NOW. YouTube can update the
@@ -405,7 +411,7 @@
             const latestUrl = latestTab?.url || latestTab?.pendingUrl || "";
             const latestKey = pageKey(latestUrl);
             if (latestKey && curKey && latestKey !== curKey) {
-              return loadMedia();
+              return loadMedia({ navigation: true });
             }
           } catch {
             /* keep the URL captured at the start of this request */

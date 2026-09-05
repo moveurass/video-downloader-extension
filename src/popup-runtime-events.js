@@ -20,6 +20,41 @@
       }
     }
 
+    function youtubeVideoId(rawUrl) {
+      try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (host === "youtu.be") {
+          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+        }
+        if (!host.includes("youtube")) return "";
+        return (
+          url.searchParams.get("v") ||
+          url.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
+          ""
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    function youtubeThumbnailForPage(pageUrl) {
+      const videoId = youtubeVideoId(pageUrl);
+      return videoId
+        ? `https://i.ytimg.com/vi/${encodeURIComponent(
+            videoId
+          )}/hqdefault.jpg`
+        : "";
+    }
+
+    function youtubeThumbnailMatches(thumbnail, videoId) {
+      if (!thumbnail || !videoId) return false;
+      const actual = String(thumbnail).match(
+        /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
+      )?.[1];
+      return actual === videoId;
+    }
+
     function createHandler(deps) {
       const {
         $,
@@ -164,13 +199,23 @@
               return [];
             }
             if (!identityReady) {
+              const currentYoutubeId = youtubeVideoId(currentTabUrl);
+              const provisionalSafe =
+                item.provisionalIdentitySafe === true &&
+                !!currentYoutubeId;
+              const safeThumbnail = youtubeThumbnailMatches(
+                item.thumbnail,
+                currentYoutubeId
+              )
+                ? item.thumbnail
+                : youtubeThumbnailForPage(currentTabUrl);
               return [{
                 ...item,
-                thumbnail: undefined,
-                title: undefined,
-                pageTitle: undefined,
-                displayName: undefined,
-                filename: undefined
+                thumbnail: safeThumbnail || undefined,
+                title: provisionalSafe ? item.title : undefined,
+                pageTitle: provisionalSafe ? item.pageTitle : undefined,
+                displayName: provisionalSafe ? item.displayName : undefined,
+                filename: provisionalSafe ? item.filename : undefined
               }];
             }
             return [item];
@@ -185,7 +230,7 @@
             // Paint the new MEDIA_UPDATED payload (or its site placeholder)
             // before refreshing metadata. A superseded async load can then
             // never strand a known helper page in the global empty state.
-            Promise.resolve(loadMedia()).catch(() => {});
+            Promise.resolve(loadMedia({ navigation: true })).catch(() => {});
           }
         }
 

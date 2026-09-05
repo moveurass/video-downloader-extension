@@ -101,6 +101,52 @@
       return !expected || !actual || expected === actual;
     }
 
+    function youtubeVideoId(rawUrl) {
+      try {
+        const url = new URL(rawUrl);
+        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
+        if (host === "youtu.be") {
+          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
+        }
+        if (
+          !host.includes("youtube.com") &&
+          !host.includes("youtube-nocookie.com")
+        ) {
+          return "";
+        }
+        return (
+          url.searchParams.get("v") ||
+          url.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
+          ""
+        );
+      } catch {
+        return "";
+      }
+    }
+
+    function youtubeThumbnailForPage(pageUrl) {
+      const videoId = youtubeVideoId(pageUrl);
+      return videoId
+        ? `https://i.ytimg.com/vi/${encodeURIComponent(
+            videoId
+          )}/hqdefault.jpg`
+        : "";
+    }
+
+    function usableProvisionalTitle(rawTitle) {
+      const title =
+        Naming.cleanPageTitle(rawTitle || "") ||
+        String(rawTitle || "").trim();
+      if (
+        !title ||
+        Naming.isUglyBase?.(title) ||
+        /^(?:youtube|youtube 영상|영상|동영상|video)$/i.test(title)
+      ) {
+        return "";
+      }
+      return title;
+    }
+
     function getTabMap(tabId) {
       if (!tabMedia.has(tabId)) tabMedia.set(tabId, new Map());
       return tabMedia.get(tabId);
@@ -163,13 +209,34 @@
       const code = Naming.extractProductCode?.(pageUrl) || "";
       if (!kind && !code) return null;
       const meta = tab?.id != null ? tabMeta.get(tab.id) : null;
+      const currentPageKey = pageIdentityKey(pageUrl);
       const identityReady =
         kind !== "youtube" || meta?.identityConfirmed === true;
+      const youtubeId =
+        kind === "youtube" ? youtubeVideoId(pageUrl) : "";
+      const trustedMetaTitle =
+        identityReady ||
+        (meta?.titlePageKey &&
+          meta.titlePageKey === currentPageKey)
+          ? usableProvisionalTitle(meta?.title)
+          : "";
+      const provisionalTabTitle =
+        kind !== "youtube" ||
+        identityReady ||
+        meta?.provisionalTitleBlocked !== true
+          ? usableProvisionalTitle(tab?.title)
+          : "";
       const title =
-        (identityReady ? meta?.title : "") ||
-        (identityReady ? Naming.cleanPageTitle(tab?.title || "") : "") ||
+        trustedMetaTitle ||
+        provisionalTabTitle ||
         code ||
         siteDefaultTitle(kind);
+      const thumbnail =
+        (meta?.thumbnail &&
+        thumbnailMatchesPageKey(meta.thumbnail, currentPageKey)
+          ? meta.thumbnail
+          : "") ||
+        (youtubeId ? youtubeThumbnailForPage(pageUrl) : "");
       return enrichItem(tab.id, {
         url: pageUrl,
         type: kind ? "stream" : "page",
@@ -181,7 +248,8 @@
         title,
         pageTitle: title,
         pageUrl,
-        thumbnail: identityReady ? meta?.thumbnail : undefined,
+        thumbnail: thumbnail || undefined,
+        provisionalIdentitySafe: !!youtubeId,
         host: hostOf(pageUrl),
         quality: "best",
         format: "MP4"
@@ -214,8 +282,10 @@
           lastUrl: prevUrl,
           pageKey: pageIdentityKey(prevUrl),
           title: undefined,
+          titlePageKey: undefined,
           thumbnail: undefined,
           identityConfirmed: false,
+          provisionalTitleBlocked: true,
           host: (() => {
             try {
               return new URL(prevUrl).hostname;
@@ -258,7 +328,11 @@
         pageIdentityKey(itemPage) === meta.pageKey;
       const identityReady =
         !String(meta?.pageKey || "").startsWith("yt:") ||
-        meta?.identityConfirmed === true;
+        meta?.identityConfirmed === true ||
+        (samePage && item.provisionalIdentitySafe === true) ||
+        (samePage &&
+          !!meta?.title &&
+          meta?.titlePageKey === meta?.pageKey);
 
       const tabTitle = samePage && identityReady ? meta?.title || "" : "";
       const pageRef =
@@ -451,12 +525,23 @@
       const prevKey =
         prev.pageKey || (prev.lastUrl ? pageIdentityKey(prev.lastUrl) : "");
       const pageChanged = !!(prevKey && nextKey && prevKey !== nextKey);
+      const currentYoutubeId = youtubeVideoId(nextUrl);
+      const incomingVideoId = String(meta.videoId || "");
+      const incomingTitle =
+        (!currentYoutubeId ||
+          !incomingVideoId ||
+          currentYoutubeId === incomingVideoId) &&
+        usableProvisionalTitle(meta.title)
+          ? usableProvisionalTitle(meta.title)
+          : "";
 
       let title;
       if (pageChanged) {
-        title = meta.title || undefined;
+        title = incomingTitle || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "title")) {
-        title = meta.title || undefined;
+        // Empty/unconfirmed metadata is common during YouTube SPA startup.
+        // Keep a title already associated with this exact page identity.
+        title = incomingTitle || prev.title;
       } else {
         title = prev.title;
       }
@@ -471,13 +556,20 @@
       if (pageChanged) {
         thumbnail = incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
-        thumbnail = incomingThumbnail || undefined;
+        thumbnail = incomingThumbnail || prev.thumbnail;
       } else {
         thumbnail = prev.thumbnail;
       }
 
       const next = {
         title,
+        titlePageKey: title
+          ? incomingTitle
+            ? nextKey
+            : pageChanged
+              ? undefined
+              : prev.titlePageKey
+          : undefined,
         thumbnail,
         host: meta.host || prev.host,
         lastUrl: nextUrl || prev.lastUrl,
@@ -491,7 +583,12 @@
           ? meta.identityConfirmed === true
           : Object.prototype.hasOwnProperty.call(meta, "identityConfirmed")
             ? meta.identityConfirmed === true
-            : prev.identityConfirmed
+            : prev.identityConfirmed,
+        provisionalTitleBlocked: pageChanged
+          ? !incomingTitle
+          : incomingTitle || meta.identityConfirmed === true
+            ? false
+            : prev.provisionalTitleBlocked === true
       };
 
       if (pageChanged) tabMedia.delete(tabId);

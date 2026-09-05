@@ -172,6 +172,46 @@ async function main() {
   );
   equal(store.pageIdentityKey("file:///tmp/video.mp4"), "");
 
+  const provisionalYoutubeUrl =
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  const provisionalYoutube = store.makeSitePlaceholder({
+    id: 16,
+    url: provisionalYoutubeUrl,
+    title: "Actual video title - YouTube"
+  });
+  equal(provisionalYoutube.title, "Actual video title");
+  equal(
+    provisionalYoutube.thumbnail,
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    "URL-derived thumbnail is safe before identity confirmation"
+  );
+  equal(
+    provisionalYoutube.filename,
+    "Actual video title.mp4",
+    "first-paint filename uses the provisional real tab title"
+  );
+  store.setTabMeta(17, {
+    lastUrl: provisionalYoutubeUrl,
+    title: "Actual video title",
+    thumbnail:
+      "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    videoId: "dQw4w9WgXcQ",
+    identityConfirmed: false
+  });
+  store.setTabMeta(17, {
+    lastUrl: provisionalYoutubeUrl,
+    title: "",
+    thumbnail: "",
+    videoId: "dQw4w9WgXcQ",
+    identityConfirmed: false
+  });
+  equal(store.getTabMeta(17).title, "Actual video title");
+  equal(
+    store.getTabMeta(17).thumbnail,
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    "same-id unconfirmed metadata cannot clear the last good title/thumbnail"
+  );
+
   store.setTabMeta(7, {
     lastUrl: "https://example.com/watch/one",
     title: "First title",
@@ -405,6 +445,16 @@ async function main() {
   equal(
     navigationUpdate?.items?.[0]?.pageUrl,
     "https://youtube.com/watch?v=new"
+  );
+  equal(
+    navigationUpdate?.items?.[0]?.thumbnail,
+    "https://i.ytimg.com/vi/new/hqdefault.jpg",
+    "cross-video navigation derives a thumbnail only from the new URL id"
+  );
+  equal(
+    navigationUpdate?.items?.[0]?.title,
+    "YouTube 영상",
+    "cross-video navigation does not reuse the previous tab title"
   );
   ok(
     tabMessages.some(

@@ -28,6 +28,31 @@
     );
   }
 
+  function youtubeVideoId(url) {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+      if (host === "youtu.be") {
+        return parsed.pathname.replace(/^\/+/, "").split("/")[0] || "";
+      }
+      if (!isYoutubeUrl(url)) return "";
+      return (
+        parsed.searchParams.get("v") ||
+        parsed.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
+        ""
+      );
+    } catch {
+      return "";
+    }
+  }
+
+  function youtubeThumbnailForUrl(url) {
+    const videoId = youtubeVideoId(url);
+    return videoId
+      ? `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/hqdefault.jpg`
+      : "";
+  }
+
   function isTiktokUrl(url) {
     const host = hostOf(url);
     if (!host || /tiktokcdn|byteicdn|byteoversea|ibyteimg/i.test(host)) return false;
@@ -264,6 +289,8 @@
     if (!title || /^(youtube|tiktok|instagram|x|twitter|facebook|bilibili)$/i.test(title)) {
       title = siteDefaultTitle(kind);
     }
+    const youtubeId = kind === "youtube" ? youtubeVideoId(pageUrl) : "";
+    const thumbnail = youtubeId ? youtubeThumbnailForUrl(pageUrl) : "";
     const safeBase = title
       .replace(/[<>:"/\\|?*\x00-\x1f]/g, " ")
       .replace(/\s+/g, " ")
@@ -281,6 +308,8 @@
       pageTitle: title,
       displayName: title,
       filename: `${safeBase || siteLabel(pageUrl) || "영상"}.mp4`,
+      thumbnail: thumbnail || undefined,
+      provisionalIdentitySafe: !!youtubeId,
       quality: "",
       format: "MP4",
       host: hostOf(pageUrl) || kind
@@ -290,6 +319,8 @@
   return {
     hostOf,
     isYoutubeUrl,
+    youtubeVideoId,
+    youtubeThumbnailForUrl,
     isTiktokUrl,
     isInstagramHostUrl,
     isInstagramPostUrl,

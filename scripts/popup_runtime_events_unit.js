@@ -295,7 +295,7 @@ check(typeof PopupRuntimeEvents.bind, "function");
       {
         pageUrl: "https://www.youtube.com/watch?v=new",
         title: undefined,
-        thumbnail: undefined,
+        thumbnail: "https://i.ytimg.com/vi/new/hqdefault.jpg",
         pageTitle: undefined,
         displayName: undefined,
         filename: undefined
@@ -310,7 +310,7 @@ check(typeof PopupRuntimeEvents.bind, "function");
       [{
         pageUrl: "https://www.youtube.com/watch?v=new",
         title: undefined,
-        thumbnail: undefined,
+        thumbnail: "https://i.ytimg.com/vi/new/hqdefault.jpg",
         pageTitle: undefined,
         displayName: undefined,
         filename: undefined
@@ -348,7 +348,7 @@ check(typeof PopupRuntimeEvents.bind, "function");
       pageUrl: state.currentTabUrl,
       title: undefined,
       pageTitle: undefined,
-      thumbnail: undefined,
+      thumbnail: "https://i.ytimg.com/vi/current/hqdefault.jpg",
       displayName: undefined,
       filename: undefined
     },
@@ -389,6 +389,43 @@ check(typeof PopupRuntimeEvents.bind, "function");
     harness.state.allItems[0].thumbnail,
     previous.thumbnail,
     "same-page unconfirmed identity keeps the last good thumbnail"
+  );
+}
+
+{
+  const pageUrl = "https://www.youtube.com/watch?v=current";
+  const { handler, state } = makeHarness();
+  state.currentTabUrl = pageUrl;
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl,
+    identityConfirmed: false,
+    items: [{
+      url: pageUrl,
+      pageUrl,
+      isSiteDownload: true,
+      provisionalIdentitySafe: true,
+      title: "Current provisional title",
+      pageTitle: "Current provisional title",
+      displayName: "Current provisional title",
+      filename: "Current provisional title.mp4"
+    }]
+  });
+  check(
+    state.allItems[1].title,
+    "Current provisional title",
+    "URL-bound provisional YouTube title survives first paint"
+  );
+  check(
+    state.allItems[1].thumbnail,
+    "https://i.ytimg.com/vi/current/hqdefault.jpg",
+    "URL-bound provisional YouTube thumbnail is synthesized immediately"
+  );
+  check(
+    state.allItems[1].filename,
+    "Current provisional title.mp4",
+    "provisional title supplies the initial filename stem"
   );
 }
 

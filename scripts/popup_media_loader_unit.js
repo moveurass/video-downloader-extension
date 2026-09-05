@@ -355,7 +355,7 @@ async function main() {
     setTimeout: (callback) => callback()
   });
 
-  await spaLoader.loadMedia();
+  await spaLoader.loadMedia({ navigation: true });
   check(
     spaRenders[0],
     [{
@@ -394,6 +394,19 @@ async function main() {
     "refetched metadata is bound to the current watch URL"
   );
 
+  spaCurrentTabUrl = null;
+  spaItems = [];
+  spaTab.title = "Current video - YouTube";
+  const firstPaintMessageStart = spaRuntimeMessages.length;
+  await spaLoader.loadMedia();
+  check(
+    spaRuntimeMessages
+      .slice(firstPaintMessageStart)
+      .find((message) => message.type === "GET_MEDIA")?.title,
+    "Current video - YouTube",
+    "initial YouTube load forwards the real tab title for filename locking"
+  );
+
   spaCurrentTabUrl = oldWatchUrl;
   spaItems = [{
     pageUrl: oldWatchUrl,
@@ -401,7 +414,10 @@ async function main() {
     thumbnail: "https://i.ytimg.com/vi/previous/hqdefault.jpg"
   }];
   const raceRenderStart = spaRenders.length;
-  await Promise.all([spaLoader.loadMedia(), spaLoader.loadMedia()]);
+  await Promise.all([
+    spaLoader.loadMedia({ navigation: true }),
+    spaLoader.loadMedia({ navigation: true })
+  ]);
   const raceRenders = spaRenders.slice(raceRenderStart);
   check(
     raceRenders.length > 0 &&
