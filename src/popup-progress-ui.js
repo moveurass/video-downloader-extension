@@ -52,6 +52,12 @@
       return !!id && dismissedJobIds.has(id);
     }
 
+    function shouldIgnoreDismissed(job, opts = {}) {
+      const id = job?.id || job?.jobId;
+      if (!isDismissedJob(id) || opts.local) return false;
+      return UVDQueueState.statusOf(job, {}) !== "running";
+    }
+
     async function persistDismiss(message) {
       return deps.sendMessage(message);
     }
@@ -169,7 +175,7 @@
         let structureChanged = false;
         let progressOnly = false;
         for (const job of jobs) {
-          if (!job?.id || isDismissedJob(job.id)) continue;
+          if (!job?.id || shouldIgnoreDismissed(job)) continue;
           trackedJobIds.add(job.id);
           const prev = uiJobs.get(job.id);
           if (prev && !UVDQueueState.shouldAccept(prev, job)) continue;
@@ -247,11 +253,8 @@
     function upsertUiJob(job, opts = {}) {
       if (!job?.id && !job?.jobId) return;
       const id = job.id || job.jobId;
-      if (isDismissedJob(id) && !opts.local) {
-        const incomingStatus = UVDQueueState.statusOf(job, {});
-        if (incomingStatus !== "running") return;
-        forgetDismissed(id);
-      }
+      if (shouldIgnoreDismissed(job, opts)) return;
+      if (isDismissedJob(id)) forgetDismissed(id);
       const prev = uiJobs.get(id) || {};
       if (prev.id && !UVDQueueState.shouldAccept(prev, job, opts)) return;
       const status = UVDQueueState.statusOf(job, prev);
@@ -693,7 +696,7 @@
       if (!jobOrProgress) return;
       const progress = jobOrProgress;
       const jobId = progress.id || progress.jobId;
-      if (isDismissedJob(jobId) && !opts.local) return;
+      if (shouldIgnoreDismissed(progress, opts)) return;
       if (!jobId) {
         const running = [...uiJobs.values()].filter((job) => job.status === "running");
         if (running.length > 1) return;
@@ -754,7 +757,7 @@
         const res = await deps.sendMessage({ type: "GET_ACTIVE_DOWNLOADS" });
         const jobs = res?.jobs || [];
         for (const job of jobs) {
-          if (job?.id && !isDismissedJob(job.id)) {
+          if (job?.id && !shouldIgnoreDismissed(job)) {
             trackedJobIds.add(job.id);
             upsertUiJob(job, { toast: false });
           }
