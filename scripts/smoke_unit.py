@@ -179,6 +179,18 @@ def main() -> int:
     )
     aria2_error = "ERROR: aria2c exited with code 1"
     check(
+        "TikTok pause keeps a partial dest; cancel unlinks it",
+        not helper_server.should_unlink_stopped_download(
+            cancel=False, pause=True
+        )
+        and helper_server.should_unlink_stopped_download(
+            cancel=True, pause=False
+        )
+        and helper_server.should_unlink_stopped_download(
+            cancel=False, pause=False
+        ),
+    )
+    check(
         "aria2 failure gets exactly one native retry",
         helper_server.should_retry_without_aria2(
             True, False, 1, aria2_error

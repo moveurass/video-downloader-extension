@@ -810,17 +810,23 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
         return True
     except Exception as e:
         with jobs_lock:
-            stopped = bool(
-                jobs[job_id].get("cancel") or jobs[job_id].get("pause")
-            )
+            cancelled = bool(jobs[job_id].get("cancel"))
+            paused = bool(jobs[job_id].get("pause"))
+            stopped = cancelled or paused
             if not stopped:
                 jobs[job_id]["message"] = f"TikTok 직접 저장 실패: {e}"
-        try:
-            dest.unlink(missing_ok=True)
-        except Exception:
-            pass
-        # A cancelled job must not fall through to the yt-dlp attempts.
+        if should_unlink_stopped_download(cancel=cancelled, pause=paused):
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception:
+                pass
+        # A cancelled or paused job must not fall through to the yt-dlp attempts.
         return stopped
+
+
+def should_unlink_stopped_download(*, cancel: bool, pause: bool) -> bool:
+    """Unlink a partial file on cancel or failure; keep it when only paused."""
+    return not (pause and not cancel)
 
 
 def find_ytdlp() -> str | None:

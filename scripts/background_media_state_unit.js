@@ -538,6 +538,20 @@ async function main() {
     false,
     "known-code homepages are not video pages"
   );
+  equal(
+    Naming.isKnownCodeVideoPage("https://supjav.com/genre/123"),
+    false,
+    "numeric list/tag pages are not video pages"
+  );
+  equal(
+    Naming.isKnownCodeVideoPage("https://supjav.com/tag/1234"),
+    false,
+    "numeric tag pages are not video pages"
+  );
+  ok(
+    Naming.isKnownCodeVideoPage("https://supjav.com/455636"),
+    "bare numeric article paths stay video pages"
+  );
 
   const unprobedFeature = {
     url: "https://cdn.example.com/feature/unprobed/index.m3u8",

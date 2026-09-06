@@ -392,6 +392,26 @@ function main() {
     "SNOS-342 훨씬 긴 실제 영상 제목",
     "short generic metadata cannot replace a richer same-page title"
   );
+  const otherMedia = u.ensureSiteItems([{
+    url: "https://cdn.test/snos-342/other.m3u8",
+    pageUrl: codePage,
+    title: "SNOS-342 다른 스트림",
+    thumbnail: "https://img.test/snos-342-other.jpg"
+  }], { url: codePage })[0];
+  check(
+    otherMedia.quality || "",
+    "",
+    "quality does not inherit when the media URL changes"
+  );
+  u.ensureSiteItems([{
+    url: "https://cdn.test/snos-342/master.m3u8",
+    pageUrl: codePage,
+    type: "stream",
+    isHls: true,
+    title: "SNOS-342 훨씬 긴 실제 영상 제목",
+    thumbnail: "https://img.test/snos-342.jpg",
+    quality: "720p"
+  }], { url: codePage });
   h.setCurrentTabUrl("https://123av.com/ko/v/snos-342");
   const suffixVariant = u.ensureSiteItems([], {
     url: "https://123av.com/ko/v/snos-342"

@@ -393,9 +393,9 @@
           }
         }
 
+        const thumb = card.querySelector(".thumb");
+        const image = card.querySelector(".thumb-img");
         if (item.thumbnail) {
-          const thumb = card.querySelector(".thumb");
-          const image = card.querySelector(".thumb-img");
           if (image) {
             if (image.getAttribute("src") !== item.thumbnail) {
               image.setAttribute("src", item.thumbnail);
@@ -403,6 +403,15 @@
           } else if (thumb) {
             thumb.innerHTML = thumbHtml(item);
             bindThumbFallback(card);
+          }
+        } else if (image) {
+          if (typeof image.removeAttribute === "function") {
+            image.removeAttribute("src");
+          } else {
+            image.setAttribute("src", "");
+          }
+          if (thumb) {
+            thumb.innerHTML = thumbHtml(item);
           }
         }
         return true;

@@ -61,7 +61,11 @@ const Naming = (() => {
       if (extractProductCode(parsed.href)) return true;
       const path = parsed.pathname || "/";
       if (path === "/" || path.length < 3) return false;
-      return /\/\d{3,}(?:\.html?)?$/i.test(path) || /\/\d{3,}\b/.test(path);
+      // Watch pages are a numeric article (`/455636.html` or `/455636`),
+      // not list/tag routes such as `/genre/123`.
+      return (
+        /^\/\d{3,}(?:\.html?)?$/i.test(path) || /\/\d{3,}\.html?$/i.test(path)
+      );
     } catch {
       return false;
     }

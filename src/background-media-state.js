@@ -206,18 +206,20 @@
         kind === "youtube" ? youtubeVideoId(pageUrl) : "";
       const titleBelongsToPage =
         !!(meta?.titlePageKey && meta.titlePageKey === currentPageKey);
-      const trustedMetaTitle =
-        titleBelongsToPage || (identityReady && !knownVideo)
-          ? usableProvisionalTitle(meta?.title)
-          : "";
-      const provisionalTabTitle =
-        knownVideo && meta?.provisionalTitleBlocked
-          ? ""
-          : kind !== "youtube" ||
-              identityReady ||
-              meta?.provisionalTitleBlocked !== true
-            ? usableProvisionalTitle(tab?.title)
-            : "";
+      let trustedMetaTitle = "";
+      if (titleBelongsToPage || (identityReady && !knownVideo)) {
+        trustedMetaTitle = usableProvisionalTitle(meta?.title);
+      }
+      let provisionalTabTitle = "";
+      if (!(knownVideo && meta?.provisionalTitleBlocked)) {
+        if (
+          kind !== "youtube" ||
+          identityReady ||
+          meta?.provisionalTitleBlocked !== true
+        ) {
+          provisionalTabTitle = usableProvisionalTitle(tab?.title);
+        }
+      }
       const title =
         trustedMetaTitle ||
         provisionalTabTitle ||
@@ -322,16 +324,14 @@
         Naming.isKnownCodeVideoPage?.(itemPage) ||
         Naming.isKnownCodeSite?.(hostOf(itemPage) || meta?.host || "")
       );
+      const titleMatchesPage =
+        !meta?.titlePageKey || meta.titlePageKey === meta.pageKey;
       const identityReady =
-        (!String(meta?.pageKey || "").startsWith("yt:") &&
-          (!knownCodePage ||
-            !meta?.titlePageKey ||
-            meta.titlePageKey === meta.pageKey)) ||
         meta?.identityConfirmed === true ||
         (samePage && item.provisionalIdentitySafe === true) ||
-        (samePage &&
-          !!meta?.title &&
-          meta?.titlePageKey === meta?.pageKey);
+        (samePage && !!meta?.title && meta?.titlePageKey === meta?.pageKey) ||
+        (!String(meta?.pageKey || "").startsWith("yt:") &&
+          (!knownCodePage || titleMatchesPage));
 
       const tabTitle = samePage && identityReady ? meta?.title || "" : "";
       const pageRef =

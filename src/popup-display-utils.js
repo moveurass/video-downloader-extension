@@ -394,7 +394,9 @@
           thumbnail:
             incoming.thumbnail ||
             (sameVideo ? previous.thumbnail : undefined),
-          quality: incoming.quality || previous.quality,
+          quality:
+            incoming.quality ||
+            (sameMedia ? previous.quality : incoming.quality),
           duration:
             incoming.duration ||
             (sameMedia ? previous.duration : incoming.duration),
