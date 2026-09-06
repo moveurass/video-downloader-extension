@@ -144,6 +144,29 @@ def main() -> int:
         ]
         and not no_js_runtime_args,
     )
+    js_option_error = "yt-dlp: error: no such option: --js-runtimes"
+    check(
+        "unknown --js-runtimes gets exactly one retry without the flag",
+        helper_server.should_retry_without_js_runtimes(
+            True, False, 2, js_option_error
+        )
+        and not helper_server.should_retry_without_js_runtimes(
+            True, True, 2, js_option_error
+        )
+        and not helper_server.should_retry_without_js_runtimes(
+            False, False, 2, js_option_error
+        )
+        and not helper_server.should_retry_without_js_runtimes(
+            True, False, 2, "ERROR: format is not available"
+        )
+        and helper_server.drop_js_runtime_args(
+            ["yt-dlp", "--js-runtimes", "node:/bin/node", "-J", "--", "https://youtu.be/a"]
+        )
+        == ["yt-dlp", "-J", "--", "https://youtu.be/a"]
+        and helper_server.is_unknown_option_error(
+            "unrecognized arguments: --js-runtimes node:/bin/node"
+        ),
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
@@ -302,7 +325,9 @@ def main() -> int:
         "youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []"
         in helper_source
         and "c.extend(youtube_js_args)" in helper_source
-        and "cmd.extend(ytdlp_js_runtime_args())" in helper_source,
+        and "cmd.extend(youtube_js_args)" in helper_source
+        and "should_retry_without_js_runtimes(" in helper_source
+        and "drop_js_runtime_args(cmd)" in helper_source,
     )
     # Pause → resume must share one work_dir so yt-dlp --continue applies.
     key_a = helper_server.resume_key_for({"resumeKey": "dl_1700_3"}, "https://a.test/v")

@@ -870,6 +870,55 @@ def ytdlp_js_runtime_args() -> list[str]:
     return args
 
 
+def drop_js_runtime_args(cmd: list[str]) -> list[str]:
+    """Remove --js-runtimes flag/value pairs so older yt-dlp can retry."""
+    cleaned: list[str] = []
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "--js-runtimes":
+            skip_next = True
+            continue
+        cleaned.append(arg)
+    return cleaned
+
+
+def is_unknown_option_error(output: str, option: str = "--js-runtimes") -> bool:
+    """Detect argparse-style rejection of an unknown yt-dlp flag."""
+    text = (output or "").lower()
+    unknown = (
+        "no such option" in text
+        or "unrecognized arguments" in text
+        or "unrecognized option" in text
+        or "unknown option" in text
+        or "invalid option" in text
+    )
+    if not unknown:
+        return False
+    token = (option or "").lower().lstrip("-").replace("_", "-")
+    if not token:
+        return True
+    compact = text.replace("_", "-")
+    return token in compact or (option or "").lower() in text
+
+
+def should_retry_without_js_runtimes(
+    using_js_runtimes: bool,
+    fallback_used: bool,
+    return_code: int,
+    output: str,
+) -> bool:
+    """Allow one retry without --js-runtimes when older yt-dlp rejects the flag."""
+    return (
+        using_js_runtimes
+        and not fallback_used
+        and return_code != 0
+        and is_unknown_option_error(output, "--js-runtimes")
+    )
+
+
 def should_use_aria2(
     aria2_path: str | None, speed_profile: str, is_youtube: bool
 ) -> bool:
@@ -1588,7 +1637,9 @@ def run_download(job_id: str, payload: dict) -> None:
     media_published = False
     published_thumbnail_path = ""
     aria2_fallback_used = False
+    js_runtime_fallback_used = False
     native_retry_index = -1
+    js_runtime_retry_index = -1
 
     try:
         for attempt_i, (fmt_try, merge_try, extra) in enumerate(attempts):
@@ -1606,6 +1657,13 @@ def run_download(job_id: str, payload: dict) -> None:
                 if attempt_i == native_retry_index:
                     jobs[job_id]["message"] = (
                         "aria2 고속 다운로드 오류 → 기본 다운로더로 다시 시도…"
+                    )
+                    jobs[job_id]["percent"] = min(
+                        30, max(2, float(jobs[job_id].get("percent") or 2))
+                    )
+                elif attempt_i == js_runtime_retry_index:
+                    jobs[job_id]["message"] = (
+                        "yt-dlp가 --js-runtimes를 몰라 JS 런타임 없이 다시 시도…"
                     )
                     jobs[job_id]["percent"] = min(
                         30, max(2, float(jobs[job_id].get("percent") or 2))
@@ -1755,6 +1813,17 @@ def run_download(job_id: str, payload: dict) -> None:
                 aria2_for_job = False
                 native_retry_index = attempt_i + 1
                 attempts.insert(native_retry_index, (fmt_try, merge_try, extra))
+                continue
+            if should_retry_without_js_runtimes(
+                bool(youtube_js_args),
+                js_runtime_fallback_used,
+                code,
+                last_line,
+            ):
+                js_runtime_fallback_used = True
+                youtube_js_args = []
+                js_runtime_retry_index = attempt_i + 1
+                attempts.insert(js_runtime_retry_index, (fmt_try, merge_try, extra))
                 continue
             # Retry only on format / DRM style failures
             err_l = (last_line or "").lower()
@@ -2108,6 +2177,7 @@ class Handler(BaseHTTPRequestHandler):
                     n = write_netscape_cookies(cookies_list, cpath)
                     if n > 0:
                         cookies_file = str(cpath)
+                youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []
                 cmd = [
                     bin_path,
                     "--skip-download",
@@ -2115,20 +2185,33 @@ class Handler(BaseHTTPRequestHandler):
                     "--ignore-config",
                     "-J",
                 ]
-                if is_youtube:
-                    cmd.extend(ytdlp_js_runtime_args())
+                cmd.extend(youtube_js_args)
                 if is_tt:
                     cmd.extend(["--impersonate", "chrome"])
                 if cookies_file:
                     cmd.extend(["--cookies", cookies_file])
                 cmd.append("--")
                 cmd.append(url)
-                out = subprocess.check_output(
-                    cmd,
-                    text=True,
-                    timeout=90,
-                    stderr=subprocess.STDOUT,
-                )
+                try:
+                    out = subprocess.check_output(
+                        cmd,
+                        text=True,
+                        timeout=90,
+                        stderr=subprocess.STDOUT,
+                    )
+                except subprocess.CalledProcessError as e:
+                    err_text = getattr(e, "output", "") or str(e)
+                    if not should_retry_without_js_runtimes(
+                        bool(youtube_js_args), False, e.returncode or 1, err_text
+                    ):
+                        raise
+                    cmd = drop_js_runtime_args(cmd)
+                    out = subprocess.check_output(
+                        cmd,
+                        text=True,
+                        timeout=90,
+                        stderr=subprocess.STDOUT,
+                    )
                 # -J prints JSON; may have warnings before/after — find last JSON object
                 text = out.strip()
                 # Prefer last line that looks like JSON object
