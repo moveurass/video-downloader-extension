@@ -27,6 +27,10 @@
           return runAsync(() => deps.pause(id), sendResponse);
         case "RESUME_DOWNLOAD":
           return runAsync(() => deps.resume(id), sendResponse);
+        case "DISMISS_DOWNLOAD":
+          return runAsync(() => deps.dismiss(id), sendResponse);
+        case "DISMISS_FINISHED_DOWNLOADS":
+          return runAsync(() => deps.dismissFinished(), sendResponse);
         case "GET_ACTIVE_DOWNLOADS": {
           const jobs = deps.list();
           if (jobs && typeof jobs.then === "function") {

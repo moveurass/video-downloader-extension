@@ -373,6 +373,45 @@ async function main() {
     )
   );
 
+  const dismissedDone = await manager.dismissDownloadJob(doneId);
+  equal(dismissedDone.ok, true);
+  equal(manager.activeDownloads.has(doneId), false);
+  ok(
+    !manager.listActiveDownloads().some((job) => job.id === doneId),
+    "dismissed completed jobs leave the authoritative queue"
+  );
+
+  const stillRunning = await manager.dismissDownloadJob(detachedId);
+  equal(stillRunning.ok, false);
+  equal(manager.activeDownloads.get(detachedId).status, "running");
+
+  const failedId = manager.createDownloadJob({
+    tabId: 11,
+    title: "Failed title",
+    pageUrl: "https://example.test/fail",
+    filename: "fail.mp4"
+  });
+  manager.finishDownloadJob(failedId, null, new Error("network"));
+  equal(manager.activeDownloads.get(failedId).status, "error");
+
+  const keepRunningId = manager.createDownloadJob({
+    tabId: 12,
+    title: "Keep running",
+    pageUrl: "https://example.test/keep",
+    filename: "keep.mp4"
+  });
+  const bulk = await manager.dismissFinishedDownloads();
+  ok(bulk.ok);
+  ok(bulk.dismissed.includes(failedId));
+  ok(bulk.dismissed.includes(helperId));
+  equal(manager.activeDownloads.has(failedId), false);
+  equal(manager.activeDownloads.get(keepRunningId).status, "running");
+  equal(manager.activeDownloads.get(detachedId).status, "running");
+
+  const missing = await manager.dismissDownloadJob("already-gone");
+  equal(missing.ok, true);
+  equal(missing.status, "missing");
+
   const notified = makeHarness({ notifyOnComplete: true });
   const helperResult = {
     downloadId: null,

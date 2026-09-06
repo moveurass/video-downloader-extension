@@ -56,6 +56,7 @@ function makeHarness(responses = []) {
     dlQueueSub: element(),
     dlQueueBadge: element(),
     dlQueueFilters: element(),
+    dlQueueClearDone: element(),
     progress: element(),
     progressFill: element(),
     progressText: element()
@@ -230,6 +231,92 @@ function makeHarness(responses = []) {
     restored.calls.some((call) => call[0] === "chime"),
     false,
     "jobs finished before the popup opened do not chime"
+  );
+
+  const dismiss = makeHarness([
+    { ok: true, dismissed: "done-1" },
+    { jobs: [{ id: "done-1", status: "done", title: "끝난 영상", percent: 100 }] },
+    { jobs: [{ id: "done-1", status: "done", title: "끝난 영상", percent: 100 }] }
+  ]);
+  dismiss.controller.applyJobProgress({
+    id: "done-1", status: "done", title: "끝난 영상", percent: 100
+  });
+  dismiss.controller.applyJobProgress({
+    id: "run-1", status: "running", title: "받는 중", percent: 40
+  });
+  check(await dismiss.controller.dismissUiJob("done-1"), { ok: true, dismissed: "done-1" });
+  check(dismiss.uiJobs.has("done-1"), false, "dismiss removes the finished row");
+  check(dismiss.uiJobs.get("run-1").status, "running", "dismiss leaves running jobs");
+  check(
+    dismiss.calls.some((call) =>
+      call[0] === "sendMessage" && call[1]?.type === "DISMISS_DOWNLOAD"
+    ),
+    true,
+    "dismiss persists to the background"
+  );
+  await dismiss.controller.refreshJobsFromBackground();
+  check(dismiss.uiJobs.has("done-1"), false, "poll does not rehydrate a dismissed job");
+  await dismiss.controller.restoreActiveDownloads();
+  check(dismiss.uiJobs.has("done-1"), false, "restore does not rehydrate a dismissed job");
+  dismiss.controller.applyJobProgress({
+    id: "done-1", status: "done", title: "끝난 영상", percent: 100
+  });
+  check(dismiss.uiJobs.has("done-1"), false, "stale job events stay dismissed");
+
+  const refused = makeHarness();
+  refused.controller.applyJobProgress({
+    id: "live", status: "running", title: "진행", percent: 12
+  });
+  check(
+    (await refused.controller.dismissUiJob("live")).ok,
+    false,
+    "running jobs cannot be dismissed"
+  );
+  check(refused.uiJobs.has("live"), true, "refused dismiss keeps the running row");
+
+  const bulk = makeHarness([{ ok: true, dismissed: ["ok-1", "bad-1"] }]);
+  bulk.controller.applyJobProgress({ id: "ok-1", status: "done", title: "완료" });
+  bulk.controller.applyJobProgress({
+    id: "bad-1", status: "error", title: "실패", error: "network"
+  });
+  bulk.controller.applyJobProgress({
+    id: "live-1", status: "running", title: "진행", percent: 8
+  });
+  bulk.controller.renderDownloadQueue(true);
+  check(
+    bulk.elements.dlQueueClearDone.classList.contains("hidden"),
+    false,
+    "bulk dismiss control appears when finished jobs exist"
+  );
+  const bulkResult = await bulk.controller.dismissFinishedUiJobs();
+  check(bulkResult.ok, true, "bulk dismiss reports success");
+  check(bulk.uiJobs.has("ok-1"), false, "bulk dismiss removes completed jobs");
+  check(bulk.uiJobs.has("bad-1"), false, "bulk dismiss removes failed jobs");
+  check(bulk.uiJobs.has("live-1"), true, "bulk dismiss leaves active jobs");
+  check(
+    bulk.calls.some((call) =>
+      call[0] === "sendMessage" && call[1]?.type === "DISMISS_FINISHED_DOWNLOADS"
+    ),
+    true,
+    "bulk dismiss persists to the background"
+  );
+  bulk.controller.applyJobProgress({
+    id: "fresh", status: "running", title: "다시 받기", percent: 3
+  });
+  check(bulk.uiJobs.has("fresh"), true, "a new download can appear after dismiss");
+
+  const retrySame = makeHarness([{ ok: true, dismissed: "same" }]);
+  retrySame.controller.applyJobProgress({
+    id: "same", status: "error", title: "실패", error: "network"
+  });
+  await retrySame.controller.dismissUiJob("same");
+  retrySame.controller.applyJobProgress({
+    id: "same", status: "running", title: "다시 받기", percent: 1
+  });
+  check(
+    retrySame.uiJobs.get("same")?.status,
+    "running",
+    "a new run of the same job id is allowed"
   );
 
   console.log(`popup progress UI: ${assertions} assertions passed`);

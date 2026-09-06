@@ -128,6 +128,7 @@
     const INTERRUPTED_RESUMABLE_MESSAGE = "중단됨 · 이어받기 가능";
     const INTERRUPTED_ERROR_MESSAGE =
       "브라우저가 재시작되어 다운로드가 중단되었습니다";
+    const DISMISSIBLE_STATUSES = new Set(["done", "error", "cancelled"]);
 
     async function lookupChromeDownload(downloadId) {
       if (downloadId == null || !chrome.downloads?.search) return null;
@@ -452,11 +453,51 @@
       schedule(() => {
         const current = activeDownloads.get(jobId);
         if (current && current.status === "cancelled") {
-          activeDownloads.delete(jobId);
-          persistJobs();
-          updateDownloadBadge();
+          removeTerminalJob(jobId);
         }
       }, 30_000);
+    }
+
+    function removeTerminalJob(jobId) {
+      const job = activeDownloads.get(jobId);
+      if (!job) return false;
+      activeDownloads.delete(jobId);
+      if (job.tabId != null && tabJobMap.get(job.tabId) === jobId) {
+        tabJobMap.delete(job.tabId);
+      }
+      if (hlsProgress.get(-1)?.jobId === jobId) hlsProgress.delete(-1);
+      hlsProgress.delete(jobId);
+      persistJobs();
+      syncDurablePausedJobs().catch(() => {});
+      updateDownloadBadge();
+      return true;
+    }
+
+    async function dismissDownloadJob(jobId) {
+      await ready;
+      const job = activeDownloads.get(jobId);
+      if (!job) return { ok: true, status: "missing", dismissed: jobId };
+      if (!DISMISSIBLE_STATUSES.has(job.status)) {
+        return {
+          ok: false,
+          error: "받는 중·일시정지 항목은 닫을 수 없습니다",
+          status: job.status
+        };
+      }
+      const status = job.status;
+      removeTerminalJob(jobId);
+      return { ok: true, status, dismissed: jobId };
+    }
+
+    async function dismissFinishedDownloads() {
+      await ready;
+      const dismissed = [];
+      for (const [id, job] of [...activeDownloads.entries()]) {
+        if (!DISMISSIBLE_STATUSES.has(job.status)) continue;
+        removeTerminalJob(id);
+        dismissed.push(id);
+      }
+      return { ok: true, dismissed };
     }
 
     function jobIsStopping(job) {
@@ -1075,10 +1116,7 @@
       schedule(() => {
         const current = activeDownloads.get(jobId);
         if (current && current.status !== "running") {
-          activeDownloads.delete(jobId);
-          persistJobs();
-          if (hlsProgress.get(-1)?.jobId === jobId) hlsProgress.delete(-1);
-          updateDownloadBadge();
+          removeTerminalJob(jobId);
         }
       }, 120_000);
     }
@@ -1361,6 +1399,8 @@
       cancelDownloadJob,
       pauseDownloadJob,
       resumeDownloadJob,
+      dismissDownloadJob,
+      dismissFinishedDownloads,
       persistJobs,
       advanceJobEvent,
       broadcastJob,

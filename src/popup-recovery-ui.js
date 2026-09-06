@@ -95,10 +95,16 @@
     async function handleAction(action, { url, path, downloadId, jobId, button }) {
       if (action === "dismiss") {
         const id = button?.getAttribute("data-job") || jobId || "";
-        if (id) {
-          deps.jobs.delete(id);
-          deps.renderDownloadQueue(true);
+        if (!id) return;
+        if (typeof deps.dismissUiJob === "function") {
+          const response = await deps.dismissUiJob(id);
+          if (response?.ok === false) {
+            deps.toast(response.error || "닫기 실패", "error");
+          }
+          return;
         }
+        deps.jobs.delete(id);
+        deps.renderDownloadQueue(true);
       } else if (action === "play_retry" && url) {
         await deps.sendMessage({ type: "OPEN_URL", url });
         deps.toast("페이지에서 재생을 시작한 뒤 다시 받기를 누르세요", "ok");
