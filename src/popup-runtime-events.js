@@ -7,44 +7,34 @@
   function makePopupRuntimeEvents() {
     "use strict";
 
-    function isYoutubePageUrl(rawUrl) {
+    function sitesApi() {
+      if (typeof UVDSites !== "undefined") return UVDSites;
       try {
-        const host = new URL(rawUrl).hostname.replace(/^www\./i, "");
-        return (
-          host === "youtu.be" ||
-          host.includes("youtube.com") ||
-          host.includes("youtube-nocookie.com")
-        );
+        return require("./site-detection.js");
       } catch {
-        return false;
+        return null;
       }
+    }
+
+    function namingApi() {
+      if (typeof Naming !== "undefined") return Naming;
+      try {
+        return require("./naming.js");
+      } catch {
+        return null;
+      }
+    }
+
+    function isYoutubePageUrl(rawUrl) {
+      return !!sitesApi()?.isYoutubeUrl?.(rawUrl);
     }
 
     function youtubeVideoId(rawUrl) {
-      try {
-        const url = new URL(rawUrl);
-        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
-        if (host === "youtu.be") {
-          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
-        }
-        if (!host.includes("youtube")) return "";
-        return (
-          url.searchParams.get("v") ||
-          url.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
-          ""
-        );
-      } catch {
-        return "";
-      }
+      return sitesApi()?.youtubeVideoId?.(rawUrl) || "";
     }
 
     function youtubeThumbnailForPage(pageUrl) {
-      const videoId = youtubeVideoId(pageUrl);
-      return videoId
-        ? `https://i.ytimg.com/vi/${encodeURIComponent(
-            videoId
-          )}/hqdefault.jpg`
-        : "";
+      return sitesApi()?.youtubeThumbnailForUrl?.(pageUrl) || "";
     }
 
     function youtubeThumbnailMatches(thumbnail, videoId) {
@@ -227,9 +217,7 @@
               if (typeof deps.isKnownCodeSite === "function") {
                 return !!deps.isKnownCodeSite(host);
               }
-              return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
-                host
-              );
+              return !!namingApi()?.isKnownCodeSite?.(host);
             } catch {
               return /:code:/.test(curKey);
             }

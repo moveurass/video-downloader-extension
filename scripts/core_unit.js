@@ -26,6 +26,7 @@ const SeriesBannerUI = require("../src/popup-series-banner-ui.js");
 const HlsRuntime = require("../src/background-hls-runtime.js");
 const DirectMedia = require("../src/background-direct-media.js");
 const MediaLoader = require("../src/popup-media-loader.js");
+const MediaMessages = require("../src/background-media-messages.js");
 const SeriesDiscovery = require("../src/popup-series-discovery.js");
 const PopupSeriesNetwork = require("../src/popup-series-network.js");
 const PopupDownloadRequests = require("../src/popup-download-requests.js");
@@ -250,6 +251,27 @@ assert.equal(
 );
 assert.equal(Sites.isDownloadableSiteVideo("https://www.youtube.com/"), false);
 assert.equal(Sites.isDownloadableSiteVideo("https://www.facebook.com/"), false);
+assert.equal(Sites.isYoutubeUrl("https://www.youtube.com/watch?v=abc"), true);
+assert.equal(Sites.isYoutubeUrl("https://youtu.be/abc"), true);
+assert.equal(Sites.isYoutubeUrl("https://notyoutube.com/watch?v=abc"), false);
+assert.equal(Sites.isYoutubeUrl("https://youtube.com.evil.example/watch?v=abc"), false);
+assert.equal(Sites.youtubeVideoId("https://www.youtube.com/watch?v=abc"), "abc");
+assert.equal(Sites.youtubeVideoId("https://notyoutube.com/watch?v=abc"), "");
+assert.equal(Sites.youtubeVideoId("https://music.youtube.com/watch?v=abc"), "abc");
+assert.equal(MediaLoader.youtubeVideoId("https://notyoutube.com/watch?v=abc"), "");
+assert.equal(
+  MediaLoader.youtubeVideoId("https://www.youtube.com/watch?v=abc"),
+  Sites.youtubeVideoId("https://www.youtube.com/watch?v=abc")
+);
+assert.equal(MediaMessages.youtubeVideoId("https://notyoutube.com/watch?v=abc"), "");
+assert.equal(
+  MediaMessages.youtubeVideoId("https://www.youtube.com/watch?v=abc"),
+  Sites.youtubeVideoId("https://www.youtube.com/watch?v=abc")
+);
+assert.equal(Naming.isKnownCodeSite("supjav.com"), true);
+assert.equal(Naming.isKnownCodeSite("123av.com"), true);
+assert.equal(Naming.isKnownCodeSite("youtube.com"), false);
+assert.equal(Naming.isKnownCodeSite("notyoutube.com"), false);
 const youtubePlaceholder = Sites.buildSiteItem({
   url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
   title: "Actual video title - YouTube"

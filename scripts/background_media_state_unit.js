@@ -137,6 +137,14 @@ async function main() {
   equal(store.pageIdentityKey("https://youtube.com/watch?v=alpha&t=3"), "yt:alpha");
   equal(store.pageIdentityKey("https://youtu.be/bravo?t=1"), "yt:bravo");
   equal(
+    store.pageIdentityKey("https://notyoutube.com/watch?v=alpha"),
+    "notyoutube.com/watch?v=alpha"
+  );
+  equal(
+    store.pageIdentityKey("https://youtube.com.evil.example/watch?v=alpha"),
+    "youtube.com.evil.example/watch?v=alpha"
+  );
+  equal(
     store.thumbnailMatchesPageKey(
       "https://i.ytimg.com/vi/old/hqdefault.jpg",
       "yt:new"

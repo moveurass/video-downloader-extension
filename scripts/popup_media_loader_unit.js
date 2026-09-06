@@ -207,6 +207,16 @@ async function main() {
     "YouTube watch identity ignores navigation-only parameters"
   );
   check(
+    MediaLoader.youtubeVideoId("https://notyoutube.com/watch?v=current"),
+    "",
+    "lookalike YouTube hosts do not produce a video id"
+  );
+  check(
+    MediaLoader.youtubeVideoId("https://youtube.com.evil.example/watch?v=current"),
+    "",
+    "suffix YouTube hosts do not produce a video id"
+  );
+  check(
     MediaLoader.thumbnailMatchesPage(
       "https://i.ytimg.com/vi/previous/hqdefault.jpg",
       "https://www.youtube.com/watch?v=current"

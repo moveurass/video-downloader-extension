@@ -21,6 +21,8 @@
       HLS,
       hostOf,
       isYoutubeUrl,
+      youtubeVideoId: youtubeVideoIdFromSites,
+      youtubeThumbnailForUrl,
       isTiktokUrl,
       isInstagramPostUrl,
       isXUrl,
@@ -44,11 +46,11 @@
         const host = u.hostname.replace(/^www\./i, "").toLowerCase();
         const path = u.pathname || "/";
 
-        if (host === "youtu.be") {
-          const id = path.replace(/^\//, "").split("/")[0];
-          return id ? `yt:${id}` : `yt:${path}`;
-        }
-        if (host.includes("youtube") || host.includes("youtube-nocookie")) {
+        if (host === "youtu.be" || isYoutubeUrl?.(url)) {
+          if (host === "youtu.be") {
+            const id = path.replace(/^\//, "").split("/")[0];
+            return id ? `yt:${id}` : `yt:${path}`;
+          }
           const v = u.searchParams.get("v");
           if (v) return `yt:${v}`;
           const m = path.match(/\/(shorts|embed|live|clip)\/([^/?#]+)/i);
@@ -102,29 +104,15 @@
     }
 
     function youtubeVideoId(rawUrl) {
-      try {
-        const url = new URL(rawUrl);
-        const host = url.hostname.replace(/^www\./i, "").toLowerCase();
-        if (host === "youtu.be") {
-          return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
-        }
-        if (
-          !host.includes("youtube.com") &&
-          !host.includes("youtube-nocookie.com")
-        ) {
-          return "";
-        }
-        return (
-          url.searchParams.get("v") ||
-          url.pathname.match(/\/(?:shorts|live|embed)\/([^/?#]+)/i)?.[1] ||
-          ""
-        );
-      } catch {
-        return "";
-      }
+      return typeof youtubeVideoIdFromSites === "function"
+        ? youtubeVideoIdFromSites(rawUrl) || ""
+        : "";
     }
 
     function youtubeThumbnailForPage(pageUrl) {
+      if (typeof youtubeThumbnailForUrl === "function") {
+        return youtubeThumbnailForUrl(pageUrl) || "";
+      }
       const videoId = youtubeVideoId(pageUrl);
       return videoId
         ? `https://i.ytimg.com/vi/${encodeURIComponent(

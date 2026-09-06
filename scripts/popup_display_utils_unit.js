@@ -129,6 +129,20 @@ function makeHarness() {
         return localItem && /youtube|tiktok|instagram/.test(url || "")
           ? { ...localItem, tabTitle: tab?.title, builtFor: url }
           : null;
+      },
+      isYoutubeUrl(value) {
+        try {
+          const host = new URL(value).hostname.replace(/^www\./i, "").toLowerCase();
+          return (
+            host === "youtu.be" ||
+            host === "youtube.com" ||
+            host.endsWith(".youtube.com") ||
+            host === "youtube-nocookie.com" ||
+            host.endsWith(".youtube-nocookie.com")
+          );
+        } catch {
+          return false;
+        }
       }
     },
     UVDPopupMedia,
@@ -232,6 +246,11 @@ function main() {
   check(u.userError("Widevine DRM"), "보호된 영상이라 받을 수 없습니다", "DRM message");
   check(u.userError(null), null, "empty error");
 
+  check(
+    u.pageKey("https://notyoutube.com/watch?v=abc"),
+    "notyoutube.com/watch",
+    "lookalike YouTube hosts do not share watch identity"
+  );
   check(u.pageKey("https://youtu.be/abc?t=4"), "yt:abc", "short YouTube identity");
   check(
     u.pageKey("https://www.youtube.com/watch?v=abc&list=PL1"),
