@@ -137,6 +137,14 @@ async function main() {
   equal(store.pageIdentityKey("https://youtube.com/watch?v=alpha&t=3"), "yt:alpha");
   equal(store.pageIdentityKey("https://youtu.be/bravo?t=1"), "yt:bravo");
   equal(
+    store.pageIdentityKey("https://notyoutube.com/watch?v=alpha"),
+    "notyoutube.com/watch?v=alpha"
+  );
+  equal(
+    store.pageIdentityKey("https://youtube.com.evil.example/watch?v=alpha"),
+    "youtube.com.evil.example/watch?v=alpha"
+  );
+  equal(
     store.thumbnailMatchesPageKey(
       "https://i.ytimg.com/vi/old/hqdefault.jpg",
       "yt:new"
@@ -529,6 +537,20 @@ async function main() {
     Naming.isKnownCodeVideoPage("https://supjav.com/"),
     false,
     "known-code homepages are not video pages"
+  );
+  equal(
+    Naming.isKnownCodeVideoPage("https://supjav.com/genre/123"),
+    false,
+    "numeric list/tag pages are not video pages"
+  );
+  equal(
+    Naming.isKnownCodeVideoPage("https://supjav.com/tag/1234"),
+    false,
+    "numeric tag pages are not video pages"
+  );
+  ok(
+    Naming.isKnownCodeVideoPage("https://supjav.com/455636"),
+    "bare numeric article paths stay video pages"
   );
 
   const unprobedFeature = {

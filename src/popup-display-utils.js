@@ -285,10 +285,10 @@
           const u = new URLCtor(url);
           const host = u.hostname.replace(/^www\./i, "").toLowerCase();
           const path = u.pathname || "/";
-          if (host === "youtu.be") {
-            return `yt:${path.replace(/^\//, "").split("/")[0]}`;
-          }
-          if (host.includes("youtube")) {
+          if (host === "youtu.be" || deps.UVDSites?.isYoutubeUrl?.(url)) {
+            if (host === "youtu.be") {
+              return `yt:${path.replace(/^\//, "").split("/")[0]}`;
+            }
             const v = u.searchParams.get("v");
             if (v) return `yt:${v}`;
             const m = path.match(/\/(shorts|embed|live|clip)\/([^/?#]+)/i);
@@ -394,7 +394,9 @@
           thumbnail:
             incoming.thumbnail ||
             (sameVideo ? previous.thumbnail : undefined),
-          quality: incoming.quality || previous.quality,
+          quality:
+            incoming.quality ||
+            (sameMedia ? previous.quality : incoming.quality),
           duration:
             incoming.duration ||
             (sameMedia ? previous.duration : incoming.duration),

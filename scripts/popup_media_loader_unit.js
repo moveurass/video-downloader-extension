@@ -207,6 +207,16 @@ async function main() {
     "YouTube watch identity ignores navigation-only parameters"
   );
   check(
+    MediaLoader.youtubeVideoId("https://notyoutube.com/watch?v=current"),
+    "",
+    "lookalike YouTube hosts do not produce a video id"
+  );
+  check(
+    MediaLoader.youtubeVideoId("https://youtube.com.evil.example/watch?v=current"),
+    "",
+    "suffix YouTube hosts do not produce a video id"
+  );
+  check(
     MediaLoader.thumbnailMatchesPage(
       "https://i.ytimg.com/vi/previous/hqdefault.jpg",
       "https://www.youtube.com/watch?v=current"
@@ -571,6 +581,12 @@ async function main() {
           imageSrc = value;
           imageSrcWrites += 1;
         }
+      },
+      removeAttribute: (name) => {
+        if (name === "src") {
+          imageSrc = "";
+          imageSrcWrites += 1;
+        }
       }
     }
   };
@@ -605,6 +621,11 @@ async function main() {
   check(patchRenderer.patch(), true, "same-page card supports incremental patching");
   check(imageSrcWrites, 0, "unchanged thumbnail src is preserved");
   check(mediaRebuilds, 0, "incremental patch does not clear the media pane");
+
+  patchedItems[0] = { ...patchedItems[0], thumbnail: undefined };
+  check(patchRenderer.patch(), true, "cleared thumbnail still patches in place");
+  check(imageSrc, "", "cleared thumbnail removes the previous image");
+  check(mediaRebuilds, 0, "clearing a thumbnail does not rebuild the pane");
 
   const genericItem = {
     filename: "동영상_720p.mp4",

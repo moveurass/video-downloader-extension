@@ -5,22 +5,17 @@
 })(typeof globalThis !== "undefined" ? globalThis : self, function makeMediaMessages() {
   "use strict";
 
-  function youtubeVideoId(rawUrl) {
+  function sitesApi() {
+    if (typeof UVDSites !== "undefined") return UVDSites;
     try {
-      const url = new URL(rawUrl);
-      const host = url.hostname.replace(/^www\./i, "").toLowerCase();
-      if (host === "youtu.be") {
-        return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
-      }
-      if (!host.includes("youtube") && !host.includes("youtube-nocookie")) {
-        return "";
-      }
-      const watchId = url.searchParams.get("v");
-      if (watchId) return watchId;
-      return url.pathname.match(/\/(?:shorts|embed|live)\/([^/?#]+)/i)?.[1] || "";
+      return require("./site-detection.js");
     } catch {
-      return "";
+      return null;
     }
+  }
+
+  function youtubeVideoId(rawUrl) {
+    return sitesApi()?.youtubeVideoId?.(rawUrl) || "";
   }
 
   function createHandler(deps) {

@@ -184,20 +184,9 @@
 
   function youtubeVideoId(rawUrl = location.href) {
     try {
-      const url = new URL(rawUrl, location.href);
-      const host = url.hostname.replace(/^www\./i, "").toLowerCase();
-      if (host === "youtu.be") {
-        return url.pathname.replace(/^\/+/, "").split("/")[0] || "";
-      }
-      if (!host.includes("youtube") && !host.includes("youtube-nocookie")) {
-        return "";
-      }
-      const watchId = url.searchParams.get("v");
-      if (watchId) return watchId;
-      const match = url.pathname.match(/\/(?:shorts|embed|live)\/([^/?#]+)/i);
-      return match?.[1] || "";
+      return UVDSites.youtubeVideoId(new URL(rawUrl, location.href).href);
     } catch {
-      return "";
+      return UVDSites.youtubeVideoId(rawUrl);
     }
   }
 
@@ -304,9 +293,7 @@
   }
 
   function isKnownCodeHostName(host = location.hostname) {
-    return /123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime/i.test(
-      String(host || "")
-    );
+    return !!Naming.isKnownCodeSite(host);
   }
 
   function cssBackgroundImageUrl(el) {
@@ -1093,8 +1080,7 @@
   }
 
   function isYouTubeHost() {
-    const h = (location.hostname || "").toLowerCase();
-    return h.includes("youtube.com") || h === "youtu.be" || h.includes("youtube-nocookie.com");
+    return UVDSites.isYoutubeUrl(location.href);
   }
 
   function isInstagramHost() {

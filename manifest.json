@@ -71,6 +71,8 @@
     {
       "matches": ["<all_urls>"],
       "js": [
+        "src/site-detection.js",
+        "src/naming.js",
         "src/hls-downloader.js",
         "src/page-download.js",
         "src/content.js"

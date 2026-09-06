@@ -51,6 +51,8 @@ function MAX_CONCURRENT_STARTS_BG() {
 const {
   hostOf,
   isYoutubeUrl,
+  youtubeVideoId,
+  youtubeThumbnailForUrl,
   isTiktokUrl,
   isInstagramHostUrl,
   isInstagramPostUrl,
@@ -186,6 +188,8 @@ const mediaStore = UVDBackgroundMediaState.createStore({
   HLS,
   hostOf,
   isYoutubeUrl,
+  youtubeVideoId,
+  youtubeThumbnailForUrl,
   isTiktokUrl,
   isInstagramPostUrl,
   isXUrl,
