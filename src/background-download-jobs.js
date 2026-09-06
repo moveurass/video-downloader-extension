@@ -129,6 +129,7 @@
     const INTERRUPTED_ERROR_MESSAGE =
       "브라우저가 재시작되어 다운로드가 중단되었습니다";
     const DISMISSIBLE_STATUSES = new Set(["done", "error", "cancelled"]);
+    const dismissedDownloadIds = new Set();
 
     async function lookupChromeDownload(downloadId) {
       if (downloadId == null || !chrome.downloads?.search) return null;
@@ -476,7 +477,10 @@
     async function dismissDownloadJob(jobId) {
       await ready;
       const job = activeDownloads.get(jobId);
-      if (!job) return { ok: true, status: "missing", dismissed: jobId };
+      if (!job) {
+        if (jobId) dismissedDownloadIds.add(jobId);
+        return { ok: true, status: "missing", dismissed: jobId };
+      }
       if (!DISMISSIBLE_STATUSES.has(job.status)) {
         return {
           ok: false,
@@ -485,6 +489,7 @@
         };
       }
       const status = job.status;
+      dismissedDownloadIds.add(jobId);
       removeTerminalJob(jobId);
       return { ok: true, status, dismissed: jobId };
     }
@@ -494,6 +499,7 @@
       const dismissed = [];
       for (const [id, job] of [...activeDownloads.entries()]) {
         if (!DISMISSIBLE_STATUSES.has(job.status)) continue;
+        dismissedDownloadIds.add(id);
         removeTerminalJob(id);
         dismissed.push(id);
       }
@@ -1229,6 +1235,7 @@
 
     function listActiveDownloads() {
       return [...activeDownloads.values()]
+        .filter((job) => !dismissedDownloadIds.has(job.id))
         .sort((first, second) => second.startedAt - first.startedAt)
         .map(publicJob);
     }

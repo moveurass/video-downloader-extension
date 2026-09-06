@@ -412,6 +412,17 @@ async function main() {
   equal(missing.ok, true);
   equal(missing.status, "missing");
 
+  manager.activeDownloads.set(failedId, {
+    id: failedId,
+    status: "error",
+    startedAt: 1,
+    title: "stale snapshot"
+  });
+  ok(
+    !manager.listActiveDownloads().some((job) => job.id === failedId),
+    "GET_ACTIVE_DOWNLOADS omits a dismissed id even if the map still has it"
+  );
+
   const notified = makeHarness({ notifyOnComplete: true });
   const helperResult = {
     downloadId: null,

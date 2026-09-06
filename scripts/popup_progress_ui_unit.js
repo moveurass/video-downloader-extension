@@ -42,7 +42,7 @@ function element(attributes = {}) {
   };
 }
 
-function makeHarness(responses = []) {
+function makeHarness(responses = [], options = {}) {
   const calls = [];
   const timers = [];
   const intervals = [];
@@ -86,6 +86,7 @@ function makeHarness(responses = []) {
     maxConcurrentStarts: 6,
     sendMessage: async (message) => {
       calls.push(["sendMessage", message]);
+      if (options.sendMessage) return options.sendMessage(message);
       return responses[responseIndex++] || { jobs: [] };
     },
     playCompletionSound: () => calls.push(["chime"]),
@@ -317,6 +318,101 @@ function makeHarness(responses = []) {
     retrySame.uiJobs.get("same")?.status,
     "running",
     "a new run of the same job id is allowed"
+  );
+
+  const staleSnapshot = [
+    {
+      id: "run-live", status: "running", title: "받는 중", percent: 18,
+      updatedAt: 9_000, progressAttempt: 1, progressSeq: 4
+    },
+    {
+      id: "fail-1", status: "error", title: "실패 1",
+      error: "다운로드 중단 (SERVER_BAD_CONTENT)",
+      updatedAt: 8_000, progressAttempt: 1, progressSeq: 2
+    },
+    {
+      id: "fail-2", status: "error", title: "실패 2",
+      error: "다운로드 중단 (SERVER_BAD_CONTENT)",
+      updatedAt: 8_500, progressAttempt: 1, progressSeq: 3
+    }
+  ];
+  let releaseStaleGet;
+  const staleGet = new Promise((resolve) => {
+    releaseStaleGet = resolve;
+  });
+  const race = makeHarness([], {
+    sendMessage: async (message) => {
+      if (message.type === "GET_ACTIVE_DOWNLOADS") return staleGet;
+      if (message.type === "DISMISS_DOWNLOAD") {
+        return { ok: true, dismissed: message.jobId };
+      }
+      return { jobs: [] };
+    }
+  });
+  for (const job of staleSnapshot) {
+    race.controller.applyJobProgress(job);
+  }
+  race.controller.renderDownloadQueue(true);
+  check(race.uiJobs.size, 3, "race setup has 1 running + 2 failed");
+  const inflightRefresh = race.controller.refreshJobsFromBackground();
+  await race.controller.dismissUiJob("fail-1");
+  check(race.uiJobs.has("fail-1"), false, "first failed dismiss applies");
+  check(race.uiJobs.size, 2, "header source is 1 running + 1 failed");
+  const secondDismiss = race.controller.dismissUiJob("fail-2");
+  check(race.uiJobs.has("fail-2"), false, "second failed dismiss applies immediately");
+  check(race.uiJobs.size, 1, "only the running job remains after second dismiss");
+  race.controller.applyJobProgress({
+    jobId: "fail-2",
+    phase: "download",
+    percent: 40,
+    message: "late helper tick"
+  });
+  check(race.uiJobs.has("fail-2"), false, "status-less progress cannot revive dismiss");
+  releaseStaleGet({ jobs: staleSnapshot });
+  await inflightRefresh;
+  await secondDismiss;
+  check(race.uiJobs.has("fail-2"), false, "stale GET snapshot cannot resurrect fail-2");
+  check(race.uiJobs.has("fail-1"), false, "stale GET snapshot cannot resurrect fail-1");
+  check(race.uiJobs.get("run-live")?.status, "running", "running job survives the stale sync");
+  race.controller.applyJobProgress({
+    id: "fail-2",
+    status: "error",
+    title: "실패 2",
+    error: "다운로드 중단 (SERVER_BAD_CONTENT)",
+    updatedAt: 8_500,
+    progressAttempt: 1,
+    progressSeq: 3
+  });
+  check(race.uiJobs.has("fail-2"), false, "replayed failed DOWNLOAD_JOB stays dismissed");
+  race.controller.renderDownloadQueue(true);
+  check(race.uiJobs.size, 1, "rerender of the same snapshot keeps dismiss");
+  check(
+    race.elements.dlQueueTitle.textContent.includes("1개") ||
+      race.elements.dlQueueTitle.textContent.includes("받는 중 1"),
+    true,
+    "header count stays at the single running job"
+  );
+
+  let dismissAttempts = 0;
+  const persistFlake = makeHarness([], {
+    sendMessage: async (message) => {
+      if (message.type === "DISMISS_DOWNLOAD") {
+        dismissAttempts += 1;
+        if (dismissAttempts === 1) throw new Error("channel closed");
+        return { ok: true, dismissed: message.jobId };
+      }
+      return { jobs: staleSnapshot };
+    }
+  });
+  persistFlake.controller.applyJobProgress(staleSnapshot[2]);
+  persistFlake.controller.applyJobProgress(staleSnapshot[0]);
+  await persistFlake.controller.dismissUiJob("fail-2");
+  check(persistFlake.uiJobs.has("fail-2"), false, "persist retry keeps the row dismissed");
+  await persistFlake.controller.refreshJobsFromBackground();
+  check(
+    persistFlake.uiJobs.has("fail-2"),
+    false,
+    "refresh after a flaky persist still cannot resurrect"
   );
 
   console.log(`popup progress UI: ${assertions} assertions passed`);

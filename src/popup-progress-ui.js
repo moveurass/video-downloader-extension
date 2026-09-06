@@ -33,6 +33,7 @@
     let queuePatchDirty = false;
     let queueFullTimer = null;
     const dismissedJobIds = new Set();
+    const dismissedSnapshots = new Map();
     const TERMINAL_STATUSES = new Set(["done", "error", "cancelled"]);
     const dlQueueClearDone = $("#dlQueueClearDone");
 
@@ -40,26 +41,85 @@
       return TERMINAL_STATUSES.has(status);
     }
 
-    function rememberDismissed(id) {
-      if (id) dismissedJobIds.add(id);
+    function rememberDismissed(id, job) {
+      if (!id) return;
+      dismissedJobIds.add(id);
+      dismissedSnapshots.set(id, {
+        updatedAt: Number(job?.updatedAt) || now(),
+        progressSeq: Number(job?.progressSeq) || 0,
+        progressAttempt: Number(job?.progressAttempt) || 0,
+        status: job?.status || ""
+      });
     }
 
     function forgetDismissed(id) {
       if (id) dismissedJobIds.delete(id);
     }
 
+    function clearDismissed(id) {
+      if (!id) return;
+      dismissedJobIds.delete(id);
+      dismissedSnapshots.delete(id);
+    }
+
     function isDismissedJob(id) {
       return !!id && dismissedJobIds.has(id);
     }
 
+    function isSameOrOlderDismissedSnapshot(job) {
+      const id = job?.id || job?.jobId;
+      const snap = dismissedSnapshots.get(id);
+      if (!snap) return false;
+      const attempt = Number(job?.progressAttempt) || 0;
+      const seq = Number(job?.progressSeq) || 0;
+      const updatedAt = Number(job?.updatedAt) || 0;
+      if (!updatedAt && !seq && !attempt) return true;
+      if (updatedAt && snap.updatedAt && updatedAt < snap.updatedAt) return true;
+      if (updatedAt && snap.updatedAt && updatedAt === snap.updatedAt) {
+        return !seq || seq <= snap.progressSeq;
+      }
+      if (attempt && snap.progressAttempt && attempt < snap.progressAttempt) {
+        return true;
+      }
+      return !!(
+        attempt &&
+        attempt === snap.progressAttempt &&
+        seq &&
+        seq <= snap.progressSeq
+      );
+    }
+
     function shouldIgnoreDismissed(job, opts = {}) {
       const id = job?.id || job?.jobId;
-      if (!isDismissedJob(id) || opts.local) return false;
-      return UVDQueueState.statusOf(job, {}) !== "running";
+      if (!id || opts.local) return false;
+      // Status-less ambient events default to "running" in statusOf — that
+      // must not clear a dismiss or replay a finished row. Only an explicit
+      // running status may revive the id (a new download / retry).
+      if (job?.status === "running") return false;
+      if (dismissedJobIds.has(id)) return true;
+      return isSameOrOlderDismissedSnapshot(job);
+    }
+
+    function restoreDismissedJobs(entries) {
+      for (const [id, job] of entries) {
+        clearDismissed(id);
+        if (job) uiJobs.set(id, job);
+      }
+      renderDownloadQueue(true);
+    }
+
+    function shouldRollbackDismiss(response) {
+      return (
+        response?.status === "running" || response?.status === "paused"
+      );
     }
 
     async function persistDismiss(message) {
-      return deps.sendMessage(message);
+      try {
+        return await deps.sendMessage(message);
+      } catch {
+        return deps.sendMessage(message);
+      }
     }
 
     async function dismissUiJob(id) {
@@ -68,7 +128,7 @@
       if (prev && !isDismissibleStatus(prev.status)) {
         return { ok: false, error: "받는 중·일시정지 항목은 닫을 수 없습니다" };
       }
-      rememberDismissed(id);
+      rememberDismissed(id, prev);
       uiJobs.delete(id);
       renderDownloadQueue(true);
       try {
@@ -76,17 +136,12 @@
           type: "DISMISS_DOWNLOAD",
           jobId: id
         });
-        if (response?.ok === false) {
-          forgetDismissed(id);
-          if (prev) uiJobs.set(id, prev);
-          renderDownloadQueue(true);
+        if (response?.ok === false && shouldRollbackDismiss(response)) {
+          restoreDismissedJobs([[id, prev]]);
           return response;
         }
         return response || { ok: true, dismissed: id };
       } catch (error) {
-        forgetDismissed(id);
-        if (prev) uiJobs.set(id, prev);
-        renderDownloadQueue(true);
         return { ok: false, error: String(error?.message || error || "닫기 실패") };
       }
     }
@@ -95,7 +150,7 @@
       const snapshot = [];
       for (const [id, job] of [...uiJobs.entries()]) {
         if (!isDismissibleStatus(job.status)) continue;
-        rememberDismissed(id);
+        rememberDismissed(id, job);
         snapshot.push([id, job]);
         uiJobs.delete(id);
       }
@@ -105,21 +160,12 @@
         const response = await persistDismiss({
           type: "DISMISS_FINISHED_DOWNLOADS"
         });
-        if (response?.ok === false) {
-          for (const [id, job] of snapshot) {
-            forgetDismissed(id);
-            uiJobs.set(id, job);
-          }
-          renderDownloadQueue(true);
+        if (response?.ok === false && shouldRollbackDismiss(response)) {
+          restoreDismissedJobs(snapshot);
           return response;
         }
         return response || { ok: true, dismissed: snapshot.map(([id]) => id) };
       } catch (error) {
-        for (const [id, job] of snapshot) {
-          forgetDismissed(id);
-          uiJobs.set(id, job);
-        }
-        renderDownloadQueue(true);
         return { ok: false, error: String(error?.message || error || "닫기 실패") };
       }
     }
@@ -254,7 +300,7 @@
       if (!job?.id && !job?.jobId) return;
       const id = job.id || job.jobId;
       if (shouldIgnoreDismissed(job, opts)) return;
-      if (isDismissedJob(id)) forgetDismissed(id);
+      if (isDismissedJob(id) && job?.status === "running") forgetDismissed(id);
       const prev = uiJobs.get(id) || {};
       if (prev.id && !UVDQueueState.shouldAccept(prev, job, opts)) return;
       const status = UVDQueueState.statusOf(job, prev);
@@ -697,6 +743,7 @@
       const progress = jobOrProgress;
       const jobId = progress.id || progress.jobId;
       if (shouldIgnoreDismissed(progress, opts)) return;
+      if (jobId && isDismissedJob(jobId) && progress.status !== "running") return;
       if (!jobId) {
         const running = [...uiJobs.values()].filter((job) => job.status === "running");
         if (running.length > 1) return;
