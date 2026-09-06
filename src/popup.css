@@ -1325,6 +1325,10 @@ input[type="radio"] {
   background: var(--surface-2);
 }
 
+#dlQueueClearDone {
+  justify-self: start;
+}
+
 .dl-qf {
   flex: 1;
   height: 22px;

@@ -154,6 +154,8 @@ const {
   cancelDownloadJob,
   pauseDownloadJob,
   resumeDownloadJob,
+  dismissDownloadJob,
+  dismissFinishedDownloads,
   persistJobs,
   advanceJobEvent,
   broadcastJob,
@@ -445,6 +447,8 @@ const handleDownloadMessage = UVDDownloadMessages.createHandler({
   cancel: cancelDownloadJob,
   pause: pauseDownloadJob,
   resume: resumeDownloadJob,
+  dismiss: dismissDownloadJob,
+  dismissFinished: dismissFinishedDownloads,
   list: async () => {
     await downloadJobsReady;
     return listActiveDownloads();

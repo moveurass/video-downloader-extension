@@ -35,6 +35,14 @@ async function main() {
       calls.push(["resume", id]);
       return { ok: true, status: "running" };
     },
+    dismiss: async (id) => {
+      calls.push(["dismiss", id]);
+      return { ok: true, dismissed: id };
+    },
+    dismissFinished: async () => {
+      calls.push(["dismissFinished"]);
+      return { ok: true, dismissed: ["done-1"] };
+    },
     list: () => jobs,
     progress: (tabId) => ({ tabId, percent: 20 })
   });
@@ -63,6 +71,30 @@ async function main() {
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(calls, [["pause", "job-1"]]);
   assert.equal(response.status, "paused");
+
+  response = null;
+  const dismissed = handler(
+    { type: "DISMISS_DOWNLOAD", jobId: "done-1" },
+    (value) => {
+      response = value;
+    }
+  );
+  assert.deepEqual(dismissed, { handled: true, keepChannel: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.at(-1), ["dismiss", "done-1"]);
+  assert.equal(response.dismissed, "done-1");
+
+  response = null;
+  const clearedFinished = handler(
+    { type: "DISMISS_FINISHED_DOWNLOADS" },
+    (value) => {
+      response = value;
+    }
+  );
+  assert.deepEqual(clearedFinished, { handled: true, keepChannel: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls.at(-1), ["dismissFinished"]);
+  assert.deepEqual(response.dismissed, ["done-1"]);
 
   assert.deepEqual(handler({ type: "OTHER" }, () => {}), {
     handled: false,

@@ -1047,6 +1047,18 @@ def main() -> int:
     )
 
     r = subprocess.run(
+        ["node", "scripts/popup_recovery_ui_unit.js"],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+    )
+    check(
+        "popup recovery dismiss",
+        r.returncode == 0,
+        (r.stderr or r.stdout or "").strip()[:120],
+    )
+
+    r = subprocess.run(
         ["node", "scripts/popup_sound_unit.js"],
         capture_output=True,
         text=True,

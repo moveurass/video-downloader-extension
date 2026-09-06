@@ -270,7 +270,9 @@
         renderDownloadQueue,
         showProgress,
         applyJobProgress,
-        restoreActiveDownloads
+        restoreActiveDownloads,
+        dismissUiJob,
+        dismissFinishedUiJobs
       } = progressController;
 
       const recoveryController = UVDPopupRecoveryUI.createController({
@@ -279,6 +281,8 @@
         toast,
         userError,
         upsertUiJob,
+        dismissUiJob,
+        dismissFinishedUiJobs,
         refreshJobsFromBackground,
         ensureQueuePoll,
         renderDownloadQueue,
