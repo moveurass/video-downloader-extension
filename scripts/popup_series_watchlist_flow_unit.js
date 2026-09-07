@@ -294,6 +294,46 @@ async function main() {
   }
 
   {
+    // List-page mode rides the same entries protocol; entries keep the
+    // collected episode shape (url/title/key) and the mode round-trips.
+    const h = makeHarness({
+      sendMessage: async (payload) =>
+        payload.type === "SERIES_COMPLETE"
+          ? { ok: true, mode: payload.mode, queued: 2, seriesId: payload.seriesId }
+          : { watchlist: [] }
+    });
+    h.state.seriesPending = {
+      mode: "list_page",
+      title: "시리즈 목록",
+      pageUrl: "https://supjav.com/genre/123.html",
+      seriesId: "series:list:supjav.com/genre/123.html",
+      items: [
+        { title: "편 1", url: "https://supjav.com/455636.html", key: "" },
+        { title: "편 2", url: "https://supjav.com/455637.html", key: "" },
+        { title: "제외", url: "https://supjav.com/455638.html", selected: false },
+        { title: "편 3", url: "https://supjav.com/455639.html", key: "455639" }
+      ]
+    };
+    await h.controller.runSeriesComplete();
+    const payload = h.calls.find(
+      ([name, value]) =>
+        name === "sendMessage" && value.type === "SERIES_COMPLETE"
+    )[1];
+    check(payload.mode, "list_page");
+    check(payload.seriesId, "series:list:supjav.com/genre/123.html");
+    check(payload.count, 3, "unselected episode is excluded");
+    check(
+      payload.entries.map((entry) => entry.url),
+      [
+        "https://supjav.com/455636.html",
+        "https://supjav.com/455637.html",
+        "https://supjav.com/455639.html"
+      ]
+    );
+    check(h.state.lastSeriesRun.seriesId, "series:list:supjav.com/genre/123.html");
+  }
+
+  {
     const scheduled = element({
       "data-act": "watch-sched",
       "data-id": "watch-1"

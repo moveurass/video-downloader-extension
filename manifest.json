@@ -73,6 +73,7 @@
       "js": [
         "src/site-detection.js",
         "src/naming.js",
+        "src/episode-links.js",
         "src/hls-downloader.js",
         "src/page-download.js",
         "src/content.js"

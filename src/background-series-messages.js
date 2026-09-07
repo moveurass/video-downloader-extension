@@ -215,7 +215,7 @@
         const asPlaylist = forceMode === "playlist" ||
           (!forceMode &&
             (deps.UVD.isPlaylistOnlyUrl(pageUrl) || deps.UVD.isWatchInPlaylistUrl(pageUrl)));
-        result.mode = asPlaylist ? "playlist" : "product_code";
+        result.mode = asPlaylist ? "playlist" : forceMode || "product_code";
         result.seriesId = seriesId;
         result.items = explicit;
         if (asPlaylist) {
