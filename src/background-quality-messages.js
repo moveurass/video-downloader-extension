@@ -249,13 +249,19 @@
       deps.getTabMap(tabId).set(url, { ...current, height, quality: label });
     }
     const duration = info.duration >= 1 ? info.duration : 0;
+    const measured =
+      tabId != null && typeof deps.segmentMeasure === "function"
+        ? deps.segmentMeasure(tabId, url, ...(info.mediaUrl ? [info.mediaUrl] : []))
+        : null;
     const estimatedSize =
       (typeof deps.HLS?.estimateMediaBytes === "function"
         ? deps.HLS.estimateMediaBytes({
             duration,
             segmentCount: info.segmentCount,
             bandwidth: current?.estimateBandwidth || current?.bandwidth,
-            height
+            height,
+            measuredSegmentBytes: measured?.measuredSegmentBytes,
+            measuredSamples: measured?.measuredSamples
           })
         : 0) || 0;
     const chip = label

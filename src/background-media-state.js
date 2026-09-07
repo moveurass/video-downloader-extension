@@ -15,6 +15,107 @@
     const unschedule = deps.clearTimeout || clearTimeout;
     const BROADCAST_DELAY_MS = 200;
 
+    // Real segment sizes seen in webRequest, attributed to the playlist that
+    // was fetched just before them. Feeds measured-average capacity estimates.
+    const SEGMENT_WINDOW_MS = 45_000;
+    const MEASURE_APPLY_MIN_SAMPLES = 8;
+    const MEASURE_APPLY_MIN_DELTA = 0.2;
+    const segmentStats = new Map(); // tabId -> { lastPlaylistUrl, lastPlaylistAt, playlists: Map<url, {bytes, count, appliedSamples, appliedAvg}> }
+
+    function segmentStatsFor(tabId) {
+      if (!segmentStats.has(tabId)) {
+        segmentStats.set(tabId, {
+          lastPlaylistUrl: "",
+          lastPlaylistAt: 0,
+          playlists: new Map()
+        });
+      }
+      return segmentStats.get(tabId);
+    }
+
+    function notePlaylistResponse(tabId, url) {
+      const stats = segmentStatsFor(tabId);
+      stats.lastPlaylistUrl = url;
+      stats.lastPlaylistAt = Date.now();
+    }
+
+    function noteSegmentBytes(tabId, url, bytes) {
+      if (!(bytes > 0)) return;
+      const stats = segmentStatsFor(tabId);
+      if (
+        !stats.lastPlaylistUrl ||
+        Date.now() - stats.lastPlaylistAt > SEGMENT_WINDOW_MS
+      ) {
+        return;
+      }
+      const entry = stats.playlists.get(stats.lastPlaylistUrl) || {
+        bytes: 0,
+        count: 0,
+        appliedSamples: 0,
+        appliedAvg: 0
+      };
+      entry.bytes += bytes;
+      entry.count += 1;
+      stats.playlists.set(stats.lastPlaylistUrl, entry);
+      refreshMeasuredEstimate(tabId, stats.lastPlaylistUrl, entry);
+    }
+
+    /** Average of observed segment sizes for one of the given playlists. */
+    function measureFor(tabId, ...urls) {
+      const stats = segmentStats.get(tabId);
+      if (!stats) return null;
+      for (const url of urls) {
+        const entry = url && stats.playlists.get(url);
+        if (entry && entry.count >= 3) {
+          return {
+            measuredSegmentBytes: entry.bytes / entry.count,
+            measuredSamples: entry.count
+          };
+        }
+      }
+      return null;
+    }
+
+    /** Push a refined estimate onto the playlist card once enough new samples landed. */
+    function refreshMeasuredEstimate(tabId, playlistUrl, entry) {
+      const avg = entry.bytes / entry.count;
+      if (entry.count - entry.appliedSamples < MEASURE_APPLY_MIN_SAMPLES) return;
+      if (
+        entry.appliedAvg > 0 &&
+        Math.abs(avg - entry.appliedAvg) / entry.appliedAvg <
+          MEASURE_APPLY_MIN_DELTA
+      ) {
+        return;
+      }
+      const map = tabMedia.get(tabId);
+      const cur = map?.get(playlistUrl);
+      if (!cur || !(Number(cur.segmentCount) > 0)) return;
+      const estimatedSize =
+        (typeof HLS?.estimateMediaBytes === "function"
+          ? HLS.estimateMediaBytes({
+              duration: cur.duration,
+              segmentCount: cur.segmentCount,
+              bandwidth: cur.estimateBandwidth || cur.bandwidth,
+              height: cur.height,
+              measuredSegmentBytes: avg,
+              measuredSamples: entry.count
+            })
+          : 0) || undefined;
+      entry.appliedSamples = entry.count;
+      entry.appliedAvg = avg;
+      if (!estimatedSize || estimatedSize === cur.estimatedSize) return;
+      map.set(playlistUrl, {
+        ...cur,
+        estimatedSize
+      });
+      updateBadge(tabId);
+      broadcastUpdate(tabId);
+    }
+
+    function deleteSegmentStats(tabId) {
+      segmentStats.delete(tabId);
+    }
+
     const {
       chrome,
       Naming,
@@ -645,7 +746,10 @@
             : prev.provisionalTitleBlocked === true
       };
 
-      if (pageChanged) tabMedia.delete(tabId);
+      if (pageChanged) {
+        tabMedia.delete(tabId);
+        deleteSegmentStats(tabId);
+      }
       tabMeta.set(tabId, next);
 
       const map = tabMedia.get(tabId);
@@ -727,10 +831,20 @@
           }
           const bandwidth = best.estimateBandwidth || best.bandwidth || 0;
           const duration = mediaDuration >= 1 ? mediaDuration : cur.duration;
+          const measured = measureFor(tabId, best.url, url);
           const estimatedSize =
-            bandwidth > 0 && duration >= 1
-              ? Math.round((bandwidth / 8) * duration)
-              : undefined;
+            (typeof HLS.estimateMediaBytes === "function"
+              ? HLS.estimateMediaBytes({
+                  duration,
+                  segmentCount,
+                  bandwidth,
+                  height: best.height || cur.height,
+                  measuredSegmentBytes: measured?.measuredSegmentBytes,
+                  measuredSamples: measured?.measuredSamples
+                })
+              : bandwidth > 0 && duration >= 1
+                ? Math.round((bandwidth / 8) * duration)
+                : undefined) || undefined;
           const updated = enrichItem(tabId, {
             ...cur,
             isHls: true,
@@ -766,13 +880,16 @@
             (cur.quality && !/^(best|all|unknown)$/i.test(String(cur.quality))
               ? cur.quality
               : null);
+          const measured = measureFor(tabId, url);
           const estimatedSize =
             (typeof HLS.estimateMediaBytes === "function"
               ? HLS.estimateMediaBytes({
                   duration,
                   segmentCount: info.segmentCount,
                   bandwidth: cur.estimateBandwidth || cur.bandwidth,
-                  height: inferredHeight || cur.height
+                  height: inferredHeight || cur.height,
+                  measuredSegmentBytes: measured?.measuredSegmentBytes,
+                  measuredSamples: measured?.measuredSamples
                 })
               : 0) || undefined;
           const updated = enrichItem(tabId, {
@@ -1137,6 +1254,7 @@
       broadcastTimers.delete(tabId);
       tabMedia.delete(tabId);
       tabMeta.delete(tabId);
+      deleteSegmentStats(tabId);
     }
 
     function applyTabTitle(tabId, title) {
@@ -1205,6 +1323,11 @@
           );
           if (!isLikelyMedia(details.url, contentType, contentLength)) return;
           const { type } = classifyMedia(details.url, contentType);
+          if (type === "stream" && /\.m3u8(\?|$|#)/i.test(details.url)) {
+            notePlaylistResponse(details.tabId, details.url);
+          } else if (type === "segment") {
+            noteSegmentBytes(details.tabId, details.url, contentLength);
+          }
           addMedia(details.tabId, {
             url: details.url,
             type,
@@ -1354,6 +1477,7 @@
       filterDisplayable,
       getMediaForTab,
       getMediaForTabAsync,
+      getSegmentMeasure: measureFor,
       getTabItems,
       getTabMap,
       getTabMeta,

@@ -228,7 +228,9 @@ const YtDlp = (() => {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
-      throw new Error(data.error || `formats HTTP ${res.status}`);
+      const error = new Error(data.error || `formats HTTP ${res.status}`);
+      if (data.unsupported === true) error.unsupported = true;
+      throw error;
     }
     return data;
   }

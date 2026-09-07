@@ -215,6 +215,7 @@ const {
   broadcastUpdate,
   getMediaForTab,
   getMediaForTabAsync,
+  getSegmentMeasure,
   getTabItems,
   getTabMap,
   makeSitePlaceholder,
@@ -294,6 +295,7 @@ const downloadExecutor = UVDDownloadExecution.createExecutor({
   siteKind,
   lockSaveName: filenameLockSaveName,
   downloadViaYtDlp: siteHelperRunner.downloadViaYtDlp,
+  probePageSupport: (...args) => siteHelperRunner.probePageSupport(...args),
   ensureContentScripts: ensurePageContentScripts,
   getMediaForTabAsync,
   emitDownloadProgress,
@@ -478,6 +480,7 @@ const handleQualityMessage = UVDQualityMessages.createHandler({
   cacheTtl: FORMATS_CACHE_TTL,
   getCookieHeader: siteHelperRunner.getCookieHeader,
   collectCookies: siteHelperRunner.collectCookies,
+  segmentMeasure: (tabId, ...urls) => getSegmentMeasure(tabId, ...urls),
   siteKind
 });
 const handleBackgroundDownloadMessage =

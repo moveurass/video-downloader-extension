@@ -1495,6 +1495,113 @@ async function testHelperPauseResumeIgnoresStaleCancellation() {
   assert.equal(job.status, "done");
 }
 
+async function testPlaceholderSupportProbeRouting() {
+  const Sites = require("../src/site-detection.js");
+  const Naming = require("../src/naming.js");
+  const PAGE = "https://supjav.com/455636.html";
+
+  function makeExecutor({ probe }) {
+    const calls = { ytdlp: [], scans: 0, smart: 0 };
+    const executor = DownloadExecution.createExecutor({
+      chrome: {
+        tabs: {
+          get: async () => ({ id: 5, url: PAGE, status: "complete" }),
+          query: async () => [],
+          create: async () => ({ id: 9 }),
+          sendMessage: async () => {},
+          remove: async () => {}
+        }
+      },
+      UVD: {
+        getSettings: async () => ({ mediaMode: "video" }),
+        isGenericSaveName: () => false
+      },
+      Naming,
+      activeDownloads: new Map(),
+      getCurrentJobContext: () => null,
+      siteKind: Sites.siteKind,
+      lockSaveName: () => "supjav 455636.mp4",
+      downloadViaYtDlp: async (...args) => {
+        calls.ytdlp.push(args);
+        return { ok: true, ytdlp: true, path: "/Downloads/x.mp4", size: 1 };
+      },
+      probePageSupport: probe,
+      ensureContentScripts: async () => {
+        calls.scans += 1;
+      },
+      getMediaForTabAsync: async () => [],
+      emitDownloadProgress: () => {},
+      downloadSmart: async () => {
+        calls.smart += 1;
+        return { ok: true };
+      },
+      broadcastJob: () => {},
+      createDownloadJob: () => "job-x",
+      getJobRunGeneration: () => 0,
+      isCurrentJobRun: () => true,
+      withJobContext: (_id, op) => op(),
+      finalizePausedJob: () => {},
+      finishCancelledJob: () => {},
+      finishDownloadJob: () => {}
+    });
+    return { executor, calls };
+  }
+
+  // 1) Unsupported page → fast friendly failure; helper and scan stay idle.
+  {
+    const { executor, calls } = makeExecutor({
+      probe: async () => ({ supported: false })
+    });
+    await assert.rejects(
+      () => executor.downloadPageFromUi(5, PAGE, "best", null, {}),
+      /재생하면 자동으로 잡아줍니다/
+    );
+    assert.equal(calls.ytdlp.length, 0, "unsupported page never reaches yt-dlp");
+    assert.equal(calls.scans, 0, "unsupported page skips the tab scan entirely");
+  }
+
+  // 2) Supported page → straight to the helper, no playback or scan needed.
+  {
+    const { executor, calls } = makeExecutor({
+      probe: async () => ({ supported: true })
+    });
+    const result = await executor.downloadPageFromUi(5, PAGE, "best", null, {});
+    assert.equal(result.ok, true);
+    assert.equal(calls.ytdlp.length, 1, "supported page downloads via the helper");
+    assert.equal(calls.ytdlp[0][1], PAGE);
+    assert.equal(calls.scans, 0);
+  }
+
+  // 3) Unknown verdict (helper down) → the regular page-scan flow takes over.
+  {
+    const { executor, calls } = makeExecutor({ probe: async () => null });
+    const pending = executor.downloadPageFromUi(5, PAGE, "best", null, {});
+    pending.catch(() => {});
+    for (let i = 0; i < 50 && calls.scans === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.ok(calls.scans > 0, "unknown verdict falls back to the page scan");
+    assert.equal(calls.ytdlp.length, 0);
+  }
+
+  // 4) Resume with a known media URL bypasses the probe entirely.
+  {
+    let probeCalls = 0;
+    const { executor, calls } = makeExecutor({
+      probe: async () => {
+        probeCalls += 1;
+        return { supported: false };
+      }
+    });
+    await executor.downloadPageFromUi(-1, PAGE, "best", null, {
+      resume: true,
+      mediaUrl: "https://cdn.example.com/v.mp4"
+    });
+    assert.equal(probeCalls, 0, "resume with mediaUrl does not probe");
+    assert.equal(calls.smart, 1, "resume routes to downloadSmart with the media URL");
+  }
+}
+
 async function main() {
   await testHlsSkipsCheckpointedSegments();
   await testLiveHlsRequiresSequenceIdentity();
@@ -1511,6 +1618,7 @@ async function main() {
   await testRefererRuleOnlyTargetsExtensionRequests();
   await testNativeDirectPauseResume();
   await testHelperPauseResumeIgnoresStaleCancellation();
+  await testPlaceholderSupportProbeRouting();
   const helperSource = fs.readFileSync(
     path.join(__dirname, "../helper/yt_dlp_server.py"),
     "utf8"

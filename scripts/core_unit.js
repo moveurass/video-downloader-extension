@@ -347,6 +347,28 @@ assert.equal(
   Math.round((5_000_000 / 8) * 7200),
   "feature without segments uses height bitrate"
 );
+assert.equal(
+  HLS.estimateMediaBytes({
+    duration: 7200,
+    segmentCount: 1200,
+    bandwidth: 2_500_000,
+    measuredSegmentBytes: 450_000,
+    measuredSamples: 3
+  }),
+  1200 * 450_000,
+  "measured segment average wins over bandwidth and fixed-size formulas"
+);
+assert.equal(
+  HLS.estimateMediaBytes({
+    duration: 7200,
+    segmentCount: 1200,
+    bandwidth: 2_500_000,
+    measuredSegmentBytes: 450_000,
+    measuredSamples: 2
+  }),
+  Math.round((2_500_000 / 8) * 7200),
+  "too few measured samples falls back to bandwidth × duration"
+);
 assert.deepEqual(
   PopupMedia.estimateForQuality(
     { duration: 7200, estimatedSize: 400_000_000 },
