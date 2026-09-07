@@ -67,6 +67,8 @@ open helper/start.command
 - 기본 저장: `~/Downloads/VideoDownloader/`  
 - 백그라운드/로그인 시 자동 실행: `helper/install_autostart.command`
 - YouTube는 `aria2c`가 설치되어 있어도 안정적인 yt-dlp 기본 다운로더를 우선 사용합니다. 코드를 `git pull`로 업데이트했다면 실행 중인 헬퍼를 종료하고 다시 시작하세요.
+- 받는 중 헬퍼가 재시작되면 확장이 최대 1분간 재접속을 기다린 뒤 **같은 작업을 이어받기**합니다(resumeKey 기반, 부분 파일 재사용).
+- 팝업 상단의 **yt-dlp 업데이트** 버튼은 헬퍼에 `POST /update`(yt-dlp -U)를 요청합니다. Homebrew·pip 설치본은 자체 업데이트가 불가하므로 설치 명령을 안내해 줍니다.
 
 ### 보안
 

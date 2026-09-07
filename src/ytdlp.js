@@ -251,12 +251,54 @@ const YtDlp = (() => {
   }
 
   /**
+   * A helper restart wipes its in-memory job table and a dead helper drops
+   * every poll. Wait briefly for the helper to come back, then re-post the
+   * same payload: resumeKey + outputStem pin the work directory, so the
+   * helper's yt-dlp --continue picks up the partial file. Returns the new
+   * { jobId, outDir } or null when resuming is impossible.
+   */
+  const HELPER_RECOVERY_LIMIT = 2;
+  const HELPER_RECOVERY_POLLS = 60; // 60 × 1s ≈ launchd restart budget
+
+  async function recoverHelperDownload(payload, onProgress, options = {}) {
+    const { attemptsUsed = 0, lastPercent = 3, outDir = "" } = options;
+    if (attemptsUsed >= HELPER_RECOVERY_LIMIT) return null;
+    if (!String(payload?.resumeKey || "").trim()) return null;
+    const percent = Math.min(98, Math.max(3, Number(lastPercent) || 3));
+    onProgress?.({
+      percent,
+      message: "도우미 재시작 감지 — 재연결 대기 중…",
+      status: "download",
+      outDir
+    });
+    let healthy = null;
+    for (let poll = 0; poll < HELPER_RECOVERY_POLLS; poll += 1) {
+      const h = await health(true);
+      if (h?.ok && h?.ytdlp && !h?.authRequired) {
+        healthy = h;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    if (!healthy) return null;
+    const restarted = await startDownload(payload);
+    onProgress?.({
+      percent,
+      message: "도우미 재시작 — 이어받는 중…",
+      status: "running",
+      outDir: restarted.outDir || outDir,
+      helperJobId: restarted.jobId
+    });
+    return restarted;
+  }
+
+  /**
    * Start download and poll until done/error.
    * onProgress({ percent, message, status })
    */
   async function downloadAndWait(payload, onProgress, timeoutMs = 40 * 60 * 1000) {
     const started = await startDownload(payload);
-    const jobId = started.jobId;
+    let jobId = started.jobId;
     const t0 = Date.now();
     onProgress?.({
       percent: 3,
@@ -270,6 +312,8 @@ const YtDlp = (() => {
     // fails every poll; neither must spin silently until the 40-minute timeout.
     let missing = 0;
     let unreachable = 0;
+    let recoveries = 0;
+    let lastPct = 3;
     while (Date.now() - t0 < timeoutMs) {
       await new Promise((r) => setTimeout(r, 500));
       let job;
@@ -278,22 +322,30 @@ const YtDlp = (() => {
         missing = 0;
         unreachable = 0;
       } catch (error) {
-        if (error?.status === 404) {
-          missing += 1;
-          if (missing >= 6) {
+        if (error?.status === 404) missing += 1;
+        else unreachable += 1;
+        if (missing >= 6 || unreachable >= 40) {
+          const restarted = await recoverHelperDownload(payload, onProgress, {
+            attemptsUsed: recoveries,
+            lastPercent: lastPct,
+            outDir: started.outDir
+          });
+          if (!restarted) {
             throw new Error(
-              "도우미가 재시작되어 진행 중인 작업을 잃었습니다. 다시 시작해 주세요"
+              missing >= 6
+                ? "도우미가 재시작되어 진행 중인 작업을 잃었습니다. 다시 시작해 주세요"
+                : "도우미와 연결이 끊겼습니다. helper/start.command 를 실행해 주세요"
             );
           }
-        } else {
-          unreachable += 1;
-          if (unreachable >= 40) {
-            throw new Error("도우미와 연결이 끊겼습니다. helper/start.command 를 실행해 주세요");
-          }
+          recoveries += 1;
+          jobId = restarted.jobId;
+          missing = 0;
+          unreachable = 0;
         }
         continue;
       }
       const pct = typeof job.percent === "number" ? job.percent : 0;
+      lastPct = pct;
       // Pass helper job id for debugging; percent already monotonic on server
       onProgress?.({
         percent: pct,
@@ -336,6 +388,24 @@ const YtDlp = (() => {
     throw new Error("다운로드 시간 초과");
   }
 
+  /**
+   * Ask the helper to self-update yt-dlp (`yt-dlp -U`). The helper classifies
+   * the updater output (updated / already current / brew-pip hints) and clears
+   * its version cache, so the next /health reports the new version.
+   * @returns {Promise<{ok:boolean, updated:boolean, version?:string, message?:string, hint?:string}>}
+   */
+  async function updateSelf() {
+    const res = await fetch(`${BASE}/update`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `update HTTP ${res.status}`);
+    }
+    return data;
+  }
+
   return {
     BASE,
     health,
@@ -345,6 +415,7 @@ const YtDlp = (() => {
     cancelJob,
     downloadAndWait,
     listFormats,
-    listPlaylist
+    listPlaylist,
+    updateSelf
   };
 })();

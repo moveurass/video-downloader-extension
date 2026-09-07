@@ -16,6 +16,14 @@
             );
           return { handled: true, keepChannel: true };
         }
+        case "YTDLP_UPDATE": {
+          deps.YtDlp.updateSelf()
+            .then((r) => sendResponse({ ok: true, ...r }))
+            .catch((e) =>
+              sendResponse({ ok: false, error: String(e?.message || e) })
+            );
+          return { handled: true, keepChannel: true };
+        }
         case "DOWNLOAD_HELPER_STARTER": {
           // Drop a double-clickable .command into Downloads for macOS users
           (async () => {

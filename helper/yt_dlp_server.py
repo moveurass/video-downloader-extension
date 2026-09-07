@@ -925,6 +925,34 @@ def should_retry_without_js_runtimes(
     )
 
 
+def classify_update_result(output: str, return_code: int) -> dict:
+    """
+    Classify `yt-dlp -U` output so the extension can show one honest line.
+    yt-dlp cannot self-update a Homebrew/pip install — surface the matching
+    command instead of a bare failure.
+    """
+    text = str(output or "")
+    lowered = text.lower()
+    hint = None
+    if "brew" in lowered and ("upgrade" in lowered or "homebrew" in lowered):
+        hint = "brew upgrade yt-dlp"
+    elif "pip" in lowered and "install" in lowered:
+        hint = "pip3 install -U yt-dlp"
+    if "is up to date" in lowered or "already up to date" in lowered:
+        return {"updated": False, "current": True, "hint": hint, "message": "yt-dlp가 이미 최신 버전입니다"}
+    if "updated" in lowered and return_code == 0:
+        return {"updated": True, "current": True, "hint": hint, "message": "yt-dlp를 최신 버전으로 업데이트했습니다"}
+    if return_code == 0:
+        return {"updated": False, "current": True, "hint": hint, "message": "yt-dlp 버전을 확인했습니다"}
+    tail = text.strip().splitlines()[-1] if text.strip() else ""
+    return {
+        "updated": False,
+        "current": False,
+        "hint": hint,
+        "message": tail or "yt-dlp 업데이트에 실패했습니다",
+    }
+
+
 def should_use_aria2(
     aria2_path: str | None, speed_profile: str, is_youtube: bool
 ) -> bool:
@@ -2149,6 +2177,56 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": ok,
                     "status": "paused" if ok and pause else "cancelled" if ok else None,
                     "error": None if ok else "job not found",
+                },
+            )
+            return
+
+        # Self-update yt-dlp (yt-dlp -U); classified for an honest popup line
+        if self.path == "/update" or self.path.startswith("/update?"):
+            bin_path = find_ytdlp()
+            if not bin_path:
+                send_json(
+                    self,
+                    503,
+                    {
+                        "ok": False,
+                        "error": "yt-dlp not installed",
+                        "hint": "pip install -U yt-dlp  또는  brew install yt-dlp",
+                    },
+                )
+                return
+            try:
+                output = subprocess.check_output(
+                    [bin_path, "-U"],
+                    text=True,
+                    timeout=180,
+                    stderr=subprocess.STDOUT,
+                )
+                result = classify_update_result(output, 0)
+            except subprocess.TimeoutExpired:
+                send_json(
+                    self,
+                    504,
+                    {"ok": False, "error": "yt-dlp 업데이트 시간 초과"},
+                )
+                return
+            except subprocess.CalledProcessError as e:
+                result = classify_update_result(
+                    getattr(e, "output", "") or "", e.returncode or 1
+                )
+            # /health caches versions for 10 min — drop the stale entry so the
+            # popup shows the post-update version on its next poll.
+            if result.get("updated"):
+                _version_cache.pop(bin_path, None)
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "updated": bool(result.get("updated")),
+                    "version": ytdlp_version(bin_path),
+                    "message": result.get("message") or "",
+                    "hint": result.get("hint"),
                 },
             )
             return

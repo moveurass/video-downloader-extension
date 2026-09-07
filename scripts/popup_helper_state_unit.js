@@ -36,6 +36,7 @@ function makeHarness() {
     btnHelperFix: element(["hidden"]),
     btnHelperStart: element(["hidden"]),
     btnHelperRecheck: element(["hidden"]),
+    btnHelperUpdate: element(["hidden"]),
     linkInput: element(),
     setHelperOutDir: element()
   };
@@ -149,6 +150,8 @@ async function main() {
   check(h.elements.btnHelperFix.classList.contains("hidden"), true, "fix hidden");
   check(h.elements.btnHelperStart.classList.contains("hidden"), true, "starter hidden");
   check(h.elements.btnHelperRecheck.classList.contains("hidden"), true, "recheck hidden");
+  check(h.elements.btnHelperUpdate.classList.contains("hidden"), false,
+    "update button offered while helper is healthy");
   check(h.intervals.at(-1).ms, 8000, "healthy response uses slow cadence");
   check(h.toasts.at(-1), ["도우미 연결됨 — YouTube 등 받기 가능", "ok"],
     "reconnect toast");
@@ -186,6 +189,52 @@ async function main() {
   const itemNeedMessageCount = h.messages.length;
   await c.refreshHelperStatus(true);
   check(h.messages.length, itemNeedMessageCount + 1, "site item requires health check");
+
+  // updateYtdlp: posts YTDLP_UPDATE, toasts the classified result, then
+  // forces a health re-check so the version line refreshes.
+  h.setCurrentTabUrl("site:video");
+  h.responses.push({
+    ok: true,
+    updated: true,
+    version: "2026.09.07",
+    message: "yt-dlp를 최신 버전으로 업데이트했습니다",
+    hint: null
+  });
+  h.responses.push({ ok: true, ytdlp: true, ytdlpVersion: "2026.09.07" });
+  await c.updateYtdlp();
+  check(
+    h.messages.filter((m) => m.type === "YTDLP_UPDATE").length,
+    1,
+    "update posts exactly once"
+  );
+  check(
+    h.toasts.at(-1),
+    ["yt-dlp를 최신 버전으로 업데이트했습니다", "ok"],
+    "update success toast"
+  );
+  check(
+    h.messages.at(-1).type,
+    "YTDLP_HEALTH",
+    "update forces a health re-check"
+  );
+  check(h.elements.btnHelperUpdate.textContent, "yt-dlp 업데이트",
+    "button label restored after update");
+  check(h.elements.btnHelperUpdate.classList.contains("hidden"), false,
+    "update button stays available after update");
+
+  // Failure path: error toast, no crash, button restored.
+  h.responses.push({
+    ok: false,
+    error: "yt-dlp not installed",
+    hint: "brew install yt-dlp"
+  });
+  h.responses.push({ ok: true, ytdlp: false });
+  await c.updateYtdlp();
+  check(
+    h.toasts.at(-1),
+    ["yt-dlp not installed — brew install yt-dlp", "error"],
+    "failure toast carries the install hint"
+  );
 
   console.log(`popup helper state unit: ${assertions} assertions passed`);
 }

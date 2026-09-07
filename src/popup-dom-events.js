@@ -31,6 +31,7 @@
         showHelperHelp,
         downloadHelperStarter,
         refreshHelperStatus,
+        updateYtdlp,
         downloadPlaylistAll,
         selectPlaylistForDownload,
         loadPlaylistInfo,
@@ -167,6 +168,9 @@
           helperOk ? "ok" : "error"
         );
       });
+      $("#btnHelperUpdate")?.addEventListener("click", () =>
+        updateYtdlp().catch(() => {})
+      );
       $("#btnPlDownload")?.addEventListener("click", () =>
         downloadPlaylistAll()
       );
