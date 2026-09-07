@@ -225,6 +225,46 @@ def main() -> int:
             encoding="utf-8"
         ),
     )
+    original_pgrep_run = helper_server.subprocess.run
+    original_kill = helper_server.os.kill
+    pgrep_calls = []
+    killed = []
+
+    def fake_pgrep_run(cmd, **_kwargs):
+        pgrep_calls.append(cmd)
+        assert cmd[0] == "pgrep" and cmd[1] == "-f" and "yt-dlp" in cmd[2]
+        assert ".uvd" in cmd[2] and "tmp" in cmd[2]
+        return type(
+            "P", (), {"stdout": "  123 \n456\nnot-a-pid\n", "stderr": ""}
+        )()
+
+    helper_server.subprocess.run = fake_pgrep_run
+    helper_server.os.kill = lambda pid, sig: killed.append((pid, sig))
+    try:
+        orphan_pids = helper_server.find_orphan_ytdlp_pids(
+            "/u/Downloads/VideoDownloader/.uvd-tmp"
+        )
+        stopped = helper_server.sweep_orphan_ytdlp(
+            "/u/Downloads/VideoDownloader/.uvd-tmp"
+        )
+    finally:
+        helper_server.subprocess.run = original_pgrep_run
+        helper_server.os.kill = original_kill
+    check(
+        "startup orphan sweep finds and SIGTERMs stale yt-dlp children",
+        orphan_pids == [123, 456]
+        and stopped == 2
+        and killed
+        and all(sig == helper_server.signal.SIGTERM for _pid, sig in killed),
+    )
+    check(
+        "helper kills running children on termination signals",
+        (lambda src: "install_signal_handlers()" in src
+         and "kill_running_job_processes()" in src
+         and "sweep_orphan_ytdlp()" in src)(
+            (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+        ),
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
@@ -506,8 +546,7 @@ def main() -> int:
     check(
         "/health caches yt-dlp --version",
         v1 == v2 == "2026.09.01" and calls["n"] == 1,
-        f"calls={calls['n']}",
-    )
+        f"calls={calls['n']}",    )
     check(
         "yt-dlp children run in their own session and are killed as a tree",
         "start_new_session=(os.name != \"nt\")" in helper_source

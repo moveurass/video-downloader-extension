@@ -202,6 +202,76 @@ def kill_process_tree(proc: subprocess.Popen, grace: float = 2.0) -> None:
             pass
 
 
+def find_orphan_ytdlp_pids(tmp_root: str) -> list[int]:
+    """
+    yt-dlp processes still working inside our temp tree after the server died
+    (crash, launchd restart). Matching the temp-root path keeps other users of
+    yt-dlp untouched, and our own pid is filtered by the caller.
+    """
+    try:
+        out = subprocess.run(
+            ["pgrep", "-f", rf"yt-dlp.*{re.escape(str(tmp_root))}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception:
+        return []
+    pids: list[int] = []
+    for token in (out.stdout or "").split():
+        try:
+            pid = int(token)
+        except ValueError:
+            continue
+        if pid != os.getpid():
+            pids.append(pid)
+    return pids
+
+
+def sweep_orphan_ytdlp(tmp_root: str = str(TMP_ROOT)) -> int:
+    """Stop leftover yt-dlp children from a previous server life. Best-effort."""
+    pids = find_orphan_ytdlp_pids(tmp_root)
+    stopped = 0
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped += 1
+        except Exception:
+            continue
+    return stopped
+
+
+def kill_running_job_processes() -> int:
+    """SIGTERM-safe shutdown: no yt-dlp child outlives the server."""
+    with jobs_lock:
+        procs = list(process_map.values())
+    stopped = 0
+    for proc in procs:
+        try:
+            if proc.poll() is None:
+                kill_process_tree(proc)
+                stopped += 1
+        except Exception:
+            continue
+    return stopped
+
+
+def install_signal_handlers() -> None:
+    """Kill child downloads on termination so restarts start clean."""
+
+    def _handler(signum, _frame) -> None:
+        kill_running_job_processes()
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        sys.exit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handler)
+        except Exception:
+            continue
+
+
 def resume_key_for(payload: dict, target: str) -> str:
     """
     Stable per-download key so a paused job and its resume share one work_dir
@@ -2875,6 +2945,13 @@ def cleanup_stale_cookie_files() -> None:
 
 
 def main() -> None:
+    install_signal_handlers()
+    orphans = sweep_orphan_ytdlp()
+    if orphans:
+        print(
+            f"[uvd-helper] stopped {orphans} orphan yt-dlp process(es)",
+            file=sys.stderr,
+        )
     cleanup_stale_cookie_files()
     swept = sweep_tmp_dirs()
     if swept:

@@ -31,29 +31,41 @@
       );
     }
 
+    // Direct bind + onInstalled + onStartup can overlap across SW lifetimes.
+    // Serialize so removeAll → create never interleaves with another run
+    // (the source of the "duplicate id" console errors), and acknowledge
+    // lastError from menus persisting across SW restarts.
+    const MENU_DEFS = [
+      { id: "uvd-download-media", title: "이 미디어 다운로드", contexts: ["video", "audio"] },
+      { id: "uvd-download-best", title: "이 페이지 영상 다운로드", contexts: ["page", "frame"] },
+      { id: "uvd-download-link", title: "이 링크 영상 다운로드", contexts: ["link"] },
+      { id: "uvd-download-selection", title: "선택한 링크로 영상 다운로드", contexts: ["selection"] }
+    ];
+    let setupChain = Promise.resolve();
+
     function setupContextMenus() {
-      deps.chrome.contextMenus.removeAll(() => {
-        deps.chrome.contextMenus.create({
-          id: "uvd-download-media",
-          title: "이 미디어 다운로드",
-          contexts: ["video", "audio"]
-        });
-        deps.chrome.contextMenus.create({
-          id: "uvd-download-best",
-          title: "이 페이지 영상 다운로드",
-          contexts: ["page", "frame"]
-        });
-        deps.chrome.contextMenus.create({
-          id: "uvd-download-link",
-          title: "이 링크 영상 다운로드",
-          contexts: ["link"]
-        });
-        deps.chrome.contextMenus.create({
-          id: "uvd-download-selection",
-          title: "선택한 링크로 영상 다운로드",
-          contexts: ["selection"]
-        });
-      });
+      const run = setupChain.then(
+        () =>
+          new Promise((resolve) => {
+            deps.chrome.contextMenus.removeAll(() => {
+              void deps.chrome.runtime?.lastError;
+              let pending = MENU_DEFS.length;
+              if (!pending) {
+                resolve();
+                return;
+              }
+              for (const def of MENU_DEFS) {
+                deps.chrome.contextMenus.create(def, () => {
+                  void deps.chrome.runtime?.lastError;
+                  pending -= 1;
+                  if (pending === 0) resolve();
+                });
+              }
+            });
+          })
+      );
+      setupChain = run.catch(() => {});
+      return run;
     }
 
     async function onClicked(info, tab) {

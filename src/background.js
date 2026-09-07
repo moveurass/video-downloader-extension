@@ -587,3 +587,16 @@ UVDBackgroundScheduledJobs.createScheduler({
 }).bind();
 
 console.log("[VideoDownloader] ready v1.26.0");
+
+// UI polling can race a closed tab, leaving "No tab with id" rejections that
+// no single call site owns (popup quality probes, rescans, page fallbacks).
+// They are functionally handled — every caller degrades gracefully — so gate
+// just this known-benign class; anything else still surfaces honestly.
+self.addEventListener("unhandledrejection", (event) => {
+  const reason = event?.reason;
+  const message = String(reason?.message || reason || "");
+  if (/^no tab with id/i.test(message)) {
+    event.preventDefault?.();
+    console.warn("[UVD] ignored stale-tab lookup:", message);
+  }
+});

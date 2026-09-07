@@ -394,6 +394,100 @@
       broadcastUpdate(tabId, { immediate: true });
     }
 
+    // ── Identity predicates ────────────────────────────────────────────
+    // The next "title came from the previous video" bug needs a single
+    // place to answer "why did we trust this?" — these are those places.
+
+    /**
+     * May item metadata (title/pageTitle) be trusted for the current page?
+     * True when the item itself proved its identity, when the page meta is
+     * bound to this exact pageKey, or outside YouTube when the title page
+     * is at least self-consistent.
+     */
+    function isIdentityReady(meta, item, samePage, knownCodePage) {
+      if (meta?.identityConfirmed === true) return true;
+      if (samePage && item.provisionalIdentitySafe === true) return true;
+      const titleBoundToThisPage =
+        !!meta?.title && meta?.titlePageKey === meta?.pageKey;
+      if (samePage && titleBoundToThisPage) return true;
+      const outsideYoutube = !String(meta?.pageKey || "").startsWith("yt:");
+      const titlePageIsSane =
+        !meta?.titlePageKey || meta.titlePageKey === meta.pageKey;
+      return outsideYoutube && (!knownCodePage || titlePageIsSane);
+    }
+
+    /** Clean a candidate title, pinning it to the page when possible. */
+    function cleanCandidateTitle(pageRef, raw) {
+      return pageRef
+        ? Naming.bindTitleToPage?.(pageRef, raw) ||
+            Naming.cleanPageTitle(raw) ||
+            raw
+        : Naming.cleanPageTitle(raw) || raw;
+    }
+
+    /** Bind an already-clean title to the page URL, or keep it as-is. */
+    function pinTitleToPage(pageRef, raw) {
+      return pageRef ? Naming.bindTitleToPage?.(pageRef, raw) || raw : raw;
+    }
+
+    /**
+     * Merge an item-provided title with the tab/page title. A known-code
+     * page title bound to this page wins outright; matching titles keep the
+     * longer form.
+     */
+    function reconcileTitles(title, tabTitle, samePage, pageRef, knownCodePage, meta) {
+      if ((!title || Naming.isUglyBase(title)) && tabTitle && samePage) {
+        const boundTabTitle = cleanCandidateTitle(pageRef, tabTitle);
+        if (boundTabTitle && !Naming.isUglyBase(boundTabTitle)) {
+          return boundTabTitle;
+        }
+      } else if (title && tabTitle && samePage) {
+        const cleanedTabTitle = Naming.cleanPageTitle(tabTitle) || tabTitle;
+        if (cleanedTabTitle && !Naming.isUglyBase(cleanedTabTitle)) {
+          const sameVideo = titlesMatchVideo(title, cleanedTabTitle);
+          const pageTitleWins =
+            !sameVideo &&
+            knownCodePage &&
+            meta?.titlePageKey === meta?.pageKey;
+          if (pageTitleWins || (sameVideo && cleanedTabTitle.length > title.length + 5)) {
+            return pinTitleToPage(pageRef, cleanedTabTitle);
+          }
+        }
+      }
+      return title;
+    }
+
+    /** Where a just-accepted title came from — pins trust to a pageKey. */
+    function nextTitlePageKey(title, prev, incomingTitle, pageChanged, nextKey) {
+      if (!title) return undefined;
+      if (incomingTitle) return nextKey;
+      return pageChanged ? undefined : prev.titlePageKey;
+    }
+
+    /** Block provisional titles until a payload proves the new page's identity. */
+    function nextProvisionalTitleBlocked(prev, meta, incomingTitle, pageChanged, knownCodeHost) {
+      if (pageChanged) {
+        return knownCodeHost && meta.fromPageMeta !== true ? true : !incomingTitle;
+      }
+      return incomingTitle || meta.identityConfirmed === true
+        ? false
+        : prev.provisionalTitleBlocked === true;
+    }
+
+    function nextVideoId(prev, meta, pageChanged) {
+      if (pageChanged) return meta.videoId || undefined;
+      return Object.prototype.hasOwnProperty.call(meta, "videoId")
+        ? meta.videoId || undefined
+        : prev.videoId;
+    }
+
+    function nextIdentityConfirmed(prev, meta, pageChanged) {
+      if (pageChanged) return meta.identityConfirmed === true;
+      return Object.prototype.hasOwnProperty.call(meta, "identityConfirmed")
+        ? meta.identityConfirmed === true
+        : prev.identityConfirmed;
+    }
+
     function enrichItem(tabId, item) {
       const meta = tabId != null ? tabMeta.get(tabId) : null;
       const quality = item.quality || qualityLabel(item.height) || null;
@@ -425,14 +519,7 @@
         Naming.isKnownCodeVideoPage?.(itemPage) ||
         Naming.isKnownCodeSite?.(hostOf(itemPage) || meta?.host || "")
       );
-      const titleMatchesPage =
-        !meta?.titlePageKey || meta.titlePageKey === meta.pageKey;
-      const identityReady =
-        meta?.identityConfirmed === true ||
-        (samePage && item.provisionalIdentitySafe === true) ||
-        (samePage && !!meta?.title && meta?.titlePageKey === meta?.pageKey) ||
-        (!String(meta?.pageKey || "").startsWith("yt:") &&
-          (!knownCodePage || titleMatchesPage));
+      const identityReady = isIdentityReady(meta, item, samePage, knownCodePage);
 
       const tabTitle = samePage && identityReady ? meta?.title || "" : "";
       const pageRef =
@@ -442,49 +529,13 @@
         ? [item.title, item.pageTitle]
         : []) {
         if (!candidate) continue;
-        const cleaned = pageRef
-          ? Naming.bindTitleToPage?.(pageRef, candidate) ||
-            Naming.cleanPageTitle(candidate) ||
-            candidate
-          : Naming.cleanPageTitle(candidate) || candidate;
+        const cleaned = cleanCandidateTitle(pageRef, candidate);
         if (cleaned && !Naming.isUglyBase(cleaned)) {
           title = cleaned;
           break;
         }
       }
-      if ((!title || Naming.isUglyBase(title)) && tabTitle && samePage) {
-        const cleanedTabTitle = pageRef
-          ? Naming.bindTitleToPage?.(pageRef, tabTitle) ||
-            Naming.cleanPageTitle(tabTitle) ||
-            tabTitle
-          : Naming.cleanPageTitle(tabTitle) || tabTitle;
-        if (cleanedTabTitle && !Naming.isUglyBase(cleanedTabTitle)) {
-          title = cleanedTabTitle;
-        }
-      } else if (title && tabTitle && samePage) {
-        const cleanedTabTitle = Naming.cleanPageTitle(tabTitle) || tabTitle;
-        if (cleanedTabTitle && !Naming.isUglyBase(cleanedTabTitle)) {
-          const sameVideo = titlesMatchVideo(title, cleanedTabTitle);
-          if (
-            !sameVideo &&
-            knownCodePage &&
-            meta?.titlePageKey === meta?.pageKey
-          ) {
-            title = pageRef
-              ? Naming.bindTitleToPage?.(pageRef, cleanedTabTitle) ||
-                cleanedTabTitle
-              : cleanedTabTitle;
-          } else if (
-            sameVideo &&
-            cleanedTabTitle.length > title.length + 5
-          ) {
-            title = pageRef
-              ? Naming.bindTitleToPage?.(pageRef, cleanedTabTitle) ||
-                cleanedTabTitle
-              : cleanedTabTitle;
-          }
-        }
-      }
+      title = reconcileTitles(title, tabTitle, samePage, pageRef, knownCodePage, meta);
       if (!title && pageRef) {
         title = Naming.bindTitleToPage?.(pageRef, "") || "";
       }
@@ -503,12 +554,13 @@
       const existingRaw = (item.filename || "").replace(/\.[a-z0-9]{2,5}$/i, "");
       const existingOk =
         existingRaw && !Naming.isUglyBase(existingRaw) ? item.filename : "";
+      const trustedPageTitle =
+        (identityReady ? item.pageTitle : "") ||
+        (samePage && identityReady ? meta?.title : "") ||
+        "";
       const filename = Naming.buildFilename({
         title,
-        pageTitle:
-          (identityReady ? item.pageTitle : "") ||
-          (samePage && identityReady ? meta?.title : "") ||
-          "",
+        pageTitle: trustedPageTitle,
         quality,
         type: item.type || "video",
         isHls,
@@ -520,10 +572,7 @@
       });
       const displayName = Naming.displayTitle({
         title,
-        pageTitle:
-          (identityReady ? item.pageTitle : "") ||
-          (samePage && identityReady ? meta?.title : "") ||
-          "",
+        pageTitle: trustedPageTitle,
         type: item.type || "video"
       });
 
@@ -546,10 +595,7 @@
         format: "MP4",
         estimatedSize: estimatedSize || undefined,
         title: title || undefined,
-        pageTitle:
-          (identityReady ? item.pageTitle : undefined) ||
-          (samePage && identityReady ? meta?.title : undefined) ||
-          undefined,
+        pageTitle: trustedPageTitle || undefined,
         host: host || undefined,
         thumbnail,
         filename,
@@ -716,34 +762,26 @@
 
       const next = {
         title,
-        titlePageKey: title
-          ? incomingTitle
-            ? nextKey
-            : pageChanged
-              ? undefined
-              : prev.titlePageKey
-          : undefined,
+        titlePageKey: nextTitlePageKey(
+          title,
+          prev,
+          incomingTitle,
+          pageChanged,
+          nextKey
+        ),
         thumbnail,
         host: meta.host || prev.host,
         lastUrl: nextUrl || prev.lastUrl,
         pageKey: nextKey || prevKey || undefined,
-        videoId: pageChanged
-          ? meta.videoId || undefined
-          : Object.prototype.hasOwnProperty.call(meta, "videoId")
-            ? meta.videoId || undefined
-            : prev.videoId,
-        identityConfirmed: pageChanged
-          ? meta.identityConfirmed === true
-          : Object.prototype.hasOwnProperty.call(meta, "identityConfirmed")
-            ? meta.identityConfirmed === true
-            : prev.identityConfirmed,
-        provisionalTitleBlocked: pageChanged
-          ? knownCodeHost && !fromPageMeta
-            ? true
-            : !incomingTitle
-          : incomingTitle || meta.identityConfirmed === true
-            ? false
-            : prev.provisionalTitleBlocked === true
+        videoId: nextVideoId(prev, meta, pageChanged),
+        identityConfirmed: nextIdentityConfirmed(prev, meta, pageChanged),
+        provisionalTitleBlocked: nextProvisionalTitleBlocked(
+          prev,
+          meta,
+          incomingTitle,
+          pageChanged,
+          knownCodeHost
+        )
       };
 
       if (pageChanged) {

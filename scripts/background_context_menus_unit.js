@@ -41,8 +41,9 @@ function makeHarness() {
         calls.push(["removeAll"]);
         callback();
       },
-      create(details) {
+      create(details, callback) {
         menus.push(details);
+        if (callback) callback();
       }
     },
     tabs: {
@@ -122,6 +123,8 @@ async function main() {
   equal(installed.listeners.length, 1);
   equal(startup.listeners.length, 1);
   equal(clicked.listeners.length, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   deepEqual(calls, [["removeAll"]]);
   deepEqual(menus, [
     {
@@ -148,7 +151,10 @@ async function main() {
 
   installed.listeners[0]();
   startup.listeners[0]();
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
   equal(calls.filter(([name]) => name === "removeAll").length, 3);
+  equal(menus.length, 12, "three serialized runs create each menu exactly once");
 
   const click = clicked.listeners[0];
   calls.length = 0;
