@@ -899,6 +899,62 @@ def should_unlink_stopped_download(*, cancel: bool, pause: bool) -> bool:
     return not (pause and not cancel)
 
 
+_ffprobe_path_cache: str | None = None
+_ffprobe_checked = False
+
+
+def ffprobe_path() -> str | None:
+    """Optional integrity checker — installs without ffprobe skip verification."""
+    global _ffprobe_path_cache, _ffprobe_checked
+    if not _ffprobe_checked:
+        _ffprobe_path_cache = shutil.which("ffprobe")
+        _ffprobe_checked = True
+    return _ffprobe_path_cache
+
+
+def interpret_ffprobe(output: str, return_code: int) -> dict:
+    """Read duration/format out of `ffprobe -print_format json -show_format`."""
+    if return_code != 0:
+        return {"readable": False, "duration": 0.0}
+    try:
+        info = json.loads(output or "{}")
+        duration = float(info.get("format", {}).get("duration") or 0.0)
+    except Exception:
+        return {"readable": False, "duration": 0.0}
+    return {"readable": duration > 0, "duration": duration}
+
+
+def verify_media_integrity(path: str | Path) -> dict:
+    """
+    Last-line integrity gate before publishing: a file whose playback
+    metadata cannot be read (truncated MP4 without moov, cut-off stream)
+    must not be presented as done. Skipped silently when ffprobe is absent.
+    """
+    probe = ffprobe_path()
+    if not probe:
+        return {"checked": False, "ok": True, "duration": 0.0, "reason": ""}
+    try:
+        out = subprocess.check_output(
+            [probe, "-v", "error", "-print_format", "json", "-show_format", str(path)],
+            text=True,
+            timeout=30,
+            stderr=subprocess.STDOUT,
+        )
+        result = interpret_ffprobe(out, 0)
+    except Exception as e:
+        result = interpret_ffprobe(
+            getattr(e, "output", "") or "", getattr(e, "returncode", 1) or 1
+        )
+    if result["readable"]:
+        return {"checked": True, "ok": True, "duration": result["duration"], "reason": ""}
+    return {
+        "checked": True,
+        "ok": False,
+        "duration": 0.0,
+        "reason": "재생 정보를 읽지 못했습니다 — 파일이 잘렸거나 손상된 것 같습니다",
+    }
+
+
 def find_ytdlp() -> str | None:
     for name in ("yt-dlp", "yt-dlp_macos", "youtube-dl"):
         path = shutil.which(name)
@@ -1758,6 +1814,7 @@ def run_download(job_id: str, payload: dict) -> None:
     last_line = ""
     code = 1
     media_published = False
+    integrity_reason = ""
     published_thumbnail_path = ""
     aria2_fallback_used = False
     js_runtime_fallback_used = False
@@ -2015,6 +2072,25 @@ def run_download(job_id: str, payload: dict) -> None:
             except Exception as e:
                 print(f"[uvd-helper] rename cleanup: {e}", file=sys.stderr)
 
+            # Integrity gate: refuse to publish a file whose playback
+            # metadata cannot be read (truncated download, missing moov).
+            # The bad file is deleted so a retry starts clean.
+            integrity = verify_media_integrity(final_path)
+            if integrity["checked"] and not integrity["ok"]:
+                integrity_reason = integrity["reason"]
+                try:
+                    Path(final_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+                with jobs_lock:
+                    jobs[job_id].update(
+                        {"message": "손상 의심 파일 삭제 — 다시 받아야 합니다"}
+                    )
+                print(
+                    f"[uvd-helper] integrity gate: {integrity_reason} ({final_path})",
+                    file=sys.stderr,
+                )
+
             # Publish the completed media under its human title. The hidden
             # per-job path prevents an existing title from being overwritten
             # or mistaken for this job's result.
@@ -2085,9 +2161,12 @@ def run_download(job_id: str, payload: dict) -> None:
                 )
             else:
                 err = (
-                    "다운로드는 끝났지만 저장할 영상/오디오 파일을 찾지 못했습니다"
-                    if code == 0
-                    else last_line or f"yt-dlp 종료 코드 {code}"
+                    integrity_reason
+                    or (
+                        "다운로드는 끝났지만 저장할 영상/오디오 파일을 찾지 못했습니다"
+                        if code == 0
+                        else last_line or f"yt-dlp 종료 코드 {code}"
+                    )
                 )
                 # Friendly common errors
                 if code == 0:

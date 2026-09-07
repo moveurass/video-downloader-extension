@@ -265,6 +265,71 @@ def main() -> int:
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
     )
+    good_probe = json.dumps(
+        {"format": {"duration": "10.032", "format_name": "mov,mp4,m4a"}}
+    )
+    original_which = helper_server.shutil.which
+    original_probe_run = helper_server.subprocess.check_output
+    helper_server.shutil.which = lambda name: "/usr/bin/ffprobe" if name == "ffprobe" else None
+    check(
+        "ffprobe verdicts interpret: readable / unreadable / bad json",
+        helper_server.interpret_ffprobe(good_probe, 0)
+        == {"readable": True, "duration": 10.032}
+        and helper_server.interpret_ffprobe("Invalid data found", 1)["readable"]
+        is False
+        and helper_server.interpret_ffprobe('{"format": {}}', 0)["readable"]
+        is False,
+    )
+
+    def fake_probe_fail(*_args, **_kwargs):
+        raise helper_server.subprocess.CalledProcessError(
+            returncode=1, cmd="ffprobe", output="moov atom not found"
+        )
+
+    def fake_probe_ok(*_args, **_kwargs):
+        return good_probe
+
+    # Truncated file → gate fires; unreadable metadata is honest about it.
+    helper_server.subprocess.check_output = fake_probe_fail
+    try:
+        bad = helper_server.verify_media_integrity("/tmp/x.mp4")
+    finally:
+        helper_server.subprocess.check_output = original_probe_run
+    # Readable file → gate passes with duration.
+    helper_server.subprocess.check_output = fake_probe_ok
+    try:
+        good = helper_server.verify_media_integrity("/tmp/x.mp4")
+    finally:
+        helper_server.subprocess.check_output = original_probe_run
+    # No ffprobe → verification silently skipped (reset the probe cache).
+    helper_server._ffprobe_checked = False
+    helper_server._ffprobe_path_cache = None
+    helper_server.shutil.which = lambda _name: None
+    try:
+        skipped = helper_server.verify_media_integrity("/tmp/x.mp4")
+    finally:
+        helper_server.shutil.which = original_which
+        helper_server._ffprobe_checked = False
+        helper_server._ffprobe_path_cache = None
+    check(
+        "integrity gate blocks unreadable files, passes readable, skips without ffprobe",
+        bad["checked"]
+        and not bad["ok"]
+        and "손상" in bad["reason"]
+        and good["checked"]
+        and good["ok"]
+        and abs(good["duration"] - 10.032) < 0.001
+        and skipped == {"checked": False, "ok": True, "duration": 0.0, "reason": ""},
+    )
+    check(
+        "publish gate deletes the bad file and reports the friendly line",
+        (lambda src: src.index("verify_media_integrity(final_path)")
+         < src.index("media_published = True")
+         and "integrity_reason" in src
+         and "Path(final_path).unlink(missing_ok=True)" in src)(
+            (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+        ),
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
