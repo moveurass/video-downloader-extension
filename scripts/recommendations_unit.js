@@ -269,6 +269,109 @@ async function testHelperPollingFailsFast() {
   assert.equal("purge" in pauseBody, false);
 }
 
+async function testHelperRestartAutoResume() {
+  // 1) Helper restarts mid-download (6×404), comes back healthy, and the
+  //    same payload is re-posted. The new job runs to done.
+  const calls = [];
+  const progress = [];
+  let firstDownloadBody = null;
+  let secondDownloadBody = null;
+  const resumed = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      if (calls.filter((c) => c.url.endsWith("/download")).length === 1) {
+        firstDownloadBody = JSON.parse(options.body || "{}");
+        return { ok: true, json: async () => ({ ok: true, jobId: "j1" }) };
+      }
+      secondDownloadBody = JSON.parse(options.body || "{}");
+      return { ok: true, json: async () => ({ ok: true, jobId: "j2" }) };
+    }
+    if (String(url).endsWith("/health")) {
+      // Unhealthy until the recovery loop has polled a few times.
+      return calls.filter((c) => c.url.endsWith("/health")).length < 3
+        ? { ok: false, status: 0, json: async () => ({ ok: false }) }
+        : { ok: true, json: async () => ({ ok: true, ytdlp: true, pairingMode: "paired" }) };
+    }
+    if (String(url).includes("/job/j1")) {
+      return { ok: false, status: 404, json: async () => ({ ok: false, error: "job not found" }) };
+    }
+    return {
+      ok: true,
+      json: async () => ({ ok: true, job: { status: "done", percent: 100, path: "/out/v.mp4", size: 5 } })
+    };
+  });
+  const result = await resumed.downloadAndWait(
+    { url: "https://x.test/v", resumeKey: "rk-1", outputStem: "영상" },
+    (p) => progress.push(p),
+    60_000
+  );
+  assert.equal(result.jobId, "j2", "polling continues on the new helper job");
+  assert.equal(result.path, "/out/v.mp4");
+  assert.deepEqual(firstDownloadBody, secondDownloadBody, "the exact same payload is re-posted");
+  assert.equal(
+    progress.some((p) => /재시작 감지/.test(p.message)),
+    true,
+    "recovery is reported through onProgress"
+  );
+  assert.equal(
+    progress.some((p) => p.helperJobId === "j2"),
+    true,
+    "new helper job id is surfaced so cancel/pause still reach it"
+  );
+
+  // 2) Without a resumeKey the old behavior stands: the restart is fatal.
+  const noResume = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "j1" }) };
+    }
+    return { ok: false, status: 404, json: async () => ({ ok: false, error: "job not found" }) };
+  });
+  await assert.rejects(
+    () => noResume.downloadAndWait({ url: "https://x.test/v" }, () => {}, 60_000),
+    /재시작/
+  );
+
+  // 3) Helper never comes back within the recovery window → honest error.
+  const gone = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/download")) {
+      return { ok: true, json: async () => ({ ok: true, jobId: "j1" }) };
+    }
+    if (String(url).endsWith("/health")) {
+      return { ok: false, status: 0, json: async () => ({ ok: false }) };
+    }
+    return { ok: false, status: 404, json: async () => ({ ok: false, error: "job not found" }) };
+  });
+  await assert.rejects(
+    () => gone.downloadAndWait({ url: "https://x.test/v", resumeKey: "rk-2" }, () => {}, 60_000),
+    /재시작/
+  );
+}
+
+async function testYtdlpUpdateSelf() {
+  const calls = [];
+  const ytdlp = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    return {
+      ok: true,
+      json: async () => ({
+        ok: true,
+        updated: true,
+        version: "2026.09.07",
+        message: "yt-dlp를 최신 버전으로 업데이트했습니다",
+        hint: null
+      })
+    };
+  });
+  const result = await ytdlp.updateSelf();
+  assert.equal(result.updated, true);
+  assert.equal(result.version, "2026.09.07");
+  const updateCall = calls.find((c) => c.url.endsWith("/update"));
+  assert.ok(updateCall, "POSTs the helper /update endpoint");
+  assert.equal(updateCall.options.method, "POST");
+}
+
 async function testHistoryCap() {
   const history = Array.from({ length: 40 }, (_, index) => ({
     id: `old-${index}`,
@@ -354,6 +457,8 @@ function testPermissionReductionAndTrackPlumbing() {
 async function main() {
   await testHelperAutoPairing();
   await testHelperPollingFailsFast();
+  await testHelperRestartAutoResume();
+  await testYtdlpUpdateSelf();
   await testPairingRecovery();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();

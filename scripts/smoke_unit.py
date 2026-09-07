@@ -167,6 +167,36 @@ def main() -> int:
             "unrecognized arguments: --js-runtimes node:/bin/node"
         ),
     )
+    brew_update_out = (
+        "ERROR: You can install Homebrew and upgrade yt-dlp with:\n"
+        "  brew upgrade yt-dlp\n"
+        "You can also install via pip: pip3 install -U yt-dlp"
+    )
+    check(
+        "yt-dlp -U result is classified: brew hint / updated / already current / failure",
+        helper_server.classify_update_result(brew_update_out, 1).get("hint")
+        == "brew upgrade yt-dlp"
+        and helper_server.classify_update_result(
+            "Updated to version 2026.09.07", 0
+        ).get("updated")
+        is True
+        and helper_server.classify_update_result(
+            "yt-dlp is up to date (2026.09.07)", 0
+        ).get("updated")
+        is False
+        and helper_server.classify_update_result("boom", 1).get("updated")
+        is False
+        and "boom"
+        in helper_server.classify_update_result("boom", 1).get("message", ""),
+    )
+    check(
+        "/update is auth-gated and clears the version cache after an update",
+        (lambda src: src.index('self.path == "/update"')
+         > src.index("if not request_authorized(self):")
+         and "_version_cache.pop(bin_path, None)" in src)(
+            (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+        ),
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(

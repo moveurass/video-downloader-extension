@@ -70,11 +70,13 @@
         const fixBtn = deps.$("#btnHelperFix");
         const startBtn = deps.$("#btnHelperStart");
         const recheckBtn = deps.$("#btnHelperRecheck");
+        const updateBtn = deps.$("#btnHelperUpdate");
         if (!need && helperOk) {
           helperBar.classList.add("hidden");
           fixBtn?.classList.add("hidden");
           startBtn?.classList.add("hidden");
           recheckBtn?.classList.add("hidden");
+          updateBtn?.classList.add("hidden");
           // Slow poll so reconnect / disconnect still surfaces
           if (!helperPollTimer) startHelperPoll(8000);
           return;
@@ -106,6 +108,7 @@
             fixBtn?.classList.add("hidden");
             startBtn?.classList.add("hidden");
             recheckBtn?.classList.add("hidden");
+            updateBtn?.classList.remove("hidden");
             // Stay on slow poll to notice if helper dies
             stopHelperPoll();
             startHelperPoll(8000);
@@ -119,6 +122,7 @@
             fixBtn?.classList.remove("hidden");
             startBtn?.classList.remove("hidden");
             recheckBtn?.classList.remove("hidden");
+            updateBtn?.classList.add("hidden");
             stopHelperPoll();
             startHelperPoll(2800);
           }
@@ -134,10 +138,44 @@
           fixBtn?.classList.remove("hidden");
           startBtn?.classList.remove("hidden");
           recheckBtn?.classList.remove("hidden");
+          updateBtn?.classList.add("hidden");
           updateHelperOutDirUi("");
           stopHelperPoll();
           startHelperPoll(2800);
           if (was) deps.toast("도우미 연결이 끊겼습니다", "error");
+        }
+      }
+
+      /** Self-update yt-dlp via the helper, then re-render the version line. */
+      async function updateYtdlp() {
+        const updateBtn = deps.$("#btnHelperUpdate");
+        if (updateBtn?.disabled) return;
+        if (updateBtn) {
+          updateBtn.disabled = true;
+          updateBtn.textContent = "업데이트 중…";
+        }
+        try {
+          const r = await deps.sendMessage({ type: "YTDLP_UPDATE" });
+          if (r?.ok) {
+            const hint = r.hint ? ` — ${r.hint}` : "";
+            deps.toast(`${r.message || "yt-dlp 업데이트 완료"}${hint}`, "ok");
+          } else {
+            const hint = r?.hint ? ` — ${r.hint}` : "";
+            deps.toast(`${r?.error || "yt-dlp 업데이트에 실패했습니다"}${hint}`, "error");
+          }
+        } catch (e) {
+          deps.toast(
+            String(e?.message || e || "yt-dlp 업데이트에 실패했습니다"),
+            "error"
+          );
+        } finally {
+          if (updateBtn) {
+            updateBtn.disabled = false;
+            updateBtn.textContent = "yt-dlp 업데이트";
+          }
+          // The helper cleared its version cache; force a health poll so the
+          // status line picks up the post-update version.
+          await refreshHelperStatus(true).catch(() => {});
         }
       }
 
@@ -146,6 +184,7 @@
         startHelperPoll,
         updateHelperOutDirUi,
         refreshHelperStatus,
+        updateYtdlp,
         getHelperOk,
         setHelperOk,
         getHelperOutDirCache,
