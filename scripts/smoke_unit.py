@@ -197,6 +197,34 @@ def main() -> int:
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
     )
+    unsupported_probe = (
+        "[youtube] Extracting URL: https://x.test/v\n"
+        "ERROR: Unsupported URL: https://x.test/v\n"
+        "yt-dlp version 2026.08.19"
+    )
+    check(
+        "formats probe errors classify Unsupported URL vs generic failures",
+        helper_server.classify_formats_error(unsupported_probe)
+        == {"unsupported": True, "message": "ERROR: Unsupported URL: https://x.test/v"}
+        and helper_server.classify_formats_error(
+            "WARNING: something\nERROR: Unable to download webpage: HTTP Error 403"
+        )["unsupported"]
+        is False
+        and helper_server.classify_formats_error("no error lines here")[
+            "message"
+        ]
+        == "no error lines here"
+        and helper_server.classify_formats_error("")["message"]
+        == "",
+    )
+    check(
+        "/formats returns an unsupported flag and run_download maps the friendly line",
+        "unsupported"
+        in (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+        and 'unsupported url" in err.lower()' in (ROOT / "helper/yt_dlp_server.py").read_text(
+            encoding="utf-8"
+        ),
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(

@@ -953,6 +953,25 @@ def classify_update_result(output: str, return_code: int) -> dict:
     }
 
 
+def classify_formats_error(output: str) -> dict:
+    """
+    Pull the meaningful yt-dlp failure line out of a -J probe's combined
+    output and flag pages yt-dlp has no extractor for, so the extension can
+    fail fast with honest guidance instead of a late opaque error.
+    """
+    text = str(output or "")
+    unsupported = "unsupported url" in text.lower()
+    message = ""
+    for line in reversed(text.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("ERROR:"):
+            message = line
+            break
+    if not message and text.strip():
+        message = text.strip().splitlines()[-1]
+    return {"unsupported": unsupported, "message": message}
+
+
 def should_use_aria2(
     aria2_path: str | None, speed_profile: str, is_youtube: bool
 ) -> bool:
@@ -2005,6 +2024,11 @@ def run_download(job_id: str, payload: dict) -> None:
                     pass
                 elif "Sign in to confirm" in err or "login required" in err.lower():
                     err = "로그인이 필요한 영상입니다. 브라우저에서 로그인한 뒤 다시 시도해 주세요"
+                elif "unsupported url" in err.lower():
+                    err = (
+                        "이 주소는 도우미(yt-dlp)가 직접 받을 수 없어요. "
+                        "페이지에서 영상을 재생하면 자동으로 잡아줍니다"
+                    )
                 elif "Private video" in err or "private" in err.lower():
                     err = "비공개 영상이라 받을 수 없습니다"
                 elif "Video unavailable" in err:
@@ -2324,7 +2348,22 @@ class Handler(BaseHTTPRequestHandler):
                         Path(cookies_file).unlink(missing_ok=True)
                     except Exception:
                         pass
+                verdict = classify_formats_error(getattr(e, "output", "") or "")
+                if verdict["unsupported"]:
+                    send_json(
+                        self,
+                        422,
+                        {
+                            "ok": False,
+                            "error": "도우미(yt-dlp)가 이 주소를 지원하지 않습니다",
+                            "unsupported": True,
+                            "detail": verdict["message"],
+                        },
+                    )
+                    return
                 msg = str(e)
+                if verdict["message"]:
+                    msg = verdict["message"]
                 if "IP address is blocked" in msg or "blocked from accessing" in msg:
                     msg = "TikTok 접근이 막혔습니다. 브라우저에서 재생 후 다시 열어 주세요"
                 send_json(self, 500, {"ok": False, "error": f"포맷 조회 실패: {msg}"})

@@ -138,6 +138,45 @@
       return [...map.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
     }
 
+    // Verdict cache for "can the helper download this page directly?" —
+    // keeps repeated attempts snappy without outliving a helper update.
+    const SUPPORT_CACHE_TTL = 10 * 60 * 1000;
+    const SUPPORT_CACHE_MAX = 64;
+    const supportVerdicts = new Map(); // url -> { supported, at }
+
+    /**
+     * Ask the helper (yt-dlp -J via /formats) whether it can download this
+     * page directly. Returns { supported: true | false }, or null when the
+     * helper cannot answer (down, auth, transient trouble) and the caller
+     * should fall back to its regular flow instead of guessing.
+     */
+    async function probePageSupport(pageUrl) {
+      const key = String(pageUrl || "").trim();
+      if (!/^https?:/i.test(key)) return { supported: false };
+      const cached = supportVerdicts.get(key);
+      if (cached && Date.now() - cached.at < SUPPORT_CACHE_TTL) {
+        return { supported: cached.supported };
+      }
+      try {
+        const cookieHeader = await getCookieHeaderForUrl(key);
+        await deps.YtDlp.listFormats(key, {
+          cookieHeader: cookieHeader || undefined
+        });
+        supportVerdicts.set(key, { supported: true, at: Date.now() });
+        return { supported: true };
+      } catch (error) {
+        if (error?.unsupported === true) {
+          supportVerdicts.set(key, { supported: false, at: Date.now() });
+          return { supported: false };
+        }
+        return null;
+      } finally {
+        if (supportVerdicts.size > SUPPORT_CACHE_MAX) {
+          supportVerdicts.delete(supportVerdicts.keys().next().value);
+        }
+      }
+    }
+
     function normalizeInstagramUrl(raw) {
       try {
         const u = new deps.URL(String(raw || "").trim());
@@ -645,6 +684,7 @@
       collectCookies: collectCookiesForUrl,
       getCookieHeaderForUrl,
       getCookieHeader: getCookieHeaderForUrl,
+      probePageSupport,
       normalizeInstagramUrl,
       collectTikTokMediaUrls,
       downloadDirectMediaUrl,

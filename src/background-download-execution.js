@@ -292,6 +292,50 @@
         );
       }
 
+      // Non-social known-code pages: let yt-dlp answer whether it can take
+      // this URL before paying for the tab-open/scan dance. Supported pages
+      // skip straight to the helper (no playback needed); unsupported ones
+      // fail in seconds with playback guidance instead of after a full scan.
+      const pageHost = (() => {
+        try {
+          return new URL(pageUrl).hostname;
+        } catch {
+          return "";
+        }
+      })();
+      if (
+        !forceOpts.resume &&
+        !forceOpts.mediaUrl &&
+        typeof deps.probePageSupport === "function" &&
+        deps.Naming.isKnownCodeSite?.(pageHost)
+      ) {
+        const support = await deps.probePageSupport(pageUrl);
+        if (support?.supported === true) {
+          return deps.downloadViaYtDlp(
+            tabId,
+            pageUrl,
+            pageUrl,
+            filename || undefined,
+            quality,
+            jid,
+            {
+              mediaMode,
+              audioTrackId: forceOpts.audioTrackId || "",
+              subtitleLanguages: Array.isArray(forceOpts.subtitleLanguages)
+                ? forceOpts.subtitleLanguages
+                : [],
+              runGeneration
+            }
+          );
+        }
+        if (support && support.supported === false) {
+          throw new Error(
+            "이 주소는 도우미(yt-dlp)가 직접 받을 수 없어요 — 페이지에서 영상을 재생하면 자동으로 잡아줍니다"
+          );
+        }
+        // support == null (helper down / transient) → keep the scan flow.
+      }
+
       let workTabId = tabId;
       let openedTab = false;
       let best =

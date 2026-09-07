@@ -572,10 +572,15 @@ const HLS = (() => {
   /** Typical HLS media-segment payload when EXT-X-BITRATE is absent. */
   const SEGMENT_BYTE_ESTIMATE = 220_000;
 
+  /** Minimum observed segments before the measured average beats a formula. */
+  const MEASURED_MIN_SAMPLES = 3;
+
   /**
    * Approximate media-playlist capacity from duration × bitrate, or segment count.
    * Used by LIST_QUALITIES / maybeProbeHls so the popup does not keep a 30s
    * preview estimate after a longer feature playlist wins ranking.
+   * When webRequest observed enough real segment responses for this playlist,
+   * their measured average is the most honest base and wins over every formula.
    */
   function estimateMediaBytes(info = {}) {
     const duration = Number(info.duration) || 0;
@@ -583,6 +588,15 @@ const HLS = (() => {
     const bandwidth =
       Number(info.estimateBandwidth || info.bandwidth) || 0;
     const height = Number(info.height || info.inferredHeight) || 0;
+    const measuredSegmentBytes = Number(info.measuredSegmentBytes) || 0;
+    const measuredSamples = Number(info.measuredSamples) || 0;
+    if (
+      measuredSegmentBytes > 0 &&
+      measuredSamples >= MEASURED_MIN_SAMPLES &&
+      segmentCount > 0
+    ) {
+      return Math.round(measuredSegmentBytes * segmentCount);
+    }
     if (bandwidth > 0 && duration >= 1) {
       return Math.round((bandwidth / 8) * duration);
     }

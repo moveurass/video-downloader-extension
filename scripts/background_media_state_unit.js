@@ -821,6 +821,77 @@ async function main() {
     "C: feature playlist size is not the 30s preview capacity"
   );
 
+  // Measured segments: responses attributed to the most recent m3u8 give a
+  // real average segment size that overrides the fixed 220KB formula.
+  const measuredHarness = makeHarness({
+    HLS: {
+      probe: async (url) =>
+        /measured/.test(url)
+          ? { kind: "media", duration: 3600, segmentCount: 600, inferredHeight: 720 }
+          : null,
+      heightFromString: () => 0,
+      estimateMediaBytes: HLS.estimateMediaBytes
+    }
+  });
+  const headers = () =>
+    measuredHarness.events.onHeadersReceived.listeners[0].listener;
+  measuredHarness.store.bind();
+  measuredHarness.store.setTabMeta(41, {
+    lastUrl: "https://123av.com/ko/v/measured",
+    host: "123av.com"
+  });
+  headers()({
+    tabId: 41,
+    method: "GET",
+    url: "https://cdn.example.com/measured/playlist.m3u8",
+    responseHeaders: [
+      { name: "Content-Type", value: "application/vnd.apple.mpegurl" }
+    ]
+  });
+  for (let i = 0; i < 5; i += 1) {
+    headers()({
+      tabId: 41,
+      method: "GET",
+      url: `https://cdn.example.com/measured/seg-${i}.ts`,
+      responseHeaders: [
+        { name: "Content-Type", value: "video/mp2t" },
+        { name: "Content-Length", value: "1000000" }
+      ]
+    });
+  }
+  await flush();
+  await flush();
+  measuredHarness.store.addMedia(41, {
+    url: "https://cdn.example.com/measured/playlist.m3u8",
+    type: "stream",
+    isHls: true,
+    source: "network",
+    pageUrl: "https://123av.com/ko/v/measured",
+    host: "123av.com"
+  });
+  await flush();
+  await flush();
+  const measuredItem = measuredHarness.store.getMediaForTab(41)[0];
+  equal(
+    measuredItem.estimatedSize,
+    600 * 1_000_000,
+    "measured segment average × segmentCount beats the 220KB guess"
+  );
+
+  // Navigation clears the per-tab measurement state.
+  measuredHarness.store.setTabMeta(41, {
+    lastUrl: "https://123av.com/ko/v/next-page",
+    host: "123av.com"
+  });
+  equal(
+    measuredHarness.store.getSegmentMeasure(
+      41,
+      "https://cdn.example.com/measured/playlist.m3u8"
+    ),
+    null,
+    "page navigation drops accumulated segment measurements"
+  );
+
   store.addMedia(23, {
     url: "https://cdn.example.com/bumper.mp4",
     type: "video",
