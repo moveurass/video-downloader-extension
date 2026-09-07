@@ -704,6 +704,17 @@ def main() -> int:
         "(?:m3u8|mpd|mp4)" in content_source
         and "[data-src*='.mpd']" in content_source,
     )
+    manifest_source = (ROOT / "manifest.json").read_text(encoding="utf-8")
+    episode_links_source = (ROOT / "src/episode-links.js").read_text(encoding="utf-8")
+    check(
+        "list-page episode collection is wired into the content pipeline",
+        '"src/episode-links.js"' in manifest_source
+        and manifest_source.index('"src/episode-links.js"')
+        < manifest_source.index('"src/content.js"')
+        and "COLLECT_EPISODES" in content_source
+        and "collectEpisodeLinks" in content_source
+        and "collectFromAnchors" in episode_links_source,
+    )
     naming_probe = subprocess.run(
         [
             "node",
@@ -798,6 +809,7 @@ def main() -> int:
         "src/popup-quality-state.js",
         "src/popup-helper-state.js",
         "src/popup-display-utils.js",
+        "src/episode-links.js",
         "src/content.js",
         "src/progress-protocol.js",
         "src/background-download-jobs.js",

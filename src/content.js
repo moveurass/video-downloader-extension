@@ -296,6 +296,28 @@
     return !!Naming.isKnownCodeSite(host);
   }
 
+  /**
+   * List pages (series / genre / tag) expose their episodes as plain anchors.
+   * Flatten the DOM and let UVDEpisodeLinks classify each href as a video
+   * watch page — runs only on known-code hosts so other sites pay nothing.
+   */
+  function collectEpisodeLinks() {
+    if (!UVDEpisodeLinks || !isKnownCodeHostName()) {
+      return [];
+    }
+    const anchors = [];
+    for (const a of document.querySelectorAll("a[href]")) {
+      const href = absUrl(a.getAttribute("href") || "");
+      if (!/^https?:\/\//i.test(href)) continue;
+      anchors.push({
+        href,
+        text: a.textContent || "",
+        alt: a.querySelector("img")?.getAttribute("alt") || ""
+      });
+    }
+    return UVDEpisodeLinks.collectFromAnchors(anchors, location.href);
+  }
+
   function cssBackgroundImageUrl(el) {
     if (!el) return "";
     const fromStyle = String(el.getAttribute("style") || "").match(
@@ -1342,6 +1364,17 @@
       sendResponse({
         ok: true,
         pageMeta: currentPageMeta()
+      });
+      return false;
+    }
+
+    // Popup asks a known-code list page for its episode links.
+    if (msg.type === "COLLECT_EPISODES") {
+      sendResponse({
+        ok: true,
+        episodes: collectEpisodeLinks(),
+        title: cleanPageTitle(document.title || ""),
+        host: location.hostname
       });
       return false;
     }

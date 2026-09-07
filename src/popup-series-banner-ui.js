@@ -76,7 +76,9 @@
       if (title) {
         title.textContent = isPl
           ? `재생목록 · ${totalAll || n}편`
-          : `시리즈 ${pending.seriesKey || ""} · 다음 ${totalAll || n}편`;
+          : pending.mode === "list_page"
+            ? `이 목록 · ${totalAll || n}편`
+            : `시리즈 ${pending.seriesKey || ""} · 다음 ${totalAll || n}편`;
       }
       if (dest) {
         dest.textContent = destLabel;

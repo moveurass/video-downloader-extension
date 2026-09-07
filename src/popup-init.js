@@ -748,6 +748,42 @@
       const render = mediaRenderer.render;
       const patchMedia = mediaRenderer.patch;
 
+      // Known-code list pages (series/genre/tag): offer their episode links
+      // through the series banner. Auto-shown at most once per page per popup
+      // session, never over an existing series flow, and never on a watch
+      // page (the loader gates on placeholder-only results).
+      let listOfferShownKey = "";
+      async function maybeOfferListEpisodes({ tabId, pageUrl } = {}) {
+        if (!tabId || tabId < 0 || !pageUrl) return;
+        if (seriesPending || listOfferShownKey === pageKey(pageUrl)) return;
+        let res = null;
+        try {
+          res = await chrome.tabs.sendMessage(tabId, {
+            type: "COLLECT_EPISODES"
+          });
+        } catch {
+          return; // Content script absent (restricted page) — quiet no-op.
+        }
+        const episodes = Array.isArray(res?.episodes) ? res.episodes : [];
+        if (episodes.length < 5) return;
+        listOfferShownKey = pageKey(pageUrl);
+        showSeriesBanner({
+          mode: "list_page",
+          title:
+            Naming.cleanPageTitle(res.title || "") ||
+            Naming.bindTitleToPage?.(pageUrl, "") ||
+            "시리즈 목록",
+          pageUrl,
+          seriesId: `series:list:${pageKey(pageUrl)}`,
+          rangePref: "all",
+          items: episodes.map((episode) => ({
+            ...episode,
+            key: episode.code || ""
+          }))
+        });
+        toast(`이 목록에서 ${episodes.length}편 발견`, "ok");
+      }
+
       const {
         resolveActiveTab,
         loadMedia,
@@ -793,7 +829,9 @@
         getAvailableQualities,
         setAvailableQualities,
         getQualitiesLoading,
-        setQualitiesLoading
+        setQualitiesLoading,
+        Naming,
+        maybeOfferListEpisodes
       });
 
       const {

@@ -89,7 +89,9 @@
         getAvailableQualities,
         setAvailableQualities,
         getQualitiesLoading,
-        setQualitiesLoading
+        setQualitiesLoading,
+        Naming,
+        maybeOfferListEpisodes
       } = deps;
       const delay = (ms) =>
         new Promise((resolve) =>
@@ -565,6 +567,22 @@
           loadPlaylistInfo(currentTabUrl).catch(() => {});
         } else {
           hidePlaylistBox();
+        }
+
+        // Known-code list page (no real media yet): offer its episode links
+        // through the series banner. Best-effort — never blocks the load.
+        if (
+          typeof maybeOfferListEpisodes === "function" &&
+          knownCodePage &&
+          !Naming.isKnownCodeVideoPage?.(currentTabUrl) &&
+          (!getAllItems()[0] || getAllItems()[0].isPagePlaceholder === true)
+        ) {
+          Promise.resolve(
+            maybeOfferListEpisodes({
+              tabId: getCurrentTabId(),
+              pageUrl: currentTabUrl
+            })
+          ).catch(() => {});
         }
       }
 
