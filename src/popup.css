@@ -2067,6 +2067,121 @@ input[type="radio"] {
     center / contain no-repeat;
 }
 
+/* ── 저장 공간 (storage manager) ─────────────────────────────────── */
+.storage-section {
+  padding: 0 var(--pad-x);
+  margin-top: var(--block-gap);
+  display: grid;
+  gap: 6px;
+}
+
+.storage-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.storage-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-2);
+}
+
+.storage-summary,
+.storage-count {
+  font-size: 10px;
+  color: var(--ink-3);
+}
+
+.storage-count {
+  margin-left: auto;
+}
+
+.storage-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.storage-controls .sq-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.storage-trash.armed {
+  background: var(--err);
+  color: #fff;
+  border-color: var(--err);
+}
+
+.storage-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 150px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.storage-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 10.5px;
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.storage-item:last-child {
+  border-bottom: none;
+}
+
+.storage-item.is-empty {
+  justify-content: center;
+  color: var(--ink-3);
+}
+
+.storage-check {
+  flex: none;
+  accent-color: var(--accent);
+}
+
+.storage-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ink);
+}
+
+.storage-series {
+  flex: none;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storage-sub {
+  flex: none;
+  font-size: 9.5px;
+  color: var(--ink-3);
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+
 /* Scoped so it outranks the shared .field-input padding on its own. */
 .lib-filters .lib-search {
   padding-left: 30px;

@@ -45,6 +45,7 @@
         UVDPopupSeriesBannerUI,
         UVDPopupDuplicateConfirmation,
         UVDPopupPlaylistUI,
+        UVDPopupStorageUI,
         UVDPopupMediaRenderer,
         UVDPopupMediaLoader,
         UVDPopupDownloadRequests,
@@ -380,8 +381,24 @@
         getSeriesPending: () => seriesPending,
         setSeriesPending: (value) => {
           seriesPending = value;
+        },
+        afterHistoryLoaded: async () => {
+          await storageUi.load().catch(() => {});
         }
       });
+
+      // Storage manager (서재 탭 "저장 공간"): real on-disk files via the
+      // helper, joined with history for title/series labels.
+      const storageUi = UVDPopupStorageUI.createController({
+        $,
+        document,
+        sendMessage: (message) => chrome.runtime.sendMessage(message),
+        getHistoryItems: () => historyItems,
+        toast: (...args) => toast(...args),
+        escapeHtml: (...args) => escapeHtml(...args),
+        escapeAttr: (...args) => escapeAttr(...args)
+      });
+      storageUi.bind();
 
       const {
         loadSettings,

@@ -984,6 +984,112 @@ def reveal_in_file_manager(path: str, out_root: Path | None = None) -> bool:
         return False
 
 
+def list_out_files(out_root: Path | None = None) -> list[dict]:
+    """
+    Files actually on disk in the output tree — the popup storage manager's
+    source of truth (history caps at 100 and is only a download record).
+    Walks OUT_DIR plus one level of subfolders; hidden working folders are
+    excluded. Sorted newest-first by the caller's choice later.
+    """
+    root = Path(out_root or OUT_DIR).resolve()
+    hidden = {".uvd-tmp", ".uvd-trash"}
+    files: list[dict] = []
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return files
+    subdirs = [entry for entry in entries if entry.is_dir() and entry.name not in hidden]
+    candidates = [entry for entry in entries if entry.is_file()]
+    for sub in subdirs:
+        try:
+            candidates.extend(p for p in sub.iterdir() if p.is_file())
+        except OSError:
+            continue
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append(
+            {
+                "path": str(path),
+                "name": path.name,
+                "size": stat.st_size,
+                "mtime": stat.st_mtime,
+                "rel": str(path.relative_to(root)),
+            }
+        )
+    return files
+
+
+def _is_within_out_tree(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def finder_delete(path: Path) -> bool:
+    """
+    macOS: move a file to the Trash via Finder. Finder completes the move
+    asynchronously, so wait briefly for the source to disappear.
+    """
+    try:
+        script = f'tell application "Finder" to delete POSIX file "{path}"'
+        subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+    except Exception:
+        return False
+    for _ in range(5):
+        if not path.exists():
+            return True
+        time.sleep(0.2)
+    return not path.exists()
+
+
+def trash_out_files(paths: list, out_root: Path | None = None) -> dict:
+    """
+    Move files to the OS trash (Finder on macOS) so 폴더 삭제 is recoverable.
+    Every path must resolve inside the output tree — same rule as /reveal.
+    Non-darwin platforms fall back to a hidden trash folder inside OUT_DIR.
+    """
+    root = Path(out_root or OUT_DIR).resolve()
+    results: list[dict] = []
+    for raw in paths or []:
+        try:
+            resolved = Path(str(raw)).expanduser().resolve()
+        except Exception:
+            results.append({"path": str(raw), "ok": False, "error": "bad path"})
+            continue
+        if not _is_within_out_tree(resolved, root) or not resolved.exists():
+            results.append({"path": str(raw), "ok": False, "error": "out of scope"})
+            continue
+        ok = False
+        error = ""
+        if sys.platform == "darwin":
+            ok = finder_delete(resolved)
+            error = "" if ok else "Finder 이동 실패"
+        if not ok:
+            # Fallback (non-macOS or Finder refusal): hidden trash folder.
+            try:
+                trash_dir = root / ".uvd-trash"
+                trash_dir.mkdir(exist_ok=True)
+                dest = trash_dir / resolved.name
+                stem, suffix = resolved.stem, resolved.suffix
+                n = 1
+                while dest.exists():
+                    dest = trash_dir / f"{stem}_{n}{suffix}"
+                    n += 1
+                shutil.move(str(resolved), str(dest))
+                ok = True
+                error = ""
+            except Exception as e:
+                error = str(e)
+        results.append({"path": str(raw), "ok": ok, "error": error})
+    return {"results": results, "trashed": sum(1 for r in results if r["ok"])}
+
+
 def find_ytdlp() -> str | None:
     for name in ("yt-dlp", "yt-dlp_macos", "youtube-dl"):
         path = shutil.which(name)
@@ -2445,6 +2551,24 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": revealed,
                     "revealed": revealed,
                     "error": None if revealed else "저장 폴더 안의 파일이 아니거나 없습니다",
+                },
+            )
+            return
+
+        # Storage manager: list output-tree files / move selections to trash
+        if self.path == "/files/list" or self.path.startswith("/files/list?"):
+            send_json(self, 200, {"ok": True, "files": list_out_files()})
+            return
+        if self.path == "/files/trash" or self.path.startswith("/files/trash?"):
+            payload = read_json(self)
+            outcome = trash_out_files(payload.get("paths") or [])
+            send_json(
+                self,
+                200,
+                {
+                    "ok": outcome["trashed"] > 0,
+                    "trashed": outcome["trashed"],
+                    "results": outcome["results"],
                 },
             )
             return
