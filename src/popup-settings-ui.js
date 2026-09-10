@@ -99,6 +99,15 @@
         } else {
           document.body.classList.add("compact-ui");
         }
+
+        const fontSize = ["large", "xlarge"].includes(
+          uvdSettings.fontSize || ""
+        )
+          ? uvdSettings.fontSize
+          : "default";
+        document.body.classList.remove("font-large", "font-xlarge");
+        if (fontSize === "large") document.body.classList.add("font-large");
+        if (fontSize === "xlarge") document.body.classList.add("font-xlarge");
       }
 
       function applyModeChips() {
@@ -162,6 +171,14 @@
         }
         const width = $("#setPopupWidth");
         if (width) width.value = uvdSettings.popupWidth || "normal";
+        const fontSize = $("#setFontSize");
+        if (fontSize) {
+          fontSize.value = ["large", "xlarge"].includes(
+            uvdSettings.fontSize || ""
+          )
+            ? uvdSettings.fontSize
+            : "default";
+        }
         const theme = $("#setTheme");
         if (theme) {
           const current = uvdSettings.theme || "system";
@@ -266,6 +283,7 @@
           uiDensity,
           compactUi: uiDensity !== "full",
           popupWidth: $("#setPopupWidth")?.value || "normal",
+          fontSize: $("#setFontSize")?.value || "default",
           theme: $("#setTheme")?.value || "system",
           showBadge: $("#setShowBadge")?.checked !== false,
           seriesComplete: $("#setSeriesComplete")?.checked !== false,
