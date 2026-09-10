@@ -486,12 +486,43 @@ async function testYtdlpRevealPath() {
   assert.equal(offline.revealed, false);
 }
 
+async function testBulkSetters() {
+  const stored = {};
+  global.chrome = {
+    storage: {
+      local: {
+        get: async (key) => stored,
+        set: async (value) => Object.assign(stored, value)
+      }
+    },
+    runtime: { sendMessage: async () => {} }
+  };
+  const modulePath = require.resolve("../src/uvd-common.js");
+  delete require.cache[modulePath];
+  const UVD = require(modulePath);
+  const history = await UVD.setHistoryBulk(
+    Array.from({ length: 130 }, (_, i) => ({ id: `h${i}`, at: i }))
+  );
+  assert.equal(history.length, 100, "history bulk caps at 100");
+  assert.equal(stored.uvdHistory.length, 100);
+  const watchlist = await UVD.setWatchlistBulk(
+    Array.from({ length: 120 }, (_, i) => ({
+      id: `w${i}`,
+      url: `https://x.test/${i}`
+    }))
+  );
+  assert.equal(watchlist.length, 100, "watchlist bulk caps at 100");
+  assert.equal(stored.uvdWatchlist.length, 100);
+  delete global.chrome;
+}
+
 async function main() {
   await testHelperAutoPairing();
   await testHelperPollingFailsFast();
   await testHelperRestartAutoResume();
   await testYtdlpUpdateSelf();
   await testYtdlpRevealPath();
+  await testBulkSetters();
   await testPairingRecovery();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();

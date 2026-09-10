@@ -71,7 +71,12 @@
       const totalAll = (pending.allItems || []).length;
       const doneN = (pending.allItems || []).filter((x) => x.downloaded).length;
       const isPl = pending.mode === "playlist";
+      const isListPage = pending.mode === "list_page";
       const destLabel = isPl ? "바로 받기 (큐)" : "나중 받기";
+      const moreBtn = $("#btnSeriesMore");
+      if (moreBtn) {
+        moreBtn.classList.toggle("hidden", !isListPage);
+      }
 
       if (title) {
         title.textContent = isPl

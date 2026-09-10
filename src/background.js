@@ -463,6 +463,7 @@ const routeBackgroundMessage = UVDBackgroundMessages.createRouter({
   UVD,
   alarms: chrome.alarms,
   tabs: chrome.tabs,
+  downloads: chrome.downloads,
   updateDownloadBadge,
   clearMedia: mediaStore.clearMedia,
   version: chrome.runtime.getManifest?.()?.version || "unknown"

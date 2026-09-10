@@ -46,6 +46,7 @@
         UVDPopupDuplicateConfirmation,
         UVDPopupPlaylistUI,
         UVDPopupStorageUI,
+        UVDEpisodeLinks,
         UVDPopupMediaRenderer,
         UVDPopupMediaLoader,
         UVDPopupDownloadRequests,
@@ -770,6 +771,18 @@
       // session, never over an existing series flow, and never on a watch
       // page (the loader gates on placeholder-only results).
       let listOfferShownKey = "";
+      /** List-page collection state: merged episodes + pagination cursor */
+      let listState = null;
+
+      async function fetchDownloadedSet() {
+        try {
+          const res = await chrome.runtime.sendMessage({ type: "GET_HISTORY" });
+          return res?.history || historyItems || [];
+        } catch {
+          return historyItems || [];
+        }
+      }
+
       async function maybeOfferListEpisodes({ tabId, pageUrl } = {}) {
         if (!tabId || tabId < 0 || !pageUrl) return;
         if (seriesPending || listOfferShownKey === pageKey(pageUrl)) return;
@@ -784,6 +797,12 @@
         const episodes = Array.isArray(res?.episodes) ? res.episodes : [];
         if (episodes.length < 5) return;
         listOfferShownKey = pageKey(pageUrl);
+        const history = await fetchDownloadedSet();
+        listState = {
+          pageUrl,
+          nextPageUrl: "",
+          crawls: 0
+        };
         showSeriesBanner({
           mode: "list_page",
           title:
@@ -793,12 +812,96 @@
           pageUrl,
           seriesId: `series:list:${pageKey(pageUrl)}`,
           rangePref: "all",
-          items: episodes.map((episode) => ({
-            ...episode,
-            key: episode.code || ""
-          }))
+          items: UVDEpisodeLinks.markDownloaded(episodes, history).map(
+            (episode) => ({
+              ...episode,
+              key: episode.code || ""
+            })
+          )
         });
         toast(`이 목록에서 ${episodes.length}편 발견`, "ok");
+      }
+
+      /** 더 가져오기: crawl the list page's next page via the helper. */
+      async function loadMoreListEpisodes() {
+        if (!seriesPending || seriesPending.mode !== "list_page") return;
+        const pageUrl = seriesPending.pageUrl || "";
+        if (!pageUrl) return;
+        const moreButton = $("#btnSeriesMore");
+        if (moreButton) {
+          moreButton.disabled = true;
+          moreButton.textContent = "가져오는 중…";
+        }
+        try {
+          if (!listState || listState.pageUrl !== pageUrl) {
+            listState = { pageUrl, nextPageUrl: "", crawls: 0 };
+          }
+          if (listState.crawls >= 5) {
+            toast("더 가져올 페이지가 없습니다 (최대 5페이지)", "ok");
+            return;
+          }
+          const target = listState.nextPageUrl || pageUrl;
+          const crawl = await chrome.runtime.sendMessage({
+            type: "CRAWL_LIST",
+            url: target
+          });
+          if (!crawl?.ok) {
+            toast(crawl?.error || "다음 페이지를 가져오지 못했습니다", "error");
+            return;
+          }
+          listState.crawls += 1;
+          listState.nextPageUrl = crawl.nextPageUrl || "";
+          const fresh = UVDEpisodeLinks.collectFromAnchors(
+            crawl.anchors || [],
+            target,
+            { min: 1, max: 60 },
+            Naming
+          );
+          const marked = UVDEpisodeLinks.markDownloaded(
+            fresh,
+            await fetchDownloadedSet()
+          ).map((episode) => ({
+            ...episode,
+            key: episode.code || ""
+          }));
+          const merged = UVDEpisodeLinks.mergeEpisodes(
+            seriesPending.items || [],
+            marked,
+            { max: 60 }
+          );
+          const added = merged.length - (seriesPending.items || []).length;
+          if (added <= 0) {
+            toast("더 가져올 편이 없습니다", "ok");
+            if (!listState.nextPageUrl) listState.crawls = 5;
+            return;
+          }
+          // Carry prior selection over by url before re-showing the banner.
+          const prevSelected = new Map(
+            (seriesPending.items || []).map((item) => [
+              UVDEpisodeLinks.urlKey(item.url),
+              item.selected
+            ])
+          );
+          showSeriesBanner({
+            mode: "list_page",
+            title: seriesPending.title || "",
+            pageUrl,
+            seriesId: seriesPending.seriesId,
+            rangePref: "all",
+            items: merged.map((item) => ({
+              ...item,
+              selected: prevSelected.get(UVDEpisodeLinks.urlKey(item.url))
+            }))
+          });
+          toast(`${added}편을 더 가져왔습니다`, "ok");
+        } catch (e) {
+          toast(String(e?.message || e || "가져오기 실패"), "error");
+        } finally {
+          if (moreButton) {
+            moreButton.disabled = false;
+            moreButton.textContent = "더 가져오기";
+          }
+        }
       }
 
       const {
@@ -929,6 +1032,7 @@
         loadPlaylistInfo,
         runSeriesComplete,
         hideSeriesBanner,
+        loadMoreListEpisodes: (...args) => loadMoreListEpisodes(...args),
         retrySeriesFailed,
         setSeriesSelection,
         toggleSeriesMissingOnly,

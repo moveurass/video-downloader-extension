@@ -37,6 +37,7 @@
         loadPlaylistInfo,
         runSeriesComplete,
         hideSeriesBanner,
+        loadMoreListEpisodes,
         retrySeriesFailed,
         setSeriesSelection,
         toggleSeriesMissingOnly,
@@ -130,6 +131,56 @@
       $("#btnSaveSettings")?.addEventListener("click", () =>
         saveSettingsFromForm()
       );
+      // ── 백업 (export / import JSON) ──
+      $("#btnBackupExport")?.addEventListener("click", async () => {
+        const button = $("#btnBackupExport");
+        const label = button?.textContent;
+        if (button) {
+          button.disabled = true;
+          button.textContent = "내보내는 중…";
+        }
+        try {
+          const res = await sendMessage({ type: "EXPORT_BACKUP" });
+          if (res?.ok) toast(`백업 저장: ${res.filename}`, "ok");
+          else toast(res?.error || "백업 내보내기 실패", "error");
+        } catch (e) {
+          toast(String(e?.message || e), "error");
+        } finally {
+          if (button) {
+            button.disabled = false;
+            button.textContent = label;
+          }
+        }
+      });
+      $("#btnBackupImport")?.addEventListener("click", () => {
+        $("#backupFile")?.click();
+      });
+      $("#backupFile")?.addEventListener("change", async (event) => {
+        const file = event.target?.files?.[0];
+        if (!file) return;
+        try {
+          const text = await file.text();
+          const res = await sendMessage({
+            type: "IMPORT_BACKUP",
+            data: text
+          });
+          if (res?.ok) {
+            const counts = res.imported || {};
+            toast(
+              `가져오기 완료 — 나중 ${counts.watchlist || 0}개 · 서재 ${counts.history || 0}개${
+                counts.settings ? " · 설정" : ""
+              }`,
+              "ok"
+            );
+          } else {
+            toast(res?.error || "백업 가져오기 실패", "error");
+          }
+        } catch (e) {
+          toast(String(e?.message || e), "error");
+        } finally {
+          event.target.value = "";
+        }
+      });
       $("#setTemplate")?.addEventListener("input", updateSettingsPreview);
       $("#setSubfolder")?.addEventListener("input", () => {
         const settings = getUvdSettings();
@@ -183,6 +234,9 @@
       });
       $("#btnSeriesGo")?.addEventListener("click", () =>
         runSeriesComplete()
+      );
+      $("#btnSeriesMore")?.addEventListener("click", () =>
+        loadMoreListEpisodes()
       );
       $("#btnSeriesDismiss")?.addEventListener("click", () =>
         hideSeriesBanner()

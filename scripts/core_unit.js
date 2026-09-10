@@ -378,6 +378,39 @@ assert.deepEqual(
   { bytes: 400_000_000, approx: true },
   "stale preview chip size yields to the long feature estimate"
 );
+
+// Backup sanitizer: version gate, url filter, caps, settings passthrough.
+const goodBackup = {
+  app: "uvd",
+  version: 1,
+  exportedAt: "2026-09-11T00:00:00Z",
+  settings: { theme: "dark", unknownKey: 1 },
+  watchlist: [
+    { id: "w1", url: "https://a.test/1", title: "one" },
+    { id: "w2", url: "notaurl", title: "drop me" }
+  ],
+  history: Array.from({ length: 130 }, (_, i) => ({ id: `h${i}`, at: i }))
+};
+const sanitized = UVD.sanitizeBackup(goodBackup);
+assert.equal(sanitized.watchlist.length, 1, "non-http watchlist urls dropped");
+assert.equal(sanitized.watchlist[0].title, "one");
+assert.equal(sanitized.history.length, 100, "history capped at 100");
+assert.equal(sanitized.settings.theme, "dark");
+assert.equal(
+  UVD.sanitizeBackup({ app: "other", version: 9 }),
+  null,
+  "wrong app/version is rejected"
+);
+assert.equal(
+  UVD.sanitizeBackup("not json {{{"),
+  null,
+  "unparseable payload is rejected"
+);
+assert.equal(
+  UVD.sanitizeBackup({ app: "uvd", version: 1 }).settings,
+  null,
+  "missing settings is fine"
+);
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),

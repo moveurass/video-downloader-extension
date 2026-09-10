@@ -444,6 +444,68 @@ const UVD = (() => {
     return next;
   }
 
+  /** Backup/restore: bulk-validate and replace history + watchlist. */
+  function sanitizeBackup(payload) {
+    try {
+      const data =
+        typeof payload === "string" ? JSON.parse(payload) : payload || {};
+      if (data?.app !== "uvd" || Number(data?.version) !== 1) return null;
+      const keepHttp = (url) => /^https?:\/\//i.test(String(url || ""));
+      const watchlist = Array.isArray(data.watchlist)
+        ? data.watchlist
+            .filter((w) => keepHttp(w?.url))
+            .slice(0, 100)
+            .map((w, i) => ({
+              ...w,
+              id: String(w?.id || `w_import_${Date.now()}_${i}`),
+              at: Number(w?.at) || Date.now() - i
+            }))
+        : [];
+      const history = Array.isArray(data.history)
+        ? data.history
+            .filter((h) => h?.id)
+            .slice(0, 100)
+            .map((h, i) => ({
+              ...h,
+              at: Number(h?.at) || Date.now() - i
+            }))
+        : [];
+      const settings =
+        data.settings && typeof data.settings === "object"
+          ? { ...data.settings }
+          : null;
+      return { settings, watchlist, history };
+    } catch {
+      return null;
+    }
+  }
+
+  async function setHistoryBulk(list) {
+    const next = Array.isArray(list) ? list.slice(0, 100) : [];
+    await chrome.storage.local.set({ [HISTORY_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "HISTORY_UPDATED", history: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+
+  async function setWatchlistBulk(list) {
+    const next = Array.isArray(list) ? list.slice(0, 100) : [];
+    await chrome.storage.local.set({ [WATCHLIST_KEY]: next });
+    try {
+      chrome.runtime
+        .sendMessage({ type: "WATCHLIST_UPDATED", watchlist: next })
+        .catch(() => {});
+    } catch {
+      /* ignore */
+    }
+    return next;
+  }
+
   /**
    * Library query: filter history (default: done only).
    * @param {{ q?: string, site?: string, series?: string, tag?: string, status?: string }} opts
@@ -1240,6 +1302,9 @@ const UVD = (() => {
     appendHistory,
     updateHistoryItem,
     clearHistory,
+    setHistoryBulk,
+    setWatchlistBulk,
+    sanitizeBackup,
     getRecentDone,
     queryLibrary,
     extractSeriesInfo,

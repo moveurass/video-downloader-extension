@@ -64,5 +64,55 @@
     return alt ? Naming.cleanPageTitle?.(alt) || "" : "";
   }
 
-  return { collectFromAnchors, urlKey };
+  /** Loose identity shared with history entries: host + trimmed path. */
+  function looseKey(url) {
+    try {
+      const parsed = new URL(url);
+      return `${parsed.hostname.replace(/^www\./i, "")}${
+        parsed.pathname.replace(/\/+$/, "")
+      }`.toLowerCase();
+    } catch {
+      return String(url || "").trim().toLowerCase();
+    }
+  }
+
+  /**
+   * Mark episodes whose page already appears in download history with
+   * `downloaded: true` — the series banner renders a 받음 chip and unchecks
+   * them automatically. Matching is by host+path so query strings differ.
+   */
+  function markDownloaded(episodes, history) {
+    const keys = new Set();
+    for (const item of history || []) {
+      for (const url of [item?.url, item?.pageUrl]) {
+        const key = looseKey(url);
+        if (key) keys.add(key);
+      }
+    }
+    return (episodes || []).map((episode) => {
+      if (keys.has(looseKey(episode?.url))) {
+        return { ...episode, downloaded: true };
+      }
+      return episode;
+    });
+  }
+
+  /**
+   * Merge freshly crawled episodes into the current set: existing entries
+   * win, new ones append, duplicates collapse by urlKey, total capped.
+   */
+  function mergeEpisodes(existing, added, options = {}) {
+    const max = Math.max(1, Number(options.max) || 60);
+    const seen = new Set();
+    const merged = [];
+    for (const episode of [...(existing || []), ...(added || [])]) {
+      const key = urlKey(episode?.url);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      merged.push(episode);
+    }
+    return merged.slice(0, max);
+  }
+
+  return { collectFromAnchors, urlKey, markDownloaded, mergeEpisodes };
 });

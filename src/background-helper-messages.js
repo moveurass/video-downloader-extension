@@ -154,6 +154,19 @@ exit 1
           })();
           return { handled: true, keepChannel: true };
         }
+        case "CRAWL_LIST": {
+          deps.YtDlp.crawlList(String(msg.url || ""))
+            .then((r) => sendResponse(r))
+            .catch((e) =>
+              sendResponse({
+                ok: false,
+                error: String(e?.message || e),
+                anchors: [],
+                nextPageUrl: ""
+              })
+            );
+          return { handled: true, keepChannel: true };
+        }
         case "FILES_LIST": {
           deps.YtDlp.listFiles()
             .then((r) => sendResponse(r))

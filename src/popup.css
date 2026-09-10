@@ -3179,3 +3179,14 @@ body.width-wide .sq-row {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ── 백업 (backup / restore) ──────────────────────────────────────── */
+.backup-actions {
+  display: flex;
+  gap: 6px;
+  padding: 10px 11px;
+}
+
+.backup-actions .btn {
+  flex: 1;
+}
