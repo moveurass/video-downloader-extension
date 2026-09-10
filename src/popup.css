@@ -180,10 +180,10 @@ body {
   --block-gap: 14px;
   --row-y: 9px;
   --ctl-h: 32px;
-  --fs-body: 12.5px;
-  --fs-label: 11px;
-  --fs-micro: 10.5px;
-  --fs-title: 13.5px;
+  --fs-body: 13.5px;
+  --fs-label: 12px;
+  --fs-micro: 11.5px;
+  --fs-title: 14.5px;
   --thumb-w: 84px;
 
   width: 380px;
@@ -293,7 +293,7 @@ kbd,
 .link-box-title,
 .recent-title {
   display: block;
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.09em;
   text-transform: uppercase;
@@ -548,7 +548,7 @@ input[type="radio"] {
   background: transparent;
   box-shadow: none;
   color: var(--accent);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 700;
 }
 
@@ -595,7 +595,7 @@ input[type="radio"] {
 .section-meta,
 .recent-sub,
 .link-shortcut {
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--ink-3);
   white-space: nowrap;
@@ -606,7 +606,7 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: var(--surface-2);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 /* ── 08  Empty states ──────────────────────────────────────────────────── */
@@ -752,7 +752,7 @@ input[type="radio"] {
 .meta-row {
   display: flex;
   gap: 7px;
-  font-size: 10px;
+  font-size: 10.5px;
   line-height: 1.45;
 }
 
@@ -797,7 +797,7 @@ input[type="radio"] {
 }
 
 .est-k {
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0.06em;
   color: var(--ink-3);
@@ -913,7 +913,7 @@ input[type="radio"] {
 }
 
 .filename-label {
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1040,7 +1040,7 @@ input[type="radio"] {
 }
 
 .quality-hint-inline {
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 650;
   letter-spacing: 0.02em;
   text-transform: none;
@@ -1195,7 +1195,7 @@ input[type="radio"] {
 .link-hint {
   flex: 1;
   min-width: 0;
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1244,7 +1244,7 @@ input[type="radio"] {
   background: var(--surface-2);
   box-shadow: none;
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .recent-item .btn:hover {
@@ -1295,7 +1295,7 @@ input[type="radio"] {
   border-radius: var(--r-pill);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 800;
   line-height: 17px;
   text-align: center;
@@ -1313,7 +1313,7 @@ input[type="radio"] {
 }
 
 .dl-queue-sub {
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
 }
 
@@ -1334,7 +1334,7 @@ input[type="radio"] {
   height: 22px;
   border-radius: var(--r-xs);
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 650;
 }
 
@@ -1385,7 +1385,7 @@ input[type="radio"] {
 
 .dl-job-num {
   padding-top: 3px;
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 700;
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
@@ -1399,7 +1399,7 @@ input[type="radio"] {
   border-radius: 50%;
   background: var(--surface-2);
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 800;
 }
 
@@ -1453,14 +1453,14 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: var(--surface-2);
   color: var(--ink-3);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 650;
   line-height: 15px;
   font-variant-numeric: tabular-nums;
 }
 
 .dl-job-msg {
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1468,7 +1468,7 @@ input[type="radio"] {
 }
 
 .dl-job-file {
-  font-size: 9px;
+  font-size: 10.5px;
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1501,7 +1501,7 @@ input[type="radio"] {
 }
 
 .dl-job-phase {
-  font-size: 8.5px;
+  font-size: 10.5px;
   font-weight: 650;
   color: var(--ink-3);
 }
@@ -1558,7 +1558,7 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .dl-job-actions .btn:hover {
@@ -1577,7 +1577,7 @@ input[type="radio"] {
 }
 
 .dl-job-err {
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.45;
   color: var(--err);
 }
@@ -1633,7 +1633,7 @@ input[type="radio"] {
 }
 
 .clip-banner-label {
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 800;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -1676,7 +1676,7 @@ input[type="radio"] {
   border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 800;
 }
 
@@ -1719,7 +1719,7 @@ input[type="radio"] {
 
 .series-verify-count,
 .series-verify-detail {
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
   font-variant-numeric: tabular-nums;
 }
@@ -1750,7 +1750,7 @@ input[type="radio"] {
   border-radius: var(--r-sm);
   background: var(--surface-2);
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 650;
 }
 
@@ -1873,7 +1873,7 @@ input[type="radio"] {
 }
 
 .series-preview-meta {
-  font-size: 9px;
+  font-size: 10.5px;
   color: var(--ink-3);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1892,7 +1892,7 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: var(--surface-2);
   color: var(--ink-3);
-  font-size: 8.5px;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 15px;
 }
@@ -1960,7 +1960,7 @@ input[type="radio"] {
   border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 800;
   line-height: 16px;
 }
@@ -1976,7 +1976,7 @@ input[type="radio"] {
 .pl-count,
 .pl-hint,
 .pl-progress-text {
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
 }
 
@@ -2041,7 +2041,7 @@ input[type="radio"] {
 
 .watch-hint {
   margin-top: 8px;
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
 }
 
@@ -2089,7 +2089,7 @@ input[type="radio"] {
 
 .storage-summary,
 .storage-count {
-  font-size: 10px;
+  font-size: 10.5px;
   color: var(--ink-3);
 }
 
@@ -2160,7 +2160,7 @@ input[type="radio"] {
 
 .storage-series {
   flex: none;
-  font-size: 9px;
+  font-size: 10.5px;
   padding: 1px 5px;
   border-radius: 999px;
   background: var(--accent-soft);
@@ -2173,7 +2173,7 @@ input[type="radio"] {
 
 .storage-sub {
   flex: none;
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
   max-width: 110px;
   overflow: hidden;
@@ -2247,7 +2247,7 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: var(--surface-2);
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
@@ -2280,7 +2280,7 @@ input[type="radio"] {
 }
 
 .history-sub {
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.45;
   color: var(--ink-3);
 }
@@ -2303,7 +2303,7 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: var(--surface-2);
   color: var(--ink-3);
-  font-size: 8.5px;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 15px;
 }
@@ -2323,7 +2323,7 @@ input[type="radio"] {
   background: transparent;
   box-shadow: inset 0 0 0 1px var(--line);
   color: var(--ink-2);
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 .history-actions .btn:hover {
@@ -2347,7 +2347,7 @@ input[type="radio"] {
   flex: 0 0 auto;
   padding-top: 2px;
   color: var(--ink-3);
-  font-size: 10px;
+  font-size: 10.5px;
   letter-spacing: -0.1em;
   cursor: grab;
 }
@@ -2364,7 +2364,7 @@ input[type="radio"] {
   border-radius: var(--r-xs);
   background: var(--surface-2) var(--chev) right 5px center / 11px no-repeat;
   color: var(--ink-2);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 650;
   appearance: none;
 }
@@ -2400,7 +2400,7 @@ input[type="radio"] {
   border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 8.5px;
+  font-size: 10.5px;
   font-weight: 800;
   line-height: 15px;
 }
@@ -2417,7 +2417,7 @@ input[type="radio"] {
 .watch-series-count {
   flex: 0 0 auto;
   color: var(--ink-3);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 650;
 }
 
@@ -2474,7 +2474,7 @@ input[type="radio"] {
   border-radius: var(--r-sm);
   background: var(--accent);
   color: var(--accent-ink);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   box-shadow: var(--sh-accent);
@@ -2490,7 +2490,7 @@ input[type="radio"] {
 }
 
 .settings-section-head p {
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.45;
   color: var(--ink-3);
 }
@@ -2513,7 +2513,7 @@ input[type="radio"] {
 }
 
 .field-hint {
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.45;
   color: var(--ink-3);
 }
@@ -2674,7 +2674,7 @@ input[type="number"].field-input {
 }
 
 .site-pack-note {
-  font-size: 9.5px;
+  font-size: 10.5px;
   line-height: 1.4;
   color: var(--ink-3);
 }
@@ -2700,7 +2700,7 @@ kbd {
   background: var(--surface-2);
   box-shadow: inset 0 0 0 1px var(--line), 0 1px 0 var(--line);
   color: var(--ink);
-  font-size: 9px;
+  font-size: 10.5px;
   font-weight: 700;
   line-height: 16px;
   text-align: center;
@@ -2795,7 +2795,7 @@ kbd {
   padding: 6px 8px;
   border-radius: var(--r-sm);
   background: var(--surface-2);
-  font-size: 9.5px;
+  font-size: 10.5px;
   color: var(--ink-3);
   word-break: break-all;
 }
@@ -2866,7 +2866,7 @@ kbd {
 }
 
 .note {
-  font-size: 9px;
+  font-size: 10.5px;
   color: var(--ink-3);
   text-align: center;
   overflow: hidden;
@@ -2894,7 +2894,7 @@ kbd {
   padding: 5px 2px 4px;
   border-radius: var(--r-md);
   color: var(--ink-3);
-  font-size: 9.5px;
+  font-size: 10.5px;
   font-weight: 700;
   letter-spacing: -0.01em;
   transition: background 0.14s ease, color 0.14s ease;
@@ -2950,10 +2950,10 @@ body.full-ui {
   --block-gap: 17px;
   --row-y: 11px;
   --ctl-h: 34px;
-  --fs-body: 13px;
-  --fs-label: 11.5px;
-  --fs-micro: 11px;
-  --fs-title: 14.5px;
+  --fs-body: 14px;
+  --fs-label: 12.5px;
+  --fs-micro: 12px;
+  --fs-title: 15.5px;
   --thumb-w: 96px;
 }
 
@@ -2985,10 +2985,10 @@ body.compact-ui {
   --block-gap: 13px;
   --row-y: 8px;
   --ctl-h: 31px;
-  --fs-body: 12.5px;
-  --fs-label: 11px;
-  --fs-micro: 10.5px;
-  --fs-title: 13.5px;
+  --fs-body: 13.5px;
+  --fs-label: 12px;
+  --fs-micro: 11.5px;
+  --fs-title: 14.5px;
   --thumb-w: 84px;
 }
 
@@ -3010,10 +3010,10 @@ body.ultra-ui {
   --block-gap: 8px;
   --row-y: 5px;
   --ctl-h: 27px;
-  --fs-body: 12px;
-  --fs-label: 10.5px;
-  --fs-micro: 10px;
-  --fs-title: 12.5px;
+  --fs-body: 13px;
+  --fs-label: 11.5px;
+  --fs-micro: 11px;
+  --fs-title: 13.5px;
   --thumb-w: 66px;
 }
 
@@ -3102,7 +3102,7 @@ body.ultra-ui .tabs {
 
 body.ultra-ui .tab {
   padding: 3px 2px;
-  font-size: 9px;
+  font-size: 10.5px;
 }
 
 body.ultra-ui .tab::before {
@@ -3138,14 +3138,14 @@ body.width-narrow .quality-box {
 }
 
 body.width-narrow .mode-chip {
-  font-size: 10px;
+  font-size: 10.5px;
   padding: 0 3px;
 }
 
 body.width-narrow .card-actions-row .btn-watch,
 body.width-narrow .card-actions-row .btn-series {
   padding: 0 7px;
-  font-size: 10px;
+  font-size: 10.5px;
 }
 
 body.width-narrow .lib-filter-row {
@@ -3189,4 +3189,13 @@ body.width-wide .sq-row {
 
 .backup-actions .btn {
   flex: 1;
+}
+
+/* ── 글자 크기 (text scale) ───────────────────────────────────────── */
+body.font-large {
+  zoom: 1.1;
+}
+
+body.font-xlarge {
+  zoom: 1.25;
 }

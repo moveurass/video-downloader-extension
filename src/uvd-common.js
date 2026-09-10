@@ -51,6 +51,8 @@ const UVD = (() => {
     popupWidth: "normal",
     /** Popup color theme: system (follow OS) | light | dark */
     theme: "system",
+    /** Popup text scale: default | large | xlarge */
+    fontSize: "default",
     /** Play a short chime in the popup when a download finishes */
     completionSound: false,
     /** Show count badge on extension icon while downloading */
@@ -239,6 +241,9 @@ const UVD = (() => {
     }
     if (!["system", "light", "dark"].includes(String(next.theme || ""))) {
       next.theme = "system";
+    }
+    if (!["default", "large", "xlarge"].includes(String(next.fontSize || ""))) {
+      next.fontSize = "default";
     }
     next.completionSound = !!next.completionSound;
     // Keep boolean in sync with density
