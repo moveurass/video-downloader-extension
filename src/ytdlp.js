@@ -427,8 +427,42 @@ const YtDlp = (() => {
     }
   }
 
-  /** Storage manager: real files in the helper output tree (never throws). */
-  async function listFiles() {
+  /**
+   * List-page crawler: fetch a URL through the helper and return its
+   * anchors plus the next-page link (never throws).
+   */
+  async function crawlList(url) {
+    try {
+      const res = await fetch(`${BASE}/crawl`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ url })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        return {
+          ok: true,
+          anchors: Array.isArray(data.anchors) ? data.anchors : [],
+          nextPageUrl: data.nextPageUrl || ""
+        };
+      }
+      return {
+        ok: false,
+        error: data.error || `crawl HTTP ${res.status}`,
+        anchors: [],
+        nextPageUrl: ""
+      };
+    } catch (e) {
+      return {
+        ok: false,
+        error: String(e?.message || e),
+        anchors: [],
+        nextPageUrl: ""
+      };
+    }
+  }
+
+  /** Storage manager: real files in the helper output tree (never throws). */  async function listFiles() {
     try {
       const res = await fetch(`${BASE}/files/list`, {
         method: "POST",
@@ -474,6 +508,7 @@ const YtDlp = (() => {
     listPlaylist,
     updateSelf,
     revealPath,
+    crawlList,
     listFiles,
     trashFiles
   };

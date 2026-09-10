@@ -449,6 +449,31 @@ def main() -> int:
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
     )
+    list_html = """
+    <html><body>
+      <a href="/455700.html">편 700</a>
+      <a href="https://cdn.other.example/banner.jpg"><img src="x.jpg" alt="배너"></a>
+      <a class="page-next" href="/page/2">2</a>
+      <a href="/genre/9">장르</a>
+    </body></html>
+    """
+    parsed_page = helper_server.parse_anchors(
+        list_html, "https://supjav.com/page/1"
+    )
+    check(
+        "list-page crawler extracts anchors and the next-page link",
+        len(parsed_page["anchors"]) == 4
+        and parsed_page["anchors"][0]["href"]
+        == "https://supjav.com/455700.html"
+        and parsed_page["anchors"][0]["text"] == "편 700"
+        and parsed_page["anchors"][1]["alt"] == "배너"
+        and parsed_page["nextPageUrl"] == "https://supjav.com/page/2",
+    )
+    check(
+        "/crawl endpoint registered behind the auth gate",
+        'self.path == "/crawl"'
+        in (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8"),
+    )
     # TCC-denied enumeration falls back to Finder AppleScript listing.
     original_list_dir = helper_server.finder_list_dir
     original_out_dir = helper_server.OUT_DIR
@@ -881,7 +906,7 @@ def main() -> int:
         "popup primary hierarchy and settings groups",
         'class="tab tab-primary active"' in popup_html
         and 'class="download-options"' in popup_html
-        and popup_html.count('class="settings-section"') == 5,
+        and popup_html.count('class="settings-section"') == 6,
     )
     check(
         "popup tab semantics",

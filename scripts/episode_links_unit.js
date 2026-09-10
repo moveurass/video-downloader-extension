@@ -92,7 +92,50 @@ function main() {
     0
   );
 
-  console.log("episode links: 9 assertions passed");
+  // markDownloaded flags episodes whose page matches history (host+path).
+  const history = [
+    { url: "https://supjav.com/455636.html?utm=mail", title: "받은 편" },
+    { pageUrl: "https://supjav.com/455637.html" }
+  ];
+  const marked = EpisodeLinks.markDownloaded(
+    [
+      { url: "https://supjav.com/455636.html", title: "편1" },
+      { url: "https://supjav.com/455637.html", title: "편2" },
+      { url: "https://supjav.com/455699.html", title: "편3" }
+    ],
+    history
+  );
+  assert.equal(marked[0].downloaded, true, "url match marks downloaded");
+  assert.equal(marked[1].downloaded, true, "pageUrl match marks downloaded");
+  assert.equal(marked[2].downloaded, undefined, "unseen page stays fresh");
+
+  // mergeEpisodes: existing win, new append, duplicates collapse, capped.
+  const merged = EpisodeLinks.mergeEpisodes(
+    [
+      { url: "https://supjav.com/100.html", title: "기존", selected: false },
+      { url: "https://supjav.com/200.html", title: "기존2" }
+    ],
+    [
+      { url: "https://supjav.com/200.html", title: "중복" },
+      { url: "https://supjav.com/300.html", title: "신규" }
+    ],
+    { max: 60 }
+  );
+  assert.equal(merged.length, 3);
+  assert.equal(merged[0].title, "기존", "existing entries keep position/state");
+  assert.equal(merged[2].title, "신규");
+  assert.equal(
+    EpisodeLinks.mergeEpisodes(
+      Array.from({ length: 60 }, (_, i) => ({
+        url: `https://supjav.com/${i}.html`
+      })),
+      [{ url: "https://supjav.com/999.html" }]
+    ).length,
+    60,
+    "merge respects the 60-item cap"
+  );
+
+  console.log("episode links: 17 assertions passed");
 }
 
 main();

@@ -113,6 +113,7 @@
       </div>
       <ul class="series-preview-list" id="seriesBannerList"></ul>
       <div class="series-banner-actions">
+        <button type="button" id="btnSeriesMore" class="btn ghost tiny hidden">더 가져오기</button>
         <button type="button" id="btnSeriesGo" class="btn primary tiny">선택 항목 시작</button>
         <button type="button" id="btnSeriesRetryFailed" class="btn ghost tiny hidden">실패 재시도</button>
         <button type="button" id="btnSeriesDismiss" class="btn ghost tiny">닫기</button>
@@ -604,6 +605,20 @@
         <span class="field-hint">받기 전에 화질 버튼으로 언제든 바꿀 수 있어요</span>
       </div>
       </section>
+      <section class="settings-section" aria-labelledby="backupTitle">
+        <div class="settings-section-head">
+          <span class="settings-section-index" aria-hidden="true">06</span>
+          <div>
+            <h2 id="backupTitle">백업</h2>
+            <p>설정·나중 받기·서재를 JSON 파일로 내보내거나 합쳐 넣기</p>
+          </div>
+        </div>
+        <div class="backup-actions">
+          <button type="button" id="btnBackupExport" class="btn secondary">백업 내보내기</button>
+          <button type="button" id="btnBackupImport" class="btn secondary">백업 가져오기</button>
+          <input type="file" id="backupFile" accept=".json,application/json" class="hidden" />
+        </div>
+      </section>
       <button type="button" id="btnSaveSettings" class="btn primary settings-save">
         설정 저장
       </button>
@@ -646,6 +661,7 @@
   <script src="popup-navigation.js"></script>
   <script src="popup-series-state.js"></script>
   <script src="popup-dom-events.js"></script>
+  <script src="episode-links.js"></script>
   <script src="popup-storage-ui.js"></script>
   <script src="popup-clipboard-history.js"></script>
   <script src="popup-helper-state.js"></script>

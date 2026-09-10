@@ -26,9 +26,10 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urljoin, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 try:
@@ -1116,6 +1117,92 @@ def finder_delete(path: Path) -> bool:
             return True
         time.sleep(0.2)
     return not path.exists()
+
+
+NEXT_TEXT_RE = re.compile(r"^\s*(?:다음|next|»|›)", re.I)
+CRAWL_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+class _AnchorCollector(HTMLParser):
+    """Collect a[href] with text and inner-img alt for list-page crawling."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.anchors: list[dict] = []
+        self._current: dict | None = None
+
+    def handle_starttag(self, tag, attrs):
+        attr_map = dict(attrs)
+        if tag == "a":
+            href = (attr_map.get("href") or "").strip()
+            if href:
+                self._current = {
+                    "href": href,
+                    "text": "",
+                    "alt": "",
+                    "rel": (attr_map.get("rel") or "").lower(),
+                    "class": (attr_map.get("class") or "").lower(),
+                }
+        elif tag == "img" and self._current is not None:
+            alt = (attr_map.get("alt") or "").strip()
+            if alt and not self._current["alt"]:
+                self._current["alt"] = alt[:120]
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._current is not None:
+            self.anchors.append(self._current)
+            self._current = None
+
+    def handle_data(self, data):
+        if self._current is not None and len(self._current["text"]) < 200:
+            self._current["text"] += data
+
+
+def parse_anchors(html: str, base_url: str) -> dict:
+    """Extract anchors (absolutized) and the first next-page link."""
+    collector = _AnchorCollector()
+    try:
+        collector.feed(str(html or ""))
+        collector.close()
+    except Exception:
+        pass
+    anchors = []
+    next_url = ""
+    for anchor in collector.anchors:
+        href = urljoin(base_url, anchor["href"])
+        text = anchor["text"].strip()[:120]
+        is_next = (
+            "next" in anchor["rel"]
+            or re.search(r"(?:^|\s)(?:next|page-next|next-page)(?:\s|$)", anchor["class"])
+            or bool(NEXT_TEXT_RE.match(text))
+        )
+        if is_next and not next_url:
+            next_url = href
+        anchors.append({"href": href, "text": text, "alt": anchor["alt"]})
+    return {"anchors": anchors, "nextPageUrl": next_url}
+
+
+def crawl_list_page(url: str) -> dict:
+    """Fetch a list page's HTML and extract anchors + next-page link."""
+    request = Request(
+        url,
+        headers={
+            "User-Agent": CRAWL_UA,
+            "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+        },
+    )
+    with urlopen(request, timeout=15) as resp:
+        raw = resp.read(2_000_000)
+        final_url = resp.geturl()
+    if raw[:2] == b"\x1f\x8b":
+        import gzip
+
+        raw = gzip.decompress(raw)
+    html = raw.decode("utf-8", "replace")
+    return parse_anchors(html, final_url)
 
 
 def trash_out_files(paths: list, out_root: Path | None = None) -> dict:
@@ -2653,6 +2740,28 @@ class Handler(BaseHTTPRequestHandler):
                     "results": outcome["results"],
                 },
             )
+            return
+
+        # List-page crawler: anchors + next-page link (popup 더 가져오기)
+        if self.path == "/crawl" or self.path.startswith("/crawl?"):
+            payload = read_json(self)
+            target = str(payload.get("url") or "")
+            if not target.startswith(("http://", "https://")):
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            try:
+                send_json(self, 200, {"ok": True, **crawl_list_page(target)})
+            except Exception as e:
+                send_json(
+                    self,
+                    502,
+                    {
+                        "ok": False,
+                        "error": f"목록 페이지를 가져오지 못했습니다: {e}",
+                        "anchors": [],
+                        "nextPageUrl": "",
+                    },
+                )
             return
 
         # List available video heights / quality labels (no download)

@@ -124,6 +124,80 @@
             }
             return { ok: true, watchlist };
           }, sendResponse);
+        case "EXPORT_BACKUP":
+          return asyncReply(async () => {
+            const [settings, watchlist, history] = await Promise.all([
+              UVD.getSettings(),
+              UVD.getWatchlist(),
+              UVD.getHistory()
+            ]);
+            const payload = JSON.stringify({
+              app: "uvd",
+              version: 1,
+              exportedAt: new Date().toISOString(),
+              settings,
+              watchlist,
+              history
+            });
+            const stamp = new Date()
+              .toISOString()
+              .slice(0, 16)
+              .replace(/[-:T]/g, "");
+            const filename = `uvd-backup-${stamp}.json`;
+            await deps.downloads.download({
+              url: `data:application/json;charset=utf-8,${encodeURIComponent(payload)}`,
+              filename,
+              saveAs: true
+            });
+            return { ok: true, filename };
+          }, sendResponse);
+        case "IMPORT_BACKUP":
+          return asyncReply(async () => {
+            const sanitized = UVD.sanitizeBackup(message.data);
+            if (!sanitized) {
+              return { ok: false, error: "백업 파일 형식이 올바르지 않습니다" };
+            }
+            if (sanitized.settings) await UVD.setSettings(sanitized.settings);
+            const [currentWatchlist, currentHistory] = await Promise.all([
+              UVD.getWatchlist(),
+              UVD.getHistory()
+            ]);
+            const seenUrls = new Set(
+              (message.replace ? [] : currentWatchlist).map((w) =>
+                UVD.normalizeUrlKey(w?.url || "")
+              )
+            );
+            const mergedWatchlist = [
+              ...sanitized.watchlist,
+              ...(message.replace ? [] : currentWatchlist).filter((w) => {
+                const key = UVD.normalizeUrlKey(w?.url || "");
+                if (!key || seenUrls.has(key)) return false;
+                seenUrls.add(key);
+                return true;
+              })
+            ].slice(0, 100);
+            const seenIds = new Set(
+              (message.replace ? [] : currentHistory).map((h) => h?.id)
+            );
+            const mergedHistory = [
+              ...sanitized.history,
+              ...(message.replace ? [] : currentHistory).filter((h) => {
+                if (!h?.id || seenIds.has(h.id)) return false;
+                seenIds.add(h.id);
+                return true;
+              })
+            ].slice(0, 100);
+            await UVD.setWatchlistBulk(mergedWatchlist);
+            await UVD.setHistoryBulk(mergedHistory);
+            return {
+              ok: true,
+              imported: {
+                settings: !!sanitized.settings,
+                watchlist: sanitized.watchlist.length,
+                history: sanitized.history.length
+              }
+            };
+          }, sendResponse);
         case "REFRESH_BADGE":
           return asyncReply(
             () => deps.updateDownloadBadge().catch(() => {}).then(() => ({ ok: true })),
