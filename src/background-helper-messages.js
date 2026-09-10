@@ -99,33 +99,55 @@ exit 1
         }
         case "SHOW_DOWNLOAD": {
           (async () => {
+            const done = (payload) =>
+              sendResponse({ ok: true, ...(payload || {}) });
+            // Fall back in order until something actually opens: a stale
+            // downloadId rejects silently, helper-saved files never appear
+            // in chrome.downloads at all, and only then give up on the
+            // default folder.
             try {
               if (msg.downloadId != null) {
-                deps.chrome.downloads.show(msg.downloadId);
-                sendResponse({ ok: true });
-                return;
+                try {
+                  await deps.chrome.downloads.show(msg.downloadId);
+                  done({ via: "download" });
+                  return;
+                } catch {
+                  /* erased or unknown id — keep going */
+                }
+              }
+              const name =
+                msg.path && typeof msg.path === "string"
+                  ? msg.path.split(/[/\\]/).pop()
+                  : "";
+              if (name) {
+                try {
+                  const items = await deps.chrome.downloads.search({
+                    filenameRegex: name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+                    limit: 5,
+                    orderBy: ["-startTime"]
+                  });
+                  if (items?.[0]?.id != null) {
+                    await deps.chrome.downloads.show(items[0].id);
+                    done({ via: "search" });
+                    return;
+                  }
+                } catch {
+                  /* keep going */
+                }
               }
               if (msg.path && typeof msg.path === "string") {
-                // Search chrome downloads by filename
-                const name = msg.path.split(/[/\\]/).pop();
-                const items = await deps.chrome.downloads.search({
-                  filenameRegex: name
-                    ? name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-                    : undefined,
-                  limit: 5,
-                  orderBy: ["-startTime"]
-                });
-                if (items?.[0]?.id != null) {
-                  deps.chrome.downloads.show(items[0].id);
-                  sendResponse({ ok: true });
-                  return;
+                try {
+                  const revealed = await deps.YtDlp.revealPath(msg.path);
+                  if (revealed?.revealed) {
+                    done({ via: "helper" });
+                    return;
+                  }
+                } catch {
+                  /* helper down */
                 }
-                deps.chrome.downloads.showDefaultFolder?.();
-                sendResponse({ ok: true, fallback: true });
-                return;
               }
-              deps.chrome.downloads.showDefaultFolder?.();
-              sendResponse({ ok: true, fallback: true });
+              await deps.chrome.downloads.showDefaultFolder?.();
+              done({ fallback: true });
             } catch (e) {
               sendResponse({ ok: false, error: String(e?.message || e) });
             }

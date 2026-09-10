@@ -408,6 +408,25 @@ const YtDlp = (() => {
     return data;
   }
 
+  /**
+   * Ask the helper to reveal a saved file in the OS file manager. Chrome's
+   * downloads API cannot show files it never downloaded, so helper-saved
+   * outputs go through here. Resolves (never throws) with {ok, revealed}.
+   */
+  async function revealPath(path) {
+    try {
+      const res = await fetch(`${BASE}/reveal`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ path })
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: !!(res.ok && data.ok), revealed: !!data.revealed };
+    } catch {
+      return { ok: false, revealed: false };
+    }
+  }
+
   return {
     BASE,
     health,
@@ -418,6 +437,7 @@ const YtDlp = (() => {
     downloadAndWait,
     listFormats,
     listPlaylist,
-    updateSelf
+    updateSelf,
+    revealPath
   };
 })();
