@@ -955,6 +955,35 @@ def verify_media_integrity(path: str | Path) -> dict:
     }
 
 
+def reveal_in_file_manager(path: str, out_root: Path | None = None) -> bool:
+    """
+    Reveal a helper-saved file in the OS file manager. Chrome's downloads
+    API cannot open files it did not download, so the popup asks us.
+    Restricted to our own output tree — the endpoint must never become a
+    generic "open arbitrary path" primitive.
+    """
+    root = (out_root or OUT_DIR).resolve()
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return False
+    if resolved != root and root not in resolved.parents:
+        return False
+    if not resolved.exists():
+        return False
+    target = resolved if resolved.is_file() else resolved.parent
+    try:
+        if sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", str(target)])
+        elif os.name == "nt":
+            os.startfile(str(target.parent))  # type: ignore[attr-defined]
+        else:
+            subprocess.Popen(["xdg-open", str(target.parent)])
+        return True
+    except Exception:
+        return False
+
+
 def find_ytdlp() -> str | None:
     for name in ("yt-dlp", "yt-dlp_macos", "youtube-dl"):
         path = shutil.which(name)
@@ -2400,6 +2429,22 @@ class Handler(BaseHTTPRequestHandler):
                     "version": ytdlp_version(bin_path),
                     "message": result.get("message") or "",
                     "hint": result.get("hint"),
+                },
+            )
+            return
+
+        # Reveal a helper-saved file in Finder/Explorer (popup's 폴더 열기)
+        if self.path == "/reveal" or self.path.startswith("/reveal?"):
+            payload = read_json(self)
+            target = str(payload.get("path") or "")
+            revealed = reveal_in_file_manager(target)
+            send_json(
+                self,
+                200 if revealed else 404,
+                {
+                    "ok": revealed,
+                    "revealed": revealed,
+                    "error": None if revealed else "저장 폴더 안의 파일이 아니거나 없습니다",
                 },
             )
             return

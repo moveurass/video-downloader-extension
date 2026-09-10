@@ -330,6 +330,59 @@ def main() -> int:
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
     )
+    # 폴더 열기: reveal is scoped to the output tree and the popup handler
+    # falls back downloadId → filename search → helper → default folder.
+    reveal_calls = []
+    original_popen = helper_server.subprocess.Popen
+
+    def fake_popen(cmd, *args, **kwargs):
+        reveal_calls.append(cmd)
+
+    helper_server.subprocess.Popen = fake_popen
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inside = root / "VideoDownloader" / "movie.mp4"
+            inside.parent.mkdir()
+            inside.write_bytes(b"x")
+            outside = Path(tempfile.mkstemp(suffix=".mp4")[1])
+            check(
+                "reveal opens files inside the output tree with open -R",
+                helper_server.reveal_in_file_manager(str(inside), out_root=root)
+                is True
+                and reveal_calls
+                and reveal_calls[-1][:2] == ["open", "-R"]
+                and str(inside) in reveal_calls[-1][2],
+            )
+            check(
+                "reveal refuses paths outside the output tree and missing files",
+                helper_server.reveal_in_file_manager(str(outside), out_root=root)
+                is False
+                and helper_server.reveal_in_file_manager(
+                    str(root / "nope.mp4"), out_root=root
+                )
+                is False
+                and len(reveal_calls) == 1,
+            )
+    finally:
+        helper_server.subprocess.Popen = original_popen
+    check(
+        "SHOW_DOWNLOAD falls back to helper reveal before the default folder",
+        (
+            lambda helper_src, handler_src: (
+                handler_src.index("downloads.show(msg.downloadId)")
+                < handler_src.index("downloads.search(")
+                < handler_src.index("YtDlp.revealPath(msg.path)")
+                < handler_src.index("showDefaultFolder")
+            )
+            and 'self.path == "/reveal"' in helper_src
+        )(
+            (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8"),
+            (ROOT / "src/background-helper-messages.js").read_text(
+                encoding="utf-8"
+            ),
+        ),
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(

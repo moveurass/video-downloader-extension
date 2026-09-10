@@ -454,11 +454,44 @@ function testPermissionReductionAndTrackPlumbing() {
   assert.equal(helper.includes('payload.get("subtitleLanguages")'), true);
 }
 
+async function testYtdlpRevealPath() {
+  const calls = [];
+  const ytdlp = loadYtDlp(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).endsWith("/reveal") && options.body) {
+      return {
+        ok: true,
+        json: async () => ({ ok: true, revealed: true })
+      };
+    }
+    return { ok: false, status: 404, json: async () => ({ ok: false }) };
+  });
+  const good = await ytdlp.revealPath("/Users/show/Downloads/VideoDownloader/a.mp4");
+  assert.equal(good.ok, true);
+  assert.equal(good.revealed, true);
+  const call = calls.find((c) => c.url.endsWith("/reveal"));
+  assert.ok(call, "POSTs the helper /reveal endpoint");
+  assert.equal(call.options.method, "POST");
+  assert.equal(
+    JSON.parse(call.options.body).path,
+    "/Users/show/Downloads/VideoDownloader/a.mp4"
+  );
+
+  // 404 / network failure resolve (never throw) so callers can fall back.
+  const refused = loadYtDlp(async () => {
+    throw new Error("offline");
+  });
+  const offline = await refused.revealPath("/x.mp4");
+  assert.equal(offline.ok, false);
+  assert.equal(offline.revealed, false);
+}
+
 async function main() {
   await testHelperAutoPairing();
   await testHelperPollingFailsFast();
   await testHelperRestartAutoResume();
   await testYtdlpUpdateSelf();
+  await testYtdlpRevealPath();
   await testPairingRecovery();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();
