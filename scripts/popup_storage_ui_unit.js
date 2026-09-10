@@ -43,7 +43,7 @@ function element() {
   return el;
 }
 
-function makeHarness({ files = [], history = [], failList = false } = {}) {
+function makeHarness({ files = [], history = [], failList = false, listError = null } = {}) {
   const elements = {
     storageSection: element(),
     storageList: element(),
@@ -79,6 +79,7 @@ function makeHarness({ files = [], history = [], failList = false } = {}) {
       messages.push(message);
       if (message.type === "FILES_LIST") {
         if (failList) throw new Error("offline");
+        if (listError) return { ok: false, files: [], error: listError };
         return { ok: true, files };
       }
       if (message.type === "FILES_TRASH") {
@@ -106,11 +107,28 @@ function makeHarness({ files = [], history = [], failList = false } = {}) {
 async function main() {
   // Helper failure / before load → section stays hidden, no throw.
   {
-    const h = makeHarness({ failList: true });
-    await h.controller.load();
+    const hidden = makeHarness({ failList: true });
+    await hidden.controller.load();
     ok(
-      h.elements.storageSection.classes.has("hidden"),
+      hidden.elements.storageSection.classes.has("hidden"),
       "helper failure keeps the section hidden"
+    );
+  }
+
+  // Permission error from the helper → visible section with guidance.
+  {
+    const denied = makeHarness({
+      listError: "저장 폴더를 읽을 수 없습니다: [Errno 1] Operation not permitted"
+    });
+    await denied.controller.load();
+    check(
+      denied.elements.storageSection.classes.has("hidden"),
+      false,
+      "permission error keeps the section visible"
+    );
+    ok(
+      denied.elements.storageList.innerHTML.includes("파일 및 폴더"),
+      "permission error shows the grant guidance"
     );
   }
 
