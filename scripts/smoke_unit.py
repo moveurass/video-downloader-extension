@@ -449,6 +449,64 @@ def main() -> int:
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
     )
+    # TCC-denied enumeration falls back to Finder AppleScript listing.
+    original_list_dir = helper_server.finder_list_dir
+    original_out_dir = helper_server.OUT_DIR
+    finder_dirs = []
+
+    def fake_finder_list_dir(dir_path):
+        finder_dirs.append(str(dir_path))
+        return [
+            {
+                "path": str(Path(dir_path) / "ep.mp4"),
+                "name": "ep.mp4",
+                "size": 123,
+                "mtime": 1757200000,
+                "rel": "ep.mp4"
+            }
+        ]
+
+    helper_server.finder_list_dir = fake_finder_list_dir
+    helper_server.OUT_DIR = Path("/nonexistent-uvd-out")
+    try:
+        fallback = helper_server.list_out_files()
+    finally:
+        helper_server.finder_list_dir = original_list_dir
+        helper_server.OUT_DIR = original_out_dir
+    check(
+        "enumeration denial falls back to Finder listing",
+        len(fallback) == 1
+        and fallback[0]["name"] == "ep.mp4"
+        and finder_dirs
+        and finder_dirs[0] == "/nonexistent-uvd-out",
+    )
+    original_osascript_run = helper_server.subprocess.run
+
+    def fake_osascript_run(cmd, **_kwargs):
+        assert cmd[0] == "osascript" and cmd[1] == "-e" and "every file" in cmd[2]
+        return type(
+            "P",
+            (),
+            {
+                "returncode": 0,
+                "stdout": "ep.mp4\t123\t2026-09-11T01:23:45\n",
+                "stderr": "",
+            },
+        )()
+
+    helper_server.subprocess.run = fake_osascript_run
+    try:
+        parsed = helper_server.finder_list_dir(Path("/out"))
+    finally:
+        helper_server.subprocess.run = original_osascript_run
+    check(
+        "Finder TSV listing parses into entries with epoch mtime",
+        len(parsed) == 1
+        and parsed[0]["name"] == "ep.mp4"
+        and parsed[0]["size"] == 123
+        and parsed[0]["path"] == "/out/ep.mp4"
+        and abs(parsed[0]["mtime"] - 1789057425) < 1,
+    )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(

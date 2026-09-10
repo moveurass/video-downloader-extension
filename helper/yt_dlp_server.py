@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
@@ -984,6 +985,71 @@ def reveal_in_file_manager(path: str, out_root: Path | None = None) -> bool:
         return False
 
 
+def finder_list_dir(dir_path: Path) -> list[dict]:
+    """
+    TCC-safe enumeration fallback: ask Finder for the directory contents.
+    Works when the launchd python cannot list ~/Downloads itself (macOS
+    restricts directory enumeration but Finder already has access). Returns
+    the same shape as list_out_files entries. Raises OSError with the
+    automation-denied text so callers can surface grant guidance.
+    """
+    safe = str(dir_path).replace("\\", "\\\\").replace('"', '\\"')
+    script = f'''
+    on pad(n)
+      if n < 10 then return "0" & (n as string)
+      return n as string
+    end pad
+    set out to ""
+    tell application "Finder"
+      set fl to every file of (POSIX file "{safe}" as alias)
+      repeat with f in fl
+        set d to modification date of f
+        set iso to (year of d as string) & "-" & my pad(month of d as integer) & "-" & my pad(day of d) & "T" & my pad(hours of d as integer) & ":" & my pad(minutes of d as integer) & ":" & my pad(seconds of d as integer)
+        set out to out & (name of f) & "\\t" & ((size of f) as string) & "\\t" & iso & linefeed
+      end repeat
+    end tell
+    return out
+    '''
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception as e:
+        raise OSError(str(e))
+    text = (out.stdout or "").strip()
+    if out.returncode != 0:
+        err = (out.stderr or "").strip()
+        if "(-1743)" in err or "not authorized" in err.lower():
+            raise OSError(
+                "Finder 자동화가 허용되지 않았습니다 — 시스템 설정 > 개인정보 보호 및 보안 > 자동화에서 허용해 주세요"
+            )
+        raise OSError(err or "Finder 나열 실패")
+    entries: list[dict] = []
+    for line in text.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        name, size_s, iso = parts
+        try:
+            size = int(size_s)
+            mtime = datetime.fromisoformat(iso).timestamp()
+        except Exception:
+            continue
+        entries.append(
+            {
+                "path": str(dir_path / name),
+                "name": name,
+                "size": size,
+                "mtime": mtime,
+                "rel": name if str(dir_path) == str(OUT_DIR) else f"{Path(dir_path).name}/{name}",
+            }
+        )
+    return entries
+
+
 def list_out_files(out_root: Path | None = None) -> list[dict]:
     """
     Files actually on disk in the output tree — the popup storage manager's
@@ -994,7 +1060,14 @@ def list_out_files(out_root: Path | None = None) -> list[dict]:
     root = Path(out_root or OUT_DIR).resolve()
     hidden = {".uvd-tmp", ".uvd-trash"}
     files: list[dict] = []
-    entries = list(root.iterdir())
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        # macOS TCC denies launchd-spawned python directory enumeration of
+        # ~/Downloads even though Finder already has access — route the
+        # listing through Finder (automation permission) instead. Subfolder
+        # depth is skipped in this mode.
+        return finder_list_dir(root)
     subdirs = [entry for entry in entries if entry.is_dir() and entry.name not in hidden]
     candidates = [entry for entry in entries if entry.is_file()]
     for sub in subdirs:
