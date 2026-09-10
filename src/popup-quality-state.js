@@ -369,10 +369,8 @@
             if (id) seedFromItem.push({ id, label: id, height });
           }
         }
-        if (!seedFromItem.length) {
-          const playerHeight = await fetchPlayerHeight(getCurrentTabId());
-          if (playerHeight) seedFromItem.push(playerHeight);
-        }
+        // No pre-probe GET_PLAYER_HEIGHT round trip here: the background's
+        // playerHint (mediaResponse) already asks the tab when it matters.
 
         if (!canProbe) {
           if (requestId !== qualitiesRequestId) return;

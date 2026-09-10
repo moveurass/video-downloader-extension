@@ -1026,6 +1026,7 @@ def main() -> int:
         ("recommendations_unit.js", "remaining recommendations"),
         ("popup_wiring_modules_unit.js", "popup wiring modules"),
         ("popup_media_loader_unit.js", "popup media title loader"),
+        ("hls_probe_cache_unit.js", "hls probe cache"),
         ("injected_capture_unit.js", "injected capture opt-in"),
     ):
         r = subprocess.run(

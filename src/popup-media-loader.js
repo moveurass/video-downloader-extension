@@ -351,6 +351,15 @@
         }
         if (isSuperseded(requestId, tab)) return;
 
+        // Independent lookups start now and join later: helper status
+        // updates its own bar, page meta and the navigation recheck only
+        // need the tab — none of them should queue behind GET_MEDIA.
+        const helperStatusReady = refreshHelperStatus(true).catch(() => {});
+        const metaPromise = loadCurrentPageMeta(tab.id, currentTabUrl).catch(
+          () => null
+        );
+        const latestTabPromise = chrome.tabs.get(tab.id).catch(() => null);
+
         // TikTok: SnapTik-style page JSON extract (playAddr / downloadAddr)
         if (isTiktokUrl(currentTabUrl)) {
           try {
@@ -415,22 +424,23 @@
             ? { ...tab, title: "" }
             : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));
+        // First paint now: the card shows with "확인 중" chips while the
+        // meta patch and the quality pass refine it. Title/cover polish and
+        // chip resolution must not delay the card itself.
+        setQualitiesLoading(true);
+        render();
 
         // Ask the live top frame again after SCAN_NOW. YouTube can update the
         // URL before its player/title DOM; retry until both identities agree.
         if (getAllItems()[0]) {
-          const meta = await loadCurrentPageMeta(tab.id, currentTabUrl);
+          const meta = await metaPromise;
           if (isSuperseded(requestId, tab)) return;
 
-          try {
-            const latestTab = await chrome.tabs.get(tab.id);
-            const latestUrl = latestTab?.url || latestTab?.pendingUrl || "";
-            const latestKey = pageKey(latestUrl);
-            if (latestKey && curKey && latestKey !== curKey) {
-              return loadMedia({ navigation: true });
-            }
-          } catch {
-            /* keep the URL captured at the start of this request */
+          const latestTab = await latestTabPromise;
+          const latestUrl = latestTab?.url || latestTab?.pendingUrl || "";
+          const latestKey = pageKey(latestUrl);
+          if (latestKey && curKey && latestKey !== curKey) {
+            return loadMedia({ navigation: true });
           }
           if (isSuperseded(requestId, tab)) return;
 
@@ -538,7 +548,8 @@
         }
         if (isSuperseded(requestId, tab)) return;
 
-        await refreshHelperStatus(true);
+        // Started concurrently with GET_MEDIA — by now it is usually done.
+        await helperStatusReady;
         if (isSuperseded(requestId, tab)) return;
         updateQuickPageUi();
         // Auto-fill link input with current social page URL
