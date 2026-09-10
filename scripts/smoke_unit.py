@@ -384,6 +384,72 @@ def main() -> int:
         ),
     )
     check(
+        "SHOW_DOWNLOAD falls back to helper reveal before the default folder",
+        (
+            lambda helper_src, handler_src: (
+                handler_src.index("downloads.show(msg.downloadId)")
+                < handler_src.index("downloads.search(")
+                < handler_src.index("YtDlp.revealPath(msg.path)")
+                < handler_src.index("showDefaultFolder")
+            )
+            and 'self.path == "/reveal"' in helper_src
+        )(
+            (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8"),
+            (ROOT / "src/background-helper-messages.js").read_text(
+                encoding="utf-8"
+            ),
+        ),
+    )
+    # Storage manager: listing walks OUT_DIR (subfolders once, hidden out),
+    # trash is scoped to the tree and macOS uses Finder-delete.
+    original_finder_delete = helper_server.finder_delete
+    finder_calls = []
+
+    def fake_finder_delete(path):
+        finder_calls.append(str(path))
+        Path(path).unlink(missing_ok=True)
+        return True
+
+    helper_server.finder_delete = fake_finder_delete
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "movie.mp4").write_bytes(b"x" * 10)
+            (root / ".uvd-tmp").mkdir()
+            (root / ".uvd-tmp" / "part.ts").write_bytes(b"x")
+            (root / "SNOS").mkdir()
+            (root / "SNOS" / "ep.mp4").write_bytes(b"x" * 20)
+            listed = helper_server.list_out_files(root)
+            names = sorted(f["name"] for f in listed)
+            outcome = helper_server.trash_out_files(
+                [str(root / "movie.mp4"), "/etc/hosts"], out_root=root
+            )
+    finally:
+        helper_server.finder_delete = original_finder_delete
+    check(
+        "storage listing walks output tree and skips working folders",
+        names == ["ep.mp4", "movie.mp4"]
+        and all(f["size"] > 0 and f["mtime"] > 0 and f["rel"] for f in listed)
+        and not any(".uvd-tmp" in f["path"] for f in listed),
+        f"names={names}",
+    )
+    check(
+        "trash moves in-tree files via Finder and refuses outside paths",
+        outcome["trashed"] == 1
+        and outcome["results"][0]["ok"] is True
+        and outcome["results"][1]["ok"] is False
+        and len(finder_calls) == 1
+        and finder_calls[0].endswith("movie.mp4"),
+    )
+    check(
+        "/files endpoints registered behind the auth gate",
+        (lambda src: src.index('self.path == "/files/list"')
+         > src.index("if not request_authorized(self):")
+         and 'self.path == "/files/trash"' in src)(
+            (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
+        ),
+    )
+    check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
             "/usr/local/bin/aria2c", "fast", False
@@ -1080,6 +1146,7 @@ def main() -> int:
         ("popup_wiring_modules_unit.js", "popup wiring modules"),
         ("popup_media_loader_unit.js", "popup media title loader"),
         ("hls_probe_cache_unit.js", "hls probe cache"),
+        ("popup_storage_ui_unit.js", "popup storage manager"),
         ("injected_capture_unit.js", "injected capture opt-in"),
     ):
         r = subprocess.run(

@@ -154,6 +154,22 @@ exit 1
           })();
           return { handled: true, keepChannel: true };
         }
+        case "FILES_LIST": {
+          deps.YtDlp.listFiles()
+            .then((r) => sendResponse(r))
+            .catch((e) =>
+              sendResponse({ ok: false, files: [], error: String(e?.message || e) })
+            );
+          return { handled: true, keepChannel: true };
+        }
+        case "FILES_TRASH": {
+          deps.YtDlp.trashFiles(Array.isArray(msg.paths) ? msg.paths : [])
+            .then((r) => sendResponse(r))
+            .catch((e) =>
+              sendResponse({ ok: false, trashed: 0, error: String(e?.message || e) })
+            );
+          return { handled: true, keepChannel: true };
+        }
         case "DOWNLOAD_BATCH": {
           // Multi-link paste: start each URL as its own job
           const urls = Array.isArray(msg.urls)

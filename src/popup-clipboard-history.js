@@ -177,6 +177,13 @@
         fillLibraryFilterOptions();
         renderHistory();
         updateRetryFailedButton();
+        // Optional side-car hook (storage manager) fires after the library
+        // settles, regardless of which query branch succeeded.
+        try {
+          await deps.afterHistoryLoaded?.();
+        } catch {
+          /* side-car load must never break the library */
+        }
       }
 
       async function fillLibraryFilterOptions() {

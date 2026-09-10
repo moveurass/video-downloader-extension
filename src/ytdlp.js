@@ -427,6 +427,41 @@ const YtDlp = (() => {
     }
   }
 
+  /** Storage manager: real files in the helper output tree (never throws). */
+  async function listFiles() {
+    try {
+      const res = await fetch(`${BASE}/files/list`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: "{}"
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) return { ok: true, files: data.files || [] };
+      return { ok: false, files: [] };
+    } catch {
+      return { ok: false, files: [] };
+    }
+  }
+
+  /** Move selected output-tree files to the OS trash (never throws). */
+  async function trashFiles(paths) {
+    try {
+      const res = await fetch(`${BASE}/files/trash`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ paths: Array.isArray(paths) ? paths : [] })
+      });
+      const data = await res.json().catch(() => ({}));
+      return {
+        ok: !!(res.ok && data.ok),
+        trashed: Number(data.trashed) || 0,
+        results: Array.isArray(data.results) ? data.results : []
+      };
+    } catch {
+      return { ok: false, trashed: 0, results: [] };
+    }
+  }
+
   return {
     BASE,
     health,
@@ -438,6 +473,8 @@ const YtDlp = (() => {
     listFormats,
     listPlaylist,
     updateSelf,
-    revealPath
+    revealPath,
+    listFiles,
+    trashFiles
   };
 })();

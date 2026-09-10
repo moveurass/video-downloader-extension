@@ -87,6 +87,7 @@ for (const name of [
   "UVDPopupSeriesBannerUI",
   "UVDPopupDuplicateConfirmation",
   "UVDPopupPlaylistUI",
+  "UVDPopupStorageUI",
   "UVDPopupMediaRenderer",
   "UVDPopupMediaLoader",
   "UVDPopupDownloadRequests",

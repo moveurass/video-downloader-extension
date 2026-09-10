@@ -276,6 +276,22 @@
         </select>
       </div>
     </div>
+    <div id="storageSection" class="storage-section hidden">
+      <div class="storage-head">
+        <span class="storage-title">저장 공간</span>
+        <span class="storage-summary" id="storageSummary"></span>
+        <span class="storage-count" id="storageCount"></span>
+      </div>
+      <div class="storage-controls">
+        <select id="storageSort" class="field-input sq-select" title="정렬">
+          <option value="recent" selected>최신순</option>
+          <option value="size">큰 파일순</option>
+        </select>
+        <button type="button" id="btnStorageRefresh" class="btn ghost tiny" title="다시 스캔">↻</button>
+        <button type="button" id="btnStorageTrash" class="btn tiny storage-trash" disabled>선택 항목 휴지통으로</button>
+      </div>
+      <ul id="storageList" class="storage-list"></ul>
+    </div>
     <div id="historyList" class="history-list">
       <div class="empty small">
         <div class="empty-icon" aria-hidden="true">✓</div>
@@ -630,6 +646,7 @@
   <script src="popup-navigation.js"></script>
   <script src="popup-series-state.js"></script>
   <script src="popup-dom-events.js"></script>
+  <script src="popup-storage-ui.js"></script>
   <script src="popup-clipboard-history.js"></script>
   <script src="popup-helper-state.js"></script>
   <script src="popup-init.js"></script>
