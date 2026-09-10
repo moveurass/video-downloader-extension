@@ -30,6 +30,7 @@
       let loaded = false;
       let armed = false;
       let sortMode = "recent";
+      let errorText = "";
 
       function basename(path) {
         return String(path || "").split(/[/\\]/).pop();
@@ -60,6 +61,13 @@
         if (!wrap || !listEl) return;
         if (!loaded) {
           wrap.classList.add("hidden");
+          return;
+        }
+        wrap.classList.remove("hidden");
+        if (errorText) {
+          if (summary) summary.textContent = "저장 폴더를 읽을 수 없습니다";
+          listEl.innerHTML = `<li class="storage-item is-empty">저장 폴더 접근 권한이 필요합니다 —<br>시스템 설정 &gt; 개인정보 보호 및 보안 &gt; 파일 및 폴더에서<br>python3의 다운로드 폴더 접근을 허용해 주세요</li>`;
+          updateButtons();
           return;
         }
         const total = files.reduce((sum, f) => sum + (Number(f.size) || 0), 0);
@@ -121,10 +129,11 @@
           response = null; // helper down — hide quietly
         }
         files = Array.isArray(response?.files) ? response.files : [];
-        loaded = !!response?.ok;
+        errorText = response?.ok ? "" : String(response?.error || "");
+        loaded = response != null;
         armed = false;
         render();
-        if (loaded && files.length === 0) {
+        if (loaded && !errorText && files.length === 0) {
           const empty = $("#storageList");
           if (empty) {
             empty.innerHTML = `<li class="storage-item is-empty">저장 폴더가 비어 있습니다</li>`;

@@ -994,10 +994,7 @@ def list_out_files(out_root: Path | None = None) -> list[dict]:
     root = Path(out_root or OUT_DIR).resolve()
     hidden = {".uvd-tmp", ".uvd-trash"}
     files: list[dict] = []
-    try:
-        entries = list(root.iterdir())
-    except OSError:
-        return files
+    entries = list(root.iterdir())
     subdirs = [entry for entry in entries if entry.is_dir() and entry.name not in hidden]
     candidates = [entry for entry in entries if entry.is_file()]
     for sub in subdirs:
@@ -2557,7 +2554,19 @@ class Handler(BaseHTTPRequestHandler):
 
         # Storage manager: list output-tree files / move selections to trash
         if self.path == "/files/list" or self.path.startswith("/files/list?"):
-            send_json(self, 200, {"ok": True, "files": list_out_files()})
+            try:
+                files = list_out_files()
+                send_json(self, 200, {"ok": True, "files": files})
+            except OSError as e:
+                send_json(
+                    self,
+                    500,
+                    {
+                        "ok": False,
+                        "files": [],
+                        "error": f"저장 폴더를 읽을 수 없습니다: {e}",
+                    },
+                )
             return
         if self.path == "/files/trash" or self.path.startswith("/files/trash?"):
             payload = read_json(self)
