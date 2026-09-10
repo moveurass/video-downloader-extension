@@ -527,46 +527,68 @@ const HLS = (() => {
   }
 
   /**
-   * Probe an m3u8 URL — returns variants or segment info.
+   * Probe an m3u8 URL — returns variants or segment info. Short-TTL cache:
+   * the popup's LIST_QUALITIES re-probes what maybeProbeHls already fetched
+   * on every open, and master/audio-rendition probing fans out per chip
+   * refresh; playlists do not meaningfully change within a minute.
    */
+  const PROBE_CACHE_TTL = 60_000;
+  const PROBE_CACHE_MAX = 80;
+  const probeCache = new Map();
+
+  function clearProbeCache() {
+    probeCache.clear();
+  }
+
   async function probe(url) {
+    const hit = probeCache.get(url);
+    if (hit && Date.now() - hit.at < PROBE_CACHE_TTL) {
+      return hit.data;
+    }
     const { text, finalUrl } = await fetchText(url);
     const parsed = parsePlaylist(text, finalUrl);
+    let result;
     if (parsed.kind === "master") {
-      return {
+      result = {
         kind: "master",
         variants: parsed.variants,
         audioRenditions: parsed.audioRenditions || [],
         url: finalUrl
       };
-    }
-    // Infer height from playlist URL + first few segment paths (…/720/seg.ts)
-    const sampleUrls = (parsed.segments || [])
-      .slice(0, 8)
-      .map((s) => s.url)
-      .filter(Boolean);
-    if (parsed.mapUri) sampleUrls.unshift(parsed.mapUri);
-    let inferredHeight =
-      heightFromString(finalUrl) || heightFromString(url) || 0;
-    if (!inferredHeight) {
-      for (const u of sampleUrls) {
-        inferredHeight = heightFromString(u);
-        if (inferredHeight) break;
+    } else {
+      // Infer height from playlist URL + first few segment paths (…/720/seg.ts)
+      const sampleUrls = (parsed.segments || [])
+        .slice(0, 8)
+        .map((s) => s.url)
+        .filter(Boolean);
+      if (parsed.mapUri) sampleUrls.unshift(parsed.mapUri);
+      let inferredHeight =
+        heightFromString(finalUrl) || heightFromString(url) || 0;
+      if (!inferredHeight) {
+        for (const u of sampleUrls) {
+          inferredHeight = heightFromString(u);
+          if (inferredHeight) break;
+        }
       }
+      result = {
+        kind: "media",
+        segmentCount: parsed.segmentCount,
+        duration: parsed.duration,
+        encrypted: parsed.encrypted,
+        encryptionMethod: parsed.encryptionMethod,
+        isFmp4: parsed.isFmp4,
+        isLive: parsed.isLive,
+        mediaSequence: parsed.mediaSequence,
+        url: finalUrl,
+        sampleUrls,
+        inferredHeight: inferredHeight || 0
+      };
     }
-    return {
-      kind: "media",
-      segmentCount: parsed.segmentCount,
-      duration: parsed.duration,
-      encrypted: parsed.encrypted,
-      encryptionMethod: parsed.encryptionMethod,
-      isFmp4: parsed.isFmp4,
-      isLive: parsed.isLive,
-      mediaSequence: parsed.mediaSequence,
-      url: finalUrl,
-      sampleUrls,
-      inferredHeight: inferredHeight || 0
-    };
+    probeCache.set(url, { data: result, at: Date.now() });
+    if (probeCache.size > PROBE_CACHE_MAX) {
+      probeCache.delete(probeCache.keys().next().value);
+    }
+    return result;
   }
 
   /** Typical HLS media-segment payload when EXT-X-BITRATE is absent. */
@@ -1538,6 +1560,7 @@ const HLS = (() => {
 
   return {
     probe,
+    clearProbeCache,
     downloadAndMerge,
     parsePlaylist,
     qualityFromHeight,

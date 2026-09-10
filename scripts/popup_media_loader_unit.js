@@ -180,7 +180,11 @@ async function main() {
     "CAWB-035 실제 영상 제목",
     "fresh fallback title is returned to background state"
   );
-  check(renderCount, 2, "loader renders before and after quality discovery");
+  check(
+    renderCount,
+    3,
+    "loader paints early, after media settle, and after quality discovery"
+  );
 
   mediaResponseItems = [];
   const rapidRenderStart = renderedItemCounts.length;

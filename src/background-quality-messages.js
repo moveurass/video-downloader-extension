@@ -92,35 +92,39 @@
     }
     const audioTracks = [];
     if (videoMedia?.kind === "media" && !videoMedia.isFmp4) {
-      for (const rendition of info.audioRenditions || []) {
-        try {
-          const audioMedia = await deps.withReferer(() =>
-            deps.HLS.probe(rendition.url)
-          );
-          if (
-            audioMedia?.kind !== "media" ||
-            audioMedia.isFmp4 ||
-            audioMedia.segmentCount !== videoMedia.segmentCount
-          ) {
-            continue;
-          }
-          const details = [
-            rendition.name || rendition.language || "Audio",
-            rendition.language &&
-            rendition.language !== rendition.name
-              ? rendition.language
-              : "",
-            rendition.channels ? `${rendition.channels}ch` : ""
-          ].filter(Boolean);
-          audioTracks.push({
-            id: rendition.id,
-            label: details.join(" · "),
-            language: rendition.language || "",
-            default: !!rendition.default
-          });
-        } catch {
-          // Only advertise tracks the browser path can fetch and mux safely.
+      // Rendition probes are independent — fan them out instead of paying
+      // each CDN round trip in sequence.
+      const probed = await Promise.all(
+        (info.audioRenditions || []).map((rendition) =>
+          deps
+            .withReferer(() => deps.HLS.probe(rendition.url))
+            .catch(() => null)
+        )
+      );
+      for (let i = 0; i < probed.length; i += 1) {
+        const audioMedia = probed[i];
+        const rendition = (info.audioRenditions || [])[i];
+        if (
+          audioMedia?.kind !== "media" ||
+          audioMedia.isFmp4 ||
+          audioMedia.segmentCount !== videoMedia.segmentCount
+        ) {
+          continue;
         }
+        const details = [
+          rendition.name || rendition.language || "Audio",
+          rendition.language &&
+          rendition.language !== rendition.name
+            ? rendition.language
+            : "",
+          rendition.channels ? `${rendition.channels}ch` : ""
+        ].filter(Boolean);
+        audioTracks.push({
+          id: rendition.id,
+          label: details.join(" · "),
+          language: rendition.language || "",
+          default: !!rendition.default
+        });
       }
     }
     for (const quality of byLabel.values()) {
@@ -228,9 +232,19 @@
       label = player.quality || deps.qualityLabel(height) || "";
     }
     if (!label) {
-      for (const candidate of playlistCandidates(url)) {
-        try {
-          const master = await deps.withReferer(() => deps.HLS.probe(candidate));
+      // Sibling master playlists are probed concurrently (capped) and the
+      // first useful one in candidate order wins — a slow CDN no longer
+      // serializes the whole chip refresh.
+      const candidates = playlistCandidates(url).slice(0, 4);
+      if (candidates.length) {
+        const masters = await Promise.all(
+          candidates.map((candidate) =>
+            deps
+              .withReferer(() => deps.HLS.probe(candidate))
+              .catch(() => null)
+          )
+        );
+        for (const master of masters) {
           if (master?.kind !== "master" || !master.variants?.length) continue;
           const heights = master.variants
             .map((variant) => variant.height || heightFromString(variant.url, deps.HLS))
@@ -240,8 +254,6 @@
             label = deps.qualityLabel(height);
             break;
           }
-        } catch {
-          // Try next sibling.
         }
       }
     }
