@@ -13,6 +13,13 @@ LOCAL_BIN="$HOME/.local/bin"
 YTDLP="$LOCAL_BIN/yt-dlp"
 mkdir -p "$LOCAL_BIN"
 
+# Start each environment from a clean helper pairing state. The helper persists
+# an extension<->helper pairing token under ~/.cache/uvd-helper; a token left
+# over from a previous session (or baked into a base snapshot) would refuse a
+# freshly loaded extension whose ID differs. Clearing it lets the helper
+# auto-pair with whichever extension connects first.
+rm -rf "$HOME/.cache/uvd-helper" 2>/dev/null || true
+
 # yt-dlp: standalone Linux binary. Chosen over pip so `yt-dlp -U` self-update
 # (which the helper exposes) works, and to avoid PEP 668 externally-managed
 # environment errors. Only downloads when missing so re-runs stay fast.
