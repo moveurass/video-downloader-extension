@@ -239,7 +239,7 @@ async function main() {
     const harness = makeHarness();
     harness.controller.fillSettingsForm();
     await new Promise((resolve) => setImmediate(resolve));
-    check(harness.elements["#setTemplate"].value, "legacy");
+    check(harness.elements["#setTemplate"].value, "");
     check(
       [
         harness.elements["#setQDefault"].value,
@@ -475,6 +475,22 @@ async function main() {
     });
     await harness.controller.saveSettingsFromForm();
     check(errorCalls, [["friendly:broken", "error"]]);
+  }
+
+  {
+    const harness = makeHarness();
+    harness.state.settings = {
+      ...harness.state.settings,
+      filenameTemplate: "{title}_{site}"
+    };
+    harness.controller.fillSettingsForm();
+    check(harness.elements["#setTemplate"].value, "{title}_{site}");
+    harness.elements["#setTemplate"].value = "  {title}_{site}  ";
+    await harness.controller.saveSettingsFromForm();
+    const saved = harness.calls.find(
+      (call) => call[0] === "sendMessage" && call[1].type === "SET_SETTINGS"
+    )[1].settings;
+    check(saved.filenameTemplate, "{title}_{site}");
   }
 
   console.log(`popup settings UI: ${assertions} assertions passed`);

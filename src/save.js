@@ -174,9 +174,9 @@
     });
   }
 
-  async function report(payload) {
+  async function report(type, payload) {
     try {
-      await chrome.runtime.sendMessage({ type: "SAVE_PAGE_DONE", key, ...payload });
+      await chrome.runtime.sendMessage({ key, ...payload, type });
     } catch {
       /* SW may already have timed out */
     }
@@ -210,7 +210,7 @@
       } catch {
         downloadId = await startDownload(objectUrl, name);
       }
-      await report({ type: "SAVE_PAGE_STARTED", downloadId, filename: name });
+      await report("SAVE_PAGE_STARTED", { downloadId, filename: name });
       const timeoutMs = Math.min(20 * 60 * 1000, Math.max(120_000, blob.size / 8));
       const done = await waitComplete(downloadId, timeoutMs);
       let path = done.path || "";
@@ -233,7 +233,7 @@
         }
       }, 20000);
 
-      await report({
+      await report("SAVE_PAGE_DONE", {
         ok: true,
         downloadId,
         filename: name,
@@ -250,6 +250,6 @@
       throw e;
     }
   } catch (e) {
-    await report({ ok: false, error: String(e?.message || e) });
+    await report("SAVE_PAGE_DONE", { ok: false, error: String(e?.message || e) });
   }
 })();

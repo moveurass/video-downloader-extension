@@ -150,7 +150,9 @@
       } catch {
         // Continue waiting for the update event.
       }
-      await new Promise((resolve) => {
+      await new Promise((resolve, reject) => {
+        let settled = false;
+        let timer = 0;
         const cleanup = () => {
           clearTimeout(timer);
           try {
@@ -159,14 +161,29 @@
             // Listener may already be gone.
           }
         };
+        const finish = (fn, value) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          fn(value);
+        };
         const onUpdated = (id, info) => {
           if (id !== tabId || info.status !== "complete") return;
-          cleanup();
-          resolve();
+          finish(resolve);
         };
-        const timer = setTimeout(() => {
-          cleanup();
-          resolve();
+        const timeoutError = () =>
+          new Error("페이지가 완전히 열리기 전에 시간이 초과되었습니다");
+        timer = setTimeout(() => {
+          Promise.resolve()
+            .then(() => deps.chrome.tabs.get(tabId))
+            .then((tab) => {
+              if (tab?.status === "complete") {
+                finish(resolve);
+                return;
+              }
+              finish(reject, timeoutError());
+            })
+            .catch(() => finish(reject, timeoutError()));
         }, timeoutMs);
         deps.chrome.tabs.onUpdated.addListener(onUpdated);
       });
