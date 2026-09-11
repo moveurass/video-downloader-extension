@@ -19,6 +19,7 @@ import yt_dlp_server as helper_server  # noqa: E402
 
 OK = 0
 FAIL = 0
+SKIP = 0
 
 
 def check(name: str, cond: bool, detail: str = "") -> None:
@@ -29,6 +30,13 @@ def check(name: str, cond: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f" FAIL {name}" + (f" — {detail}" if detail else ""))
+
+
+def skip(name: str, reason: str = "") -> None:
+    """Record a check that does not apply on this platform (not a failure)."""
+    global SKIP
+    SKIP += 1
+    print(f" SKIP {name}" + (f" — {reason}" if reason else ""))
 
 
 def main() -> int:
@@ -321,6 +329,44 @@ def main() -> int:
         and abs(good["duration"] - 10.032) < 0.001
         and skipped == {"checked": False, "ok": True, "duration": 0.0, "reason": ""},
     )
+    # Regression: a stray dynamic-linker warning (e.g. a bad LD_LIBRARY_PATH)
+    # printed ahead of the JSON must not be read as a truncated file.
+    check(
+        "ffprobe parse tolerates a stray warning line before the JSON",
+        helper_server.interpret_ffprobe(
+            "/usr/bin/ffprobe: /x/lib: no version information available\n"
+            '{"format": {"duration": "12.5"}}',
+            0,
+        )
+        == {"readable": True, "duration": 12.5}
+        and helper_server.interpret_ffprobe("no json at all", 0)
+        == {"readable": False, "duration": 0.0},
+    )
+    # Regression: the integrity gate must not fold ffprobe's stderr into the
+    # JSON it parses (stderr=STDOUT once corrupted every download's probe).
+    probe_kwargs = {}
+    original_probe_co = helper_server.subprocess.check_output
+
+    def spy_check_output(*_args, **kwargs):
+        probe_kwargs.update(kwargs)
+        return '{"format": {"duration": "3.0"}}'
+
+    helper_server._ffprobe_checked = True
+    helper_server._ffprobe_path_cache = "/usr/bin/ffprobe"
+    helper_server.subprocess.check_output = spy_check_output
+    try:
+        spy_result = helper_server.verify_media_integrity("/tmp/spy.mp4")
+    finally:
+        helper_server.subprocess.check_output = original_probe_co
+        helper_server._ffprobe_checked = False
+        helper_server._ffprobe_path_cache = None
+    check(
+        "integrity gate keeps ffprobe stderr out of the parsed JSON",
+        spy_result["ok"] is True
+        and abs(spy_result["duration"] - 3.0) < 1e-9
+        and probe_kwargs.get("stderr") is not helper_server.subprocess.STDOUT
+        and probe_kwargs.get("stderr") == helper_server.subprocess.DEVNULL,
+    )
     check(
         "publish gate deletes the bad file and reports the friendly line",
         (lambda src: src.index("verify_media_integrity(final_path)")
@@ -346,24 +392,46 @@ def main() -> int:
             inside.parent.mkdir()
             inside.write_bytes(b"x")
             outside = Path(tempfile.mkstemp(suffix=".mp4")[1])
-            check(
-                "reveal opens files inside the output tree with open -R",
-                helper_server.reveal_in_file_manager(str(inside), out_root=root)
-                is True
-                and reveal_calls
-                and reveal_calls[-1][:2] == ["open", "-R"]
-                and str(inside) in reveal_calls[-1][2],
-            )
-            check(
-                "reveal refuses paths outside the output tree and missing files",
-                helper_server.reveal_in_file_manager(str(outside), out_root=root)
-                is False
-                and helper_server.reveal_in_file_manager(
-                    str(root / "nope.mp4"), out_root=root
+            if os.name == "nt":
+                # Windows reveals via os.startfile, which fake_popen can't see.
+                skip(
+                    "reveal opens files inside the output tree",
+                    "Windows uses os.startfile",
                 )
-                is False
-                and len(reveal_calls) == 1,
-            )
+                skip(
+                    "reveal refuses paths outside the output tree and missing files",
+                    "Windows uses os.startfile",
+                )
+            else:
+                inside_ok = helper_server.reveal_in_file_manager(
+                    str(inside), out_root=root
+                )
+                if sys.platform == "darwin":
+                    check(
+                        "reveal opens files inside the output tree with open -R",
+                        inside_ok is True
+                        and reveal_calls
+                        and reveal_calls[-1][:2] == ["open", "-R"]
+                        and str(inside) in reveal_calls[-1][2],
+                    )
+                else:
+                    check(
+                        "reveal opens files inside the output tree with xdg-open",
+                        inside_ok is True
+                        and reveal_calls
+                        and reveal_calls[-1][0] == "xdg-open"
+                        and str(inside.parent) in reveal_calls[-1],
+                    )
+                check(
+                    "reveal refuses paths outside the output tree and missing files",
+                    helper_server.reveal_in_file_manager(str(outside), out_root=root)
+                    is False
+                    and helper_server.reveal_in_file_manager(
+                        str(root / "nope.mp4"), out_root=root
+                    )
+                    is False
+                    and len(reveal_calls) == 1,
+                )
     finally:
         helper_server.subprocess.Popen = original_popen
     check(
@@ -433,14 +501,21 @@ def main() -> int:
         and not any(".uvd-tmp" in f["path"] for f in listed),
         f"names={names}",
     )
-    check(
-        "trash moves in-tree files via Finder and refuses outside paths",
-        outcome["trashed"] == 1
-        and outcome["results"][0]["ok"] is True
-        and outcome["results"][1]["ok"] is False
-        and len(finder_calls) == 1
-        and finder_calls[0].endswith("movie.mp4"),
-    )
+    if sys.platform == "darwin":
+        check(
+            "trash moves in-tree files via Finder and refuses outside paths",
+            outcome["trashed"] == 1
+            and outcome["results"][0]["ok"] is True
+            and outcome["results"][1]["ok"] is False
+            and len(finder_calls) == 1
+            and finder_calls[0].endswith("movie.mp4"),
+        )
+    else:
+        # Non-darwin platforms trash via a hidden fallback folder, not Finder.
+        skip(
+            "trash moves in-tree files via Finder and refuses outside paths",
+            "macOS-only Finder trash path",
+        )
     check(
         "/files endpoints registered behind the auth gate",
         (lambda src: src.index('self.path == "/files/list"')
@@ -505,33 +580,41 @@ def main() -> int:
         and finder_dirs
         and finder_dirs[0] == "/nonexistent-uvd-out",
     )
-    original_osascript_run = helper_server.subprocess.run
+    if sys.platform == "darwin":
+        original_osascript_run = helper_server.subprocess.run
 
-    def fake_osascript_run(cmd, **_kwargs):
-        assert cmd[0] == "osascript" and cmd[1] == "-e" and "every file" in cmd[2]
-        return type(
-            "P",
-            (),
-            {
-                "returncode": 0,
-                "stdout": "ep.mp4\t123\t2026-09-11T01:23:45\n",
-                "stderr": "",
-            },
-        )()
+        def fake_osascript_run(cmd, **_kwargs):
+            assert cmd[0] == "osascript" and cmd[1] == "-e" and "every file" in cmd[2]
+            return type(
+                "P",
+                (),
+                {
+                    "returncode": 0,
+                    "stdout": "ep.mp4\t123\t2026-09-11T01:23:45\n",
+                    "stderr": "",
+                },
+            )()
 
-    helper_server.subprocess.run = fake_osascript_run
-    try:
-        parsed = helper_server.finder_list_dir(Path("/out"))
-    finally:
-        helper_server.subprocess.run = original_osascript_run
-    check(
-        "Finder TSV listing parses into entries with epoch mtime",
-        len(parsed) == 1
-        and parsed[0]["name"] == "ep.mp4"
-        and parsed[0]["size"] == 123
-        and parsed[0]["path"] == "/out/ep.mp4"
-        and abs(parsed[0]["mtime"] - 1789057425) < 1,
-    )
+        helper_server.subprocess.run = fake_osascript_run
+        try:
+            parsed = helper_server.finder_list_dir(Path("/out"))
+        finally:
+            helper_server.subprocess.run = original_osascript_run
+        check(
+            "Finder TSV listing parses into entries with epoch mtime",
+            len(parsed) == 1
+            and parsed[0]["name"] == "ep.mp4"
+            and parsed[0]["size"] == 123
+            and parsed[0]["path"] == "/out/ep.mp4"
+            and abs(parsed[0]["mtime"] - 1789057425) < 1,
+        )
+    else:
+        # finder_list_dir shells out to Finder via osascript; its parsed mtime
+        # is also local-timezone dependent. Exercised on macOS only.
+        skip(
+            "Finder TSV listing parses into entries with epoch mtime",
+            "macOS-only Finder AppleScript listing",
+        )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
@@ -1475,7 +1558,7 @@ def main() -> int:
     check("py_compile helper", r.returncode == 0, (r.stderr or "").strip()[:80])
 
     print()
-    print(f"passed {OK}  failed {FAIL}")
+    print(f"passed {OK}  failed {FAIL}  skipped {SKIP}")
     return 1 if FAIL else 0
 
 

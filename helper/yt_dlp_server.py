@@ -918,8 +918,22 @@ def interpret_ffprobe(output: str, return_code: int) -> dict:
     """Read duration/format out of `ffprobe -print_format json -show_format`."""
     if return_code != 0:
         return {"readable": False, "duration": 0.0}
+    text = output or "{}"
     try:
-        info = json.loads(output or "{}")
+        info = json.loads(text)
+    except Exception:
+        # Be tolerant of stray text before the JSON body. ffprobe's own stdout
+        # is clean JSON, but a dynamic-linker warning (e.g. a bad
+        # LD_LIBRARY_PATH) can be printed ahead of it; parse from the first
+        # brace so a valid probe is never misread as "corrupt".
+        start = text.find("{")
+        if start < 0:
+            return {"readable": False, "duration": 0.0}
+        try:
+            info = json.loads(text[start:])
+        except Exception:
+            return {"readable": False, "duration": 0.0}
+    try:
         duration = float(info.get("format", {}).get("duration") or 0.0)
     except Exception:
         return {"readable": False, "duration": 0.0}
@@ -936,11 +950,14 @@ def verify_media_integrity(path: str | Path) -> dict:
     if not probe:
         return {"checked": False, "ok": True, "duration": 0.0, "reason": ""}
     try:
+        # Keep ffprobe's stderr out of stdout: merging them lets a stray
+        # warning (e.g. a dynamic-linker note about LD_LIBRARY_PATH) corrupt
+        # the JSON and wrongly flag a healthy file as truncated.
         out = subprocess.check_output(
             [probe, "-v", "error", "-print_format", "json", "-show_format", str(path)],
             text=True,
             timeout=30,
-            stderr=subprocess.STDOUT,
+            stderr=subprocess.DEVNULL,
         )
         result = interpret_ffprobe(out, 0)
     except Exception as e:
