@@ -2426,7 +2426,7 @@ def run_download(job_id: str, payload: dict) -> None:
                 # variants are temp artifacts and leave with the work directory.
                 thumbnail_candidates = [
                     path
-                    for path in work_dir.iterdir()
+                    for path in work_dir.rglob("*")
                     if path.is_file()
                     and path.suffix.lower() in THUMBNAIL_SUFFIXES
                 ]
@@ -2466,7 +2466,7 @@ def run_download(job_id: str, payload: dict) -> None:
                         "path": final_path,
                         "filename": Path(final_path).name,
                         "size": final_size,
-                        "writeThumbnail": write_thumbnail,
+                        "writeThumbnail": bool(published_thumbnail_path),
                         "thumbnailPath": published_thumbnail_path,
                         "finishedAt": time.time(),
                     }

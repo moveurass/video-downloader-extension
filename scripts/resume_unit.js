@@ -10,6 +10,7 @@ const DownloadExecution = require("../src/background-download-execution.js");
 const UVDProgress = require("../src/progress-protocol.js");
 const { createManager } = require("../src/background-download-jobs.js");
 const SavePipeline = require("../src/background-save-pipeline.js");
+const DownloadEngine = require("../src/download-engine.js");
 
 async function testHlsSkipsCheckpointedSegments() {
   const originalFetch = global.fetch;
@@ -1125,12 +1126,15 @@ async function testByteRangeSegmentsFetchSubRanges() {
 
 async function testStartChromeDownloadKeepsDottedTitles() {
   const requested = [];
+  const actions = [];
   const pipeline = SavePipeline.createPipeline({
     chrome: {
       runtime: {},
       downloads: {
+        search: async () => [],
         download: (options, callback) => {
           requested.push(options.filename);
+          actions.push(options.conflictAction);
           callback(requested.length);
         }
       }
@@ -1141,6 +1145,7 @@ async function testStartChromeDownloadKeepsDottedTitles() {
   await pipeline.startChromeDownload("blob:x", "VideoDownloader/Wait.. what.mp4");
   await pipeline.startChromeDownload("blob:x", "VideoDownloader/../escape.mp4");
   await pipeline.startChromeDownload("blob:x", "/etc/passwd.mp4");
+  assert.deepEqual(actions, ["overwrite", "overwrite", "overwrite"]);
   assert.equal(
     requested[0],
     "VideoDownloader/Wait.. what.mp4",
@@ -1152,6 +1157,32 @@ async function testStartChromeDownloadKeepsDottedTitles() {
     "a '..' path segment is dropped, not the whole name"
   );
   assert.match(requested[2], /^영상_\d+\.mp4$/, "absolute paths fall back to a safe name");
+
+  const collisionRequested = [];
+  const collisionActions = [];
+  const collision = SavePipeline.createPipeline({
+    chrome: {
+      runtime: {},
+      downloads: {
+        search: async () => [
+          {
+            state: "complete",
+            filename: "/Users/me/Downloads/VideoDownloader/Exists.mp4"
+          }
+        ],
+        download: (options, callback) => {
+          collisionRequested.push(options.filename);
+          collisionActions.push(options.conflictAction);
+          callback(1);
+        }
+      }
+    },
+    safeDownloadName: (value) => value,
+    relDownloadPath: async (value) => value
+  });
+  await collision.startChromeDownload("blob:x", "VideoDownloader/Exists.mp4");
+  assert.deepEqual(collisionActions, ["uniquify"]);
+  assert.deepEqual(collisionRequested, ["VideoDownloader/Exists.mp4"]);
 }
 
 async function testPausedFinalSaveIsNotTornDown() {

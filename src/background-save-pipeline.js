@@ -15,74 +15,81 @@
       startKeepAlive,
       stopKeepAlive
     } = deps;
+    const chooseDownloadConflictAction =
+      deps.chooseDownloadConflictAction ||
+      (typeof globalThis !== "undefined" &&
+        globalThis.UVDDownloadEngine?.chooseDownloadConflictAction) ||
+      ((async () => "overwrite"));
 
-    function startChromeDownload(url, filename) {
+    function sanitizeDownloadFilename(filename) {
+      let fname = String(filename || "").trim();
+      // Only an absolute path is unrecoverable here; a ".." *segment* is
+      // dropped by the per-segment filter below, and ".." inside a title
+      // ("Wait.. what") is a legal filename that must keep its name+folder.
+      if (!fname || fname.startsWith("/")) {
+        fname = safeDownloadName(`영상_${Date.now()}.mp4`);
+      }
+      // If path has folders, sanitize only the leaf
+      if (fname.includes("/") || fname.includes("\\")) {
+        const parts = fname.replace(/\\/g, "/").split("/").filter(Boolean);
+        const leaf = safeDownloadName(parts.pop() || `영상_${Date.now()}.mp4`);
+        const dirs = parts
+          .map((p) =>
+            String(p)
+              .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
+              .trim()
+          )
+          .filter((p) => p && p !== "." && p !== "..");
+        fname = [...dirs, leaf].join("/");
+      } else {
+        fname = safeDownloadName(fname);
+      }
+      return fname;
+    }
+
+    function attachStartedDownload(error, downloadId) {
+      const wrapped =
+        error instanceof Error ? error : new Error(String(error?.message || error));
+      if (downloadId != null) wrapped.startedDownloadId = downloadId;
+      return wrapped;
+    }
+
+    function requestChromeDownload(url, filename, conflictAction) {
       return new Promise((resolve, reject) => {
-        // Chrome requires a relative path (optional subfolder) with a valid basename
-        let fname = String(filename || "").trim();
-        // Only an absolute path is unrecoverable here; a ".." *segment* is
-        // dropped by the per-segment filter below, and ".." inside a title
-        // ("Wait.. what") is a legal filename that must keep its name+folder.
-        if (!fname || fname.startsWith("/")) {
-          fname = safeDownloadName(`영상_${Date.now()}.mp4`);
-        }
-        // If path has folders, sanitize only the leaf
-        if (fname.includes("/") || fname.includes("\\")) {
-          const parts = fname.replace(/\\/g, "/").split("/").filter(Boolean);
-          const leaf = safeDownloadName(parts.pop() || `영상_${Date.now()}.mp4`);
-          const dirs = parts
-            .map((p) =>
-              String(p)
-                .replace(/[<>:"/\\|?*\x00-\x1f]/g, "")
-                .trim()
-            )
-            .filter((p) => p && p !== "." && p !== "..");
-          fname = [...dirs, leaf].join("/");
-        } else {
-          fname = safeDownloadName(fname);
-        }
         chrome.downloads.download(
           {
             url,
-            filename: fname,
+            filename,
             saveAs: false,
-            conflictAction: "uniquify"
+            conflictAction
           },
           (id) => {
             if (chrome.runtime.lastError || id == null) {
-              const err = chrome.runtime.lastError?.message || "다운로드 시작 실패";
-              // Retry once with a plain safe name (invalid path / restricted chars)
-              if (/invalid|filename|path|name/i.test(err) && fname.includes("/")) {
-                chrome.downloads.download(
-                  {
-                    url,
-                    filename: safeDownloadName(fname.split("/").pop()),
-                    saveAs: false,
-                    conflictAction: "uniquify"
-                  },
-                  (id2) => {
-                    if (chrome.runtime.lastError || id2 == null) {
-                      reject(
-                        new Error(
-                          chrome.runtime.lastError?.message ||
-                            err ||
-                            "다운로드 시작 실패"
-                        )
-                      );
-                    } else {
-                      resolve(id2);
-                    }
-                  }
-                );
-                return;
-              }
-              reject(new Error(err));
+              reject(
+                new Error(chrome.runtime.lastError?.message || "다운로드 시작 실패")
+              );
             } else {
               resolve(id);
             }
           }
         );
       });
+    }
+
+    async function startChromeDownload(url, filename) {
+      const fname = sanitizeDownloadFilename(filename);
+      const conflictAction = await chooseDownloadConflictAction(chrome, fname);
+      try {
+        return await requestChromeDownload(url, fname, conflictAction);
+      } catch (err) {
+        // Retry once with a plain safe name (invalid path / restricted chars)
+        if (/invalid|filename|path|name/i.test(String(err?.message || err)) && fname.includes("/")) {
+          const leaf = safeDownloadName(fname.split("/").pop());
+          const leafAction = await chooseDownloadConflictAction(chrome, leaf);
+          return requestChromeDownload(url, leaf, leafAction);
+        }
+        throw err instanceof Error ? err : new Error(String(err));
+      }
     }
 
     /**
@@ -270,14 +277,19 @@
             throw new Error(e2?.message || e1?.message || "다운로드 시작 실패");
           }
         }
-        const done = await waitDownloadComplete(id, timeoutMs, {
-          onProgress: (p) => {
-            opts.onProgress?.({
-              bytesReceived: p.bytesReceived || 0,
-              totalBytes: p.totalBytes > 0 ? p.totalBytes : blob.size
-            });
-          }
-        });
+        let done;
+        try {
+          done = await waitDownloadComplete(id, timeoutMs, {
+            onProgress: (p) => {
+              opts.onProgress?.({
+                bytesReceived: p.bytesReceived || 0,
+                totalBytes: p.totalBytes > 0 ? p.totalBytes : blob.size
+              });
+            }
+          });
+        } catch (error) {
+          throw attachStartedDownload(error, id);
+        }
 
         // Resolve path from downloads API
         let path = done.path || "";
@@ -289,7 +301,10 @@
         }
 
         if (done.state !== "complete") {
-          throw new Error("다운로드가 완료되지 않았습니다. chrome://downloads 를 확인해 주세요");
+          throw attachStartedDownload(
+            new Error("다운로드가 완료되지 않았습니다. chrome://downloads 를 확인해 주세요"),
+            id
+          );
         }
 
         // Keep URL alive until Chrome finished reading bytes
@@ -341,10 +356,15 @@
       } catch {
         id = await startChromeDownload(dataUrl, name);
       }
-      const done = await waitDownloadComplete(
-        id,
-        Math.min(10 * 60 * 1000, Math.max(90_000, blob.size / 8))
-      );
+      let done;
+      try {
+        done = await waitDownloadComplete(
+          id,
+          Math.min(10 * 60 * 1000, Math.max(90_000, blob.size / 8))
+        );
+      } catch (error) {
+        throw attachStartedDownload(error, id);
+      }
       let path = done.path || "";
       try {
         const [item] = await chrome.downloads.search({ id });
@@ -730,6 +750,26 @@
       const keep = startKeepAlive();
       const errors = [];
 
+      async function recoverStartedDownload(error, size) {
+        const id = error?.startedDownloadId;
+        if (id == null || !chrome.downloads?.search) return null;
+        try {
+          const [item] = await chrome.downloads.search({ id });
+          if (item?.state === "complete") {
+            return {
+              downloadId: id,
+              filename: name,
+              path: item.filename || "",
+              state: "complete",
+              size: item.bytesReceived || size || 0
+            };
+          }
+        } catch {
+          /* ignore */
+        }
+        return null;
+      }
+
       try {
         // 1) Service worker blob URL (main path — no offscreen)
         try {
@@ -737,6 +777,11 @@
           if (saved.downloadId != null) return saved;
           errors.push("다운로드 ID 없음");
         } catch (e) {
+          const recovered = await recoverStartedDownload(e, blob.size);
+          if (recovered) return recovered;
+          // A Chrome download already started. Starting another copy of the
+          // same name is what produces a leftover " (1)" file.
+          if (e?.startedDownloadId != null) throw e;
           errors.push(String(e?.message || e));
           console.warn("[UVD] SW blob save failed", e);
         }
@@ -747,6 +792,9 @@
             const saved = await downloadBlobViaDataUrl(blob, name);
             if (saved.downloadId != null) return saved;
           } catch (e) {
+            const recovered = await recoverStartedDownload(e, blob.size);
+            if (recovered) return recovered;
+            if (e?.startedDownloadId != null) throw e;
             errors.push(String(e?.message || e));
           }
         }

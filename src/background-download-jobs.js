@@ -15,9 +15,7 @@
 
   function helperHandledThumbnail(result) {
     return !!(
-      isHelperSavedResult(result) &&
-      (result.writeThumbnail === true ||
-        String(result.thumbnailPath || "").trim())
+      isHelperSavedResult(result) && String(result.thumbnailPath || "").trim()
     );
   }
 

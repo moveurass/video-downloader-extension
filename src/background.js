@@ -359,7 +359,8 @@ const {
   safeDownloadName: filenameSafeDownloadName,
   relDownloadPath: filenameRelDownloadPath,
   startKeepAlive,
-  stopKeepAlive
+  stopKeepAlive,
+  chooseDownloadConflictAction: UVDDownloadEngine.chooseDownloadConflictAction
 });
 UVDBackgroundHousekeeping.createController({
   chrome,
