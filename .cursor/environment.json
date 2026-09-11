@@ -1,0 +1,11 @@
+{
+  "name": "Universal Video Downloader",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "yt-dlp helper",
+      "command": "bash -lc 'unset LD_LIBRARY_PATH; export PATH=\"$HOME/.local/bin:$PATH\"; exec python3 helper/yt_dlp_server.py'"
+    }
+  ],
+  "ports": [8787]
+}
