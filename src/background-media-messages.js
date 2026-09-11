@@ -458,22 +458,7 @@
                     .get(thumbTabId)
                     .catch(() => null);
                   if (tab?.url) {
-                    const tabHost = new URL(tab.url).hostname.replace(/^www\./, "");
-                    let urlHost = "";
-                    try {
-                      urlHost = new URL(url).hostname.replace(/^www\./, "");
-                    } catch {
-                      urlHost = "";
-                    }
-                    const sameSite =
-                      tabHost &&
-                      urlHost &&
-                      (tabHost === urlHost ||
-                        urlHost.endsWith(tabHost) ||
-                        tabHost.endsWith(urlHost) ||
-                        /123av|missav|jable|njav|netflav|surrit|javcdn|javplayer/i.test(
-                          urlHost
-                        ));
+                    const sameSite = !!sitesApi()?.isTrustedThumbUrl?.(tab.url, url);
                     if (sameSite) {
                       const result = await deps.chrome.tabs
                         .sendMessage(thumbTabId, {

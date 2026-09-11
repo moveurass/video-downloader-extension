@@ -5,6 +5,30 @@
 (function () {
   "use strict";
 
+  function ensureBridgeNonce() {
+    if (!globalThis.__UVD_BRIDGE_NONCE) {
+      const bytes = new Uint8Array(24);
+      crypto.getRandomValues(bytes);
+      globalThis.__UVD_BRIDGE_NONCE = Array.from(bytes, (b) =>
+        b.toString(16).padStart(2, "0")
+      ).join("");
+    }
+    return globalThis.__UVD_BRIDGE_NONCE;
+  }
+  const BRIDGE_NONCE = ensureBridgeNonce();
+
+  function pagePost(type, extra = {}) {
+    window.postMessage(
+      { source: "uvd-content", nonce: BRIDGE_NONCE, type, ...extra },
+      "*"
+    );
+  }
+
+  function isAcceptableInjectedUrl(url) {
+    if (!url || typeof url !== "string" || url.length > 4096) return false;
+    return /^(https?:|blob:)/i.test(url);
+  }
+
   /** @type {Map<string, { hasThumb: boolean, title: string }>} */
   const REPORTED = new Map();
   // Isolated-world only (not visible to the page): lets the background probe
@@ -1112,7 +1136,7 @@
 
   function armPageCapture() {
     try {
-      window.postMessage({ source: "uvd-content", type: "ARM_CAPTURE" }, "*");
+      pagePost("ARM_CAPTURE");
     } catch {
       /* ignore */
     }
@@ -1134,7 +1158,7 @@
     if (isTikTokHost() || isYouTubeHost() || isInstagramHost()) return;
     try {
       const s = document.createElement("script");
-      s.src = chrome.runtime.getURL("src/injected.js");
+      s.src = chrome.runtime.getURL("src/injected.js") + "#" + BRIDGE_NONCE;
       s.onload = () => {
         s.remove();
         armCaptureIfConfigured();
@@ -1151,6 +1175,7 @@
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== "universal-video-downloader") return;
+    if (data.nonce !== BRIDGE_NONCE) return;
     if (data.type === "FOUND_MEDIA" && Array.isArray(data.items)) {
       const title = pageTitle();
       const thumb = pageThumbnail();
@@ -1161,7 +1186,7 @@
             const url = i.url || "";
             // skip pure tiny segment noise from inject
             if (i.type === "segment") return false;
-            return !!url;
+            return isAcceptableInjectedUrl(url);
           })
           .map((i) => {
             const url = absUrl(i.url) || i.url;
@@ -1412,6 +1437,14 @@
           const url = String(msg.url || "").trim();
           if (!url || !/^https?:/i.test(url)) {
             sendResponse({ ok: false, error: "bad url" });
+            return;
+          }
+          if (
+            typeof UVDSites !== "undefined" &&
+            UVDSites.isTrustedThumbUrl &&
+            !UVDSites.isTrustedThumbUrl(location.href, url)
+          ) {
+            sendResponse({ ok: false, error: "cross-site" });
             return;
           }
           const res = await fetch(url, {

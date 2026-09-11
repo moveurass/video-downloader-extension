@@ -16,8 +16,15 @@
     ) {
       return;
     }
+    if (!globalThis.__UVD_BRIDGE_NONCE) {
+      const bytes = new Uint8Array(24);
+      crypto.getRandomValues(bytes);
+      globalThis.__UVD_BRIDGE_NONCE = Array.from(bytes, (b) =>
+        b.toString(16).padStart(2, "0")
+      ).join("");
+    }
     const s = document.createElement("script");
-    s.src = chrome.runtime.getURL("src/injected.js");
+    s.src = chrome.runtime.getURL("src/injected.js") + "#" + globalThis.__UVD_BRIDGE_NONCE;
     s.async = false;
     s.onload = () => {
       try {

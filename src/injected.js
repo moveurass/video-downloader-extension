@@ -7,6 +7,18 @@
   if (window.__uvdInjected) return;
   window.__uvdInjected = true;
 
+  function readBridgeNonce() {
+    try {
+      const src = document.currentScript && document.currentScript.src;
+      if (!src) return "";
+      const hash = new URL(src, location.href).hash.replace(/^#/, "");
+      return /^[A-Za-z0-9_-]{16,128}$/.test(hash) ? hash : "";
+    } catch {
+      return "";
+    }
+  }
+  const BRIDGE_NONCE = readBridgeNonce();
+
   const MAX = 300;
   const seen = new Set();
 
@@ -53,9 +65,11 @@
     if (seen.size > MAX) return;
     seen.add(url);
 
+    if (!BRIDGE_NONCE) return;
     window.postMessage(
       {
         source: "universal-video-downloader",
+        nonce: BRIDGE_NONCE,
         type: "FOUND_MEDIA",
         items: [
           {
@@ -358,12 +372,14 @@
     if (event.source !== window) return;
     const data = event.data;
     if (!data || data.source !== "uvd-content") return;
+    if (!BRIDGE_NONCE || data.nonce !== BRIDGE_NONCE) return;
 
     if (data.type === "ARM_CAPTURE") {
       armCapture();
       window.postMessage(
         {
           source: "universal-video-downloader",
+          nonce: BRIDGE_NONCE,
           type: "CAPTURE_ARMED",
           requestId: data.requestId,
           armed: true
@@ -392,6 +408,7 @@
       window.postMessage(
         {
           source: "universal-video-downloader",
+          nonce: BRIDGE_NONCE,
           type: "CAPTURE_EXPORT",
           requestId: data.requestId,
           armed: captureArmed,
@@ -405,6 +422,7 @@
       window.postMessage(
         {
           source: "universal-video-downloader",
+          nonce: BRIDGE_NONCE,
           type: "CAPTURE_STATUS",
           requestId: data.requestId,
           armed: captureArmed,

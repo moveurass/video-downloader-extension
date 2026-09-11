@@ -155,6 +155,11 @@ function makeHarness(responses = [], options = {}) {
     true,
     "paused actions render"
   );
+  check(
+    harness.elements.dlQueueList.innerHTML.includes("다시 시작"),
+    true,
+    "paused jobs without a checkpoint offer restart, not resume"
+  );
   harness.elements.dlQueueList.scrollTop = 27;
   harness.controller.renderDownloadQueue(true);
   check(harness.elements.dlQueueList.scrollTop, 27, "render preserves scroll");

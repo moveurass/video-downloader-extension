@@ -12,6 +12,7 @@ importScripts(
   "background-companion-thumbnail.js",
   "background-housekeeping.js",
   "background-keyboard-commands.js",
+  "message-privileges.js",
   "background-runtime-messages.js",
   "site-detection.js",
   "download-routing.js",

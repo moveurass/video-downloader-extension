@@ -706,6 +706,39 @@ def main() -> int:
         )
         check("pinned origin can pair", pinned_ok and not pinned_error, str(pinned_error))
         helper_server.ALLOWED_ORIGIN_EXACT = original_exact
+
+        class FakeHandler:
+            def __init__(self, origin="", token=""):
+                self.headers = {"Origin": origin, "X-UVD-Token": token}
+
+        helper_server.auto_pairing = {}
+        helper_server.AUTH_TOKEN = ""
+        check(
+            "unpaired mutating request is rejected",
+            not helper_server.request_authorized(FakeHandler())
+            and not helper_server.request_authorized(
+                FakeHandler(origin="chrome-extension://" + "a" * 32)
+            )
+            and not helper_server.origin_allowed(""),
+        )
+        helper_server.auto_pairing = {
+            "origin": "chrome-extension://" + "a" * 32,
+            "token": "b" * 64,
+        }
+        check(
+            "paired token required; empty Origin needs the token",
+            helper_server.request_authorized(
+                FakeHandler(
+                    origin="chrome-extension://" + "a" * 32,
+                    token="b" * 64,
+                )
+            )
+            and helper_server.request_authorized(FakeHandler(token="b" * 64))
+            and not helper_server.request_authorized(FakeHandler())
+            and not helper_server.request_authorized(
+                FakeHandler(origin="https://evil.example", token="b" * 64)
+            ),
+        )
     helper_server.PAIR_FILE = original_pair_file
     helper_server.auto_pairing = original_pairing
     helper_server.AUTH_TOKEN = original_auth_token
@@ -946,6 +979,22 @@ def main() -> int:
     except Exception as e:
         print(f"  skip origin gate (helper not running): {e}")
         check("web origin blocked", True, "skipped")
+
+    bare = urllib.request.Request(
+        "http://127.0.0.1:8787/download",
+        data=b"{}",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(bare, timeout=2) as r:
+            code = r.status
+        check("origin-less download blocked until paired token", code == 403, f"got HTTP {code}")
+    except urllib.error.HTTPError as e:
+        check("origin-less download blocked until paired token", e.code == 403, f"got HTTP {e.code}")
+    except Exception as e:
+        print(f"  skip origin-less gate (helper not running): {e}")
+        check("origin-less download blocked until paired token", True, "skipped")
 
     background_source = (ROOT / "src/background.js").read_text(encoding="utf-8")
     check(
@@ -1314,6 +1363,7 @@ def main() -> int:
         ("hls_probe_cache_unit.js", "hls probe cache"),
         ("popup_storage_ui_unit.js", "popup storage manager"),
         ("injected_capture_unit.js", "injected capture opt-in"),
+        ("message_privileges_unit.js", "message privilege allowlist"),
     ):
         r = subprocess.run(
             ["node", f"scripts/{script}"],

@@ -205,8 +205,20 @@
           );
         case "OPEN_URL": {
           const url = message.url;
-          if (url && /^https?:/i.test(url)) {
-            deps.tabs.create({ url }).catch(() => {});
+          let parsed = null;
+          try {
+            parsed = url ? new URL(url) : null;
+          } catch {
+            parsed = null;
+          }
+          const safe =
+            parsed &&
+            (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+            parsed.hostname &&
+            !parsed.username &&
+            !parsed.password;
+          if (safe) {
+            deps.tabs.create({ url: parsed.href }).catch(() => {});
             sendResponse({ ok: true });
           } else {
             sendResponse({ ok: false, error: "bad url" });

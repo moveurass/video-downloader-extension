@@ -17,6 +17,19 @@
     function dispatch(message, sender, sendResponse) {
       if (DEDICATED_MESSAGE_TYPES.has(message?.type)) return false;
 
+      const privileges =
+        deps.privileges ||
+        root.UVDMessagePrivileges ||
+        (typeof require === "function" ? require("./message-privileges.js") : null);
+      if (privileges && !privileges.senderMaySend(message?.type, sender)) {
+        try {
+          sendResponse({ ok: false, error: "forbidden" });
+        } catch {
+          /* ignore */
+        }
+        return false;
+      }
+
       const tabId = message.tabId ?? sender.tab?.id;
       const downloadMessage = deps.handleDownloadMessage(message, sendResponse);
       if (downloadMessage.handled) return downloadMessage.keepChannel;

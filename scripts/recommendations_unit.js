@@ -39,6 +39,11 @@ async function testHelperAutoPairing() {
     },
     chrome: {
       storage: {
+        session: {
+          get: async () => ({}),
+          set: async (value) => writes.push(value),
+          setAccessLevel: async () => {}
+        },
         local: {
           get: async () => ({}),
           set: async (value) => writes.push(value)
@@ -75,6 +80,7 @@ function loadYtDlp(fetchImpl, extraContext = {}) {
     fetch: fetchImpl,
     chrome: {
       storage: {
+        session: { get: async () => ({}), set: async () => {}, setAccessLevel: async () => {} },
         local: { get: async () => ({}), set: async () => {} },
         onChanged: { addListener() {} }
       }
@@ -103,6 +109,7 @@ async function testPairingRecovery() {
     {
       chrome: {
         storage: {
+          session: { get: async () => ({}), set: async (v) => writes.push(v), setAccessLevel: async () => {} },
           local: { get: async () => ({}), set: async (v) => writes.push(v) },
           onChanged: { addListener() {} }
         }
@@ -132,6 +139,7 @@ async function testPairingRecovery() {
     {
       chrome: {
         storage: {
+          session: { get: async () => ({}), set: async (v) => writes.push(v), setAccessLevel: async () => {} },
           local: { get: async () => ({ helperToken: "stale".repeat(8) }), set: async (v) => writes.push(v) },
           onChanged: { addListener() {} }
         }
@@ -159,6 +167,7 @@ async function testPairingRecovery() {
     {
       chrome: {
         storage: {
+          session: { get: async () => ({}), set: async (v) => writes.push(v), setAccessLevel: async () => {} },
           local: { get: async () => ({ helperToken: "old".repeat(12) }), set: async (v) => writes.push(v) },
           onChanged: { addListener() {} }
         }

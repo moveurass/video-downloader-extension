@@ -46,7 +46,8 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # ── Access control ──
 # Browsers always attach an Origin header to cross-origin fetch/XHR/form POSTs,
 # so requiring extension origins blocks arbitrary web pages from commanding the
-# helper. Requests without Origin (curl, local scripts) are allowed.
+# helper. Mutating routes also require the paired (or UVD_TOKEN) secret —
+# Origin-less local tools are allowed only when they send that token.
 # Pin one exact origin with UVD_ALLOWED_ORIGIN=chrome-extension://<id>.
 # Optional shared secret: set UVD_TOKEN and configure the same token in the
 # extension settings — then every protected request must send X-UVD-Token.
@@ -1463,9 +1464,7 @@ def ytdlp_version(bin_path: str) -> str:
 
 def origin_allowed(origin: str) -> bool:
     if not origin:
-        # No Origin = non-browser local client. Browsers cannot omit Origin on
-        # cross-origin fetch/XHR/form POSTs, so this cannot be forged by a page.
-        return True
+        return False
     if ALLOWED_ORIGIN_EXACT:
         return origin == ALLOWED_ORIGIN_EXACT
     if auto_pairing.get("origin"):
@@ -1474,15 +1473,19 @@ def origin_allowed(origin: str) -> bool:
 
 
 def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
-    if not origin_allowed((handler.headers.get("Origin") or "").strip()):
-        return False
+    origin = (handler.headers.get("Origin") or "").strip()
+    token = (handler.headers.get("X-UVD-Token") or "").strip()
     expected_token = AUTH_TOKEN or auto_pairing.get("token") or ""
-    if (
-        expected_token
-        and (handler.headers.get("X-UVD-Token") or "").strip() != expected_token
-    ):
+    # Local tools (curl, smoke) may omit Origin only when they present the
+    # paired or configured token. Browsers cannot omit Origin on CORS fetches.
+    if not origin:
+        return bool(expected_token) and token == expected_token
+    if not origin_allowed(origin):
         return False
-    return True
+    if not expected_token:
+        # Unpaired: /pair is the only unauthenticated write path.
+        return False
+    return token == expected_token
 
 
 def cors(handler: BaseHTTPRequestHandler) -> None:

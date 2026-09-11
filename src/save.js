@@ -140,8 +140,6 @@
             finish(resolve, { state: "complete", path: item.filename });
           } else if (item?.state === "in_progress" && item.paused) {
             armTimer();
-          } else if (item?.state === "in_progress" && (item.bytesReceived || 0) > 0) {
-            finish(resolve, { state: "in_progress", path: item.filename, partial: true });
           } else {
             finish(reject, new Error("다운로드 완료 대기 시간 초과"));
           }
@@ -223,20 +221,24 @@
         /* ignore */
       }
       // Keep URL briefly so Chrome can finish reading
+      if (done.state !== "complete") {
+        throw new Error("다운로드가 완료되지 않았습니다. chrome://downloads 를 확인해 주세요");
+      }
+
       setTimeout(() => {
         try {
           URL.revokeObjectURL(objectUrl);
         } catch {
           /* ignore */
         }
-      }, done.partial ? 300000 : 20000);
+      }, 20000);
 
       await report({
         ok: true,
         downloadId,
         filename: name,
         path,
-        state: done.state || "complete",
+        state: "complete",
         size: blob.size
       });
     } catch (e) {
