@@ -928,18 +928,17 @@
         const job = activeDownloads.get(explicitJobId);
         if (job) return job;
       }
-      const running = countRunningJobs();
-      if (running === 1) {
-        for (const job of activeDownloads.values()) {
-          if (job.status === "running") return job;
-        }
-      }
-      if (running > 1) return null;
       if (tabId != null && tabId >= 0) {
         const mapped = tabJobMap.get(tabId);
         if (mapped) {
           const job = activeDownloads.get(mapped);
           if (job?.status === "running") return job;
+        }
+      }
+      const running = countRunningJobs();
+      if (running === 1) {
+        for (const job of activeDownloads.values()) {
+          if (job.status === "running") return job;
         }
       }
       return null;

@@ -19,7 +19,7 @@
 
       const privileges =
         deps.privileges ||
-        root.UVDMessagePrivileges ||
+        (typeof globalThis !== "undefined" ? globalThis.UVDMessagePrivileges : null) ||
         (typeof require === "function" ? require("./message-privileges.js") : null);
       if (privileges && !privileges.senderMaySend(message?.type, sender)) {
         try {

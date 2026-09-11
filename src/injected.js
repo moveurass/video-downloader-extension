@@ -11,7 +11,7 @@
     try {
       const src = document.currentScript && document.currentScript.src;
       if (!src) return "";
-      const hash = new URL(src, location.href).hash.replace(/^#/, "");
+      const hash = String(src).split("#")[1] || "";
       return /^[A-Za-z0-9_-]{16,128}$/.test(hash) ? hash : "";
     } catch {
       return "";

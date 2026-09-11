@@ -218,7 +218,7 @@
             !parsed.username &&
             !parsed.password;
           if (safe) {
-            deps.tabs.create({ url: parsed.href }).catch(() => {});
+            deps.tabs.create({ url }).catch(() => {});
             sendResponse({ ok: true });
           } else {
             sendResponse({ ok: false, error: "bad url" });
