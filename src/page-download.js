@@ -224,6 +224,12 @@
         if (event.source !== window) return;
         const data = event.data;
         if (!data || data.source !== "universal-video-downloader") return;
+        if (
+          globalThis.__UVD_BRIDGE_NONCE &&
+          data.nonce !== globalThis.__UVD_BRIDGE_NONCE
+        ) {
+          return;
+        }
         if (data.type !== "CAPTURE_EXPORT" || data.requestId !== requestId) return;
         window.removeEventListener("message", onMsg);
         clearTimeout(timer);
@@ -235,7 +241,12 @@
       }, timeoutMs);
       window.addEventListener("message", onMsg);
       window.postMessage(
-        { source: "uvd-content", type: "EXPORT_CAPTURE", requestId },
+        {
+          source: "uvd-content",
+          nonce: globalThis.__UVD_BRIDGE_NONCE || "",
+          type: "EXPORT_CAPTURE",
+          requestId
+        },
         "*"
       );
     });

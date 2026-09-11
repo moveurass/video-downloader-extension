@@ -386,7 +386,7 @@ const goodBackup = {
   exportedAt: "2026-09-11T00:00:00Z",
   settings: { theme: "dark", unknownKey: 1 },
   watchlist: [
-    { id: "w1", url: "https://a.test/1", title: "one" },
+    { id: "w1", url: "https://a.test/1", title: "one", evilField: "nope" },
     { id: "w2", url: "notaurl", title: "drop me" }
   ],
   history: Array.from({ length: 130 }, (_, i) => ({ id: `h${i}`, at: i }))
@@ -396,6 +396,8 @@ assert.equal(sanitized.watchlist.length, 1, "non-http watchlist urls dropped");
 assert.equal(sanitized.watchlist[0].title, "one");
 assert.equal(sanitized.history.length, 100, "history capped at 100");
 assert.equal(sanitized.settings.theme, "dark");
+assert.equal(sanitized.settings.unknownKey, undefined, "unknown settings keys dropped");
+assert.equal(sanitized.watchlist[0].evilField, undefined);
 assert.equal(
   UVD.sanitizeBackup({ app: "other", version: 9 }),
   null,
@@ -411,6 +413,20 @@ assert.equal(
   null,
   "missing settings is fine"
 );
+assert.equal(Sites.registrableDomain("www.foo.example.co.uk"), "example.co.uk");
+assert.equal(Sites.isSameRegistrableSite("cdn.example.com", "www.example.com"), true);
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://123av.com/v/1",
+  "https://evil.example/123av/cover.jpg"
+), false, "substring 123av on another site is not trusted");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://123av.com/v/1",
+  "https://img.surrit.com/cover.jpg"
+), true, "known-code page may fetch a known video CDN");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://watch.example/v",
+  "https://other.example/cover.jpg"
+), false);
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),

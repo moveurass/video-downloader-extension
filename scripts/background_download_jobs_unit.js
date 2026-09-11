@@ -455,6 +455,26 @@ async function main() {
   );
   ok(notified.notifications[0].notification.message.includes("다운로드 선반"));
 
+  const firstId = manager.createDownloadJob({
+    tabId: 21,
+    title: "First concurrent",
+    pageUrl: "https://a.test/1"
+  });
+  const secondId = manager.createDownloadJob({
+    tabId: 22,
+    title: "Second concurrent",
+    pageUrl: "https://b.test/1"
+  });
+  await manager.withJobContext(secondId, async () => {
+    manager.emitDownloadProgress(21, 77, "for first", "download", null);
+  });
+  equal(manager.activeDownloads.get(firstId).percent, 77);
+  equal(manager.activeDownloads.get(secondId).percent, 2);
+  manager.emitDownloadProgress(-1, 88, "ambient", "download", null);
+  equal(manager.activeDownloads.get(secondId).percent, 2);
+  manager.finalizePausedJob(firstId);
+  equal(manager.activeDownloads.get(firstId).message.includes("처음부터 다시 시작"), true);
+
   console.log(`background download jobs unit: ${assertions} assertions`);
 }
 

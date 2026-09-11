@@ -7,12 +7,122 @@
 })(typeof globalThis !== "undefined" ? globalThis : self, function makeSiteDetection() {
   "use strict";
 
+  const MULTI_PART_PUBLIC_SUFFIXES = new Set([
+    "co.uk",
+    "org.uk",
+    "ac.uk",
+    "gov.uk",
+    "co.jp",
+    "ne.jp",
+    "or.jp",
+    "com.au",
+    "net.au",
+    "org.au",
+    "co.kr",
+    "or.kr",
+    "go.kr",
+    "com.br",
+    "com.mx",
+    "co.nz",
+    "com.tw"
+  ]);
+
+  const KNOWN_CODE_HOST_SUFFIXES = [
+    "123av.com",
+    "missav.com",
+    "missav.ws",
+    "jable.tv",
+    "avgle.com",
+    "netflav.com",
+    "supjav.com",
+    "njav.tv",
+    "javdb.com",
+    "javlibrary.com",
+    "thisav.com",
+    "hanime.tv"
+  ];
+
+  const KNOWN_VIDEO_CDN_SUFFIXES = [
+    "surrit.com",
+    "javcdn.net",
+    "javcdn.com",
+    "javplayer.com",
+    "m3u8s.com"
+  ];
+
   function hostOf(url) {
     try {
       return new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
     } catch {
       return "";
     }
+  }
+
+  function hostMatchesSuffix(host, suffix) {
+    const h = String(host || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    const s = String(suffix || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    return !!h && !!s && (h === s || h.endsWith("." + s));
+  }
+
+  function hostMatchesAnySuffix(host, suffixes) {
+    return (suffixes || []).some((suffix) => hostMatchesSuffix(host, suffix));
+  }
+
+  function registrableDomain(hostname) {
+    const host = String(hostname || "")
+      .replace(/\.$/, "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    if (!host || host === "localhost" || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
+      return host;
+    }
+    const parts = host.split(".").filter(Boolean);
+    if (parts.length < 2) return host;
+    const last2 = parts.slice(-2).join(".");
+    if (MULTI_PART_PUBLIC_SUFFIXES.has(last2) && parts.length >= 3) {
+      return parts.slice(-3).join(".");
+    }
+    return last2;
+  }
+
+  function isSameRegistrableSite(hostA, hostB) {
+    const a = registrableDomain(hostA);
+    const b = registrableDomain(hostB);
+    return !!a && !!b && a === b;
+  }
+
+  function isKnownCodeHost(host) {
+    return hostMatchesAnySuffix(host, KNOWN_CODE_HOST_SUFFIXES);
+  }
+
+  function isKnownVideoCdnHost(host) {
+    return hostMatchesAnySuffix(host, KNOWN_VIDEO_CDN_SUFFIXES);
+  }
+
+  /**
+   * Credentialed thumbnail fetches must stay on the page's site, or on a
+   * known video CDN when the page itself is a known-code host.
+   */
+  function isTrustedThumbUrl(pageUrl, imageUrl) {
+    let pageHost = "";
+    let imageHost = "";
+    try {
+      const page = new URL(pageUrl);
+      const image = new URL(imageUrl);
+      if (!/^https?:$/i.test(page.protocol) || !/^https?:$/i.test(image.protocol)) {
+        return false;
+      }
+      pageHost = page.hostname;
+      imageHost = image.hostname;
+    } catch {
+      return false;
+    }
+    if (isSameRegistrableSite(pageHost, imageHost)) return true;
+    return isKnownCodeHost(pageHost) && isKnownVideoCdnHost(imageHost);
   }
 
   function isYoutubeUrl(url) {
@@ -318,6 +428,11 @@
 
   return {
     hostOf,
+    registrableDomain,
+    isSameRegistrableSite,
+    isKnownCodeHost,
+    isKnownVideoCdnHost,
+    isTrustedThumbUrl,
     isYoutubeUrl,
     youtubeVideoId,
     youtubeThumbnailForUrl,

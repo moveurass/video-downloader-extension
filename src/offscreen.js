@@ -100,6 +100,7 @@ function waitComplete(downloadId, timeoutMs) {
       try {
         const [item] = await chrome.downloads.search({ id: downloadId });
         if (!item) return;
+        if (item.state === "in_progress" && item.paused) armTimer();
         if (item.state === "complete") {
           finish(resolve, { state: "complete", path: item.filename });
         } else if (item.state === "interrupted") {
@@ -113,24 +114,27 @@ function waitComplete(downloadId, timeoutMs) {
       }
     }, 400);
 
-    const timer = setTimeout(async () => {
+    const onTimeout = async () => {
       try {
         const [item] = await chrome.downloads.search({ id: downloadId });
         if (item?.state === "complete") {
           finish(resolve, { state: "complete", path: item.filename });
-        } else if (item?.state === "in_progress" && (item.bytesReceived || 0) > 0) {
-          finish(resolve, {
-            state: "in_progress",
-            path: item.filename,
-            partial: true
-          });
+        } else if (item?.state === "in_progress" && item.paused) {
+          armTimer();
         } else {
           finish(reject, new Error("다운로드가 완료되지 않았습니다"));
         }
       } catch {
         finish(reject, new Error("다운로드 상태 확인 실패"));
       }
-    }, timeoutMs);
+    };
+    let timer = null;
+    function armTimer() {
+      if (settled) return;
+      clearTimeout(timer);
+      timer = setTimeout(onTimeout, timeoutMs);
+    }
+    armTimer();
   });
 }
 
@@ -187,6 +191,9 @@ async function saveBlob(blob, filename) {
     const downloadId = await tryDownload(objectUrl, name);
     const timeoutMs = Math.min(40 * 60 * 1000, Math.max(90_000, blob.size / 15));
     const done = await waitComplete(downloadId, timeoutMs);
+    if (done.state !== "complete") {
+      throw new Error("다운로드가 완료되지 않았습니다");
+    }
 
     let path = done.path || "";
     try {
@@ -196,16 +203,13 @@ async function saveBlob(blob, filename) {
       /* ignore */
     }
 
-    setTimeout(
-      () => {
-        try {
-          URL.revokeObjectURL(objectUrl);
-        } catch {
-          /* ignore */
-        }
-      },
-      done.partial ? 15 * 60_000 : 20_000
-    );
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        /* ignore */
+      }
+    }, 20_000);
 
     return {
       ok: true,
@@ -213,7 +217,7 @@ async function saveBlob(blob, filename) {
       filename: name,
       path,
       size: blob.size,
-      state: done.state || "complete"
+      state: "complete"
     };
   } catch (e) {
     try {

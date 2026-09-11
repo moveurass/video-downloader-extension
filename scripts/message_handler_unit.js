@@ -132,6 +132,11 @@ async function main() {
   }), { handled: true, keepChannel: false });
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(opened, ["https://example.com"]);
+  router({ type: "OPEN_URL", url: "javascript:alert(1)" }, (value) => {
+    response = value;
+  });
+  assert.equal(response.ok, false, "javascript: URLs are rejected");
+  assert.deepEqual(opened, ["https://example.com"]);
 
   router({ type: "CLEAR_MEDIA", tabId: 7 }, () => {});
   assert.deepEqual(cleared, [7]);

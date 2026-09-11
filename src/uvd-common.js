@@ -461,8 +461,21 @@ const UVD = (() => {
             .filter((w) => keepHttp(w?.url))
             .slice(0, 100)
             .map((w, i) => ({
-              ...w,
               id: String(w?.id || `w_import_${Date.now()}_${i}`),
+              title: String(w?.title || w?.filename || "나중에 받을 영상"),
+              url: String(w.url),
+              pageUrl: keepHttp(w?.pageUrl) ? String(w.pageUrl) : String(w.url),
+              mediaUrl: keepHttp(w?.mediaUrl) ? String(w.mediaUrl) : "",
+              thumbnail: /^https?:\/\//i.test(String(w?.thumbnail || ""))
+                ? String(w.thumbnail)
+                : "",
+              quality: String(w?.quality || ""),
+              site: String(w?.site || ""),
+              tags: Array.isArray(w?.tags) ? w.tags.map(String).slice(0, 16) : [],
+              seriesId: String(w?.seriesId || ""),
+              seriesKey: String(w?.seriesKey || ""),
+              scheduleAt: Number(w?.scheduleAt) > 0 ? Number(w.scheduleAt) : 0,
+              scheduleLabel: String(w?.scheduleLabel || ""),
               at: Number(w?.at) || Date.now() - i
             }))
         : [];
@@ -471,13 +484,40 @@ const UVD = (() => {
             .filter((h) => h?.id)
             .slice(0, 100)
             .map((h, i) => ({
-              ...h,
+              id: String(h.id),
+              title: String(h?.title || h?.filename || "영상"),
+              filename: String(h?.filename || ""),
+              url: keepHttp(h?.url) ? String(h.url) : "",
+              pageUrl: keepHttp(h?.pageUrl) ? String(h.pageUrl) : keepHttp(h?.url) ? String(h.url) : "",
+              path: String(h?.path || ""),
+              downloadId: h?.downloadId ?? null,
+              status: String(h?.status || "done"),
+              error: h?.error ? String(h.error) : null,
+              errorCode: String(h?.errorCode || ""),
+              size: Number(h?.size) || 0,
+              method: String(h?.method || ""),
+              quality: String(h?.quality || ""),
+              mediaMode: String(h?.mediaMode || "video"),
+              site: String(h?.site || ""),
+              thumbnail: /^https?:\/\//i.test(String(h?.thumbnail || ""))
+                ? String(h.thumbnail)
+                : "",
+              tags: Array.isArray(h?.tags) ? h.tags.map(String).slice(0, 16) : [],
+              seriesKey: String(h?.seriesKey || ""),
+              seriesPrefix: String(h?.seriesPrefix || ""),
+              seriesId: String(h?.seriesId || ""),
+              seriesIndex: Number(h?.seriesIndex) || 0,
+              note: String(h?.note || ""),
               at: Number(h?.at) || Date.now() - i
             }))
         : [];
       const settings =
         data.settings && typeof data.settings === "object"
-          ? { ...data.settings }
+          ? Object.fromEntries(
+              Object.keys(DEFAULT_SETTINGS)
+                .filter((key) => Object.prototype.hasOwnProperty.call(data.settings, key))
+                .map((key) => [key, data.settings[key]])
+            )
           : null;
       return { settings, watchlist, history };
     } catch {

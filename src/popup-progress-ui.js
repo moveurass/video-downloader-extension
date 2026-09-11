@@ -641,8 +641,12 @@
           <button type="button" class="btn danger" data-act="cancel" data-job="${escapeAttr(job.id)}">취소</button>
         </div>`;
           } else if (status === "paused") {
+            const canResume = !!(
+              job.resumeState?.kind === "hls" && job.resumeState.partBase
+            ) || job.resumeState?.downloadId != null || !!job.resumeState?.resumeKey;
+            const resumeLabel = canResume ? "이어받기" : "다시 시작";
             actionsHtml = `<div class="dl-job-actions">
-          <button type="button" class="btn" data-act="resume" data-job="${escapeAttr(job.id)}">이어받기</button>
+          <button type="button" class="btn" data-act="resume" data-job="${escapeAttr(job.id)}">${resumeLabel}</button>
           <button type="button" class="btn danger" data-act="cancel" data-job="${escapeAttr(job.id)}">취소</button>
         </div>`;
           } else if (status === "error") {

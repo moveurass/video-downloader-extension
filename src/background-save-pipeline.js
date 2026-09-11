@@ -87,8 +87,8 @@
 
     /**
      * Wait until Chrome reports complete.
-     * CRITICAL: never treat "in_progress" as success for blob/data URLs —
-     * if we stop keepAlive early, SW dies and the download is interrupted.
+     * CRITICAL: never treat "in_progress" (including a timeout while bytes
+     * are still arriving) as success — callers would publish a truncated file.
      * @param {number} downloadId
      * @param {number} [timeoutMs]
      * @param {{ onProgress?: (p:{bytesReceived:number,totalBytes:number})=>void }} [opts]
@@ -199,16 +199,6 @@
             } else if (item?.state === "in_progress" && item.paused) {
               // Paused by the user: keep waiting, the deadline restarts on resume.
               armTimer();
-            } else if (item?.state === "in_progress" && (item.bytesReceived || 0) > 0) {
-              // Still writing after long wait — accept only if substantial progress
-              // and keep the blob URL alive a bit longer outside this promise.
-              finish(resolve, {
-                state: "in_progress",
-                downloadId,
-                path: item.filename,
-                bytesReceived: item.bytesReceived,
-                partial: true
-              });
             } else {
               finish(
                 reject,
@@ -298,25 +288,26 @@
           /* ignore */
         }
 
+        if (done.state !== "complete") {
+          throw new Error("다운로드가 완료되지 않았습니다. chrome://downloads 를 확인해 주세요");
+        }
+
         // Keep URL alive until Chrome finished reading bytes
-        const revokeDelay =
-          done.state === "complete" ? 30_000 : done.partial ? 15 * 60_000 : 60_000;
         setTimeout(() => {
           try {
             URL.revokeObjectURL(objectUrl);
           } catch {
             /* ignore */
           }
-        }, revokeDelay);
+        }, 30_000);
 
         if (id == null) throw new Error("다운로드 ID 없음");
         return {
           downloadId: id,
           filename: name,
           path,
-          state: done.state || "complete",
-          size: blob.size,
-          partial: !!done.partial
+          state: "complete",
+          size: blob.size
         };
       } catch (e) {
         try {
@@ -593,8 +584,11 @@
             } catch {
               /* ignore */
             }
-            if (msg.ok && msg.downloadId != null) resolve(msg);
-            else reject(new Error(msg.error || "저장 페이지 실패"));
+            if (msg.ok && msg.downloadId != null && msg.state !== "in_progress") {
+              resolve(msg);
+            } else {
+              reject(new Error(msg.error || "저장 페이지 실패"));
+            }
             return true;
           }
           function cleanup() {
@@ -644,21 +638,51 @@
 
       try {
         const result = await new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
+          const timeoutMs = Math.min(20 * 60 * 1000, Math.max(180_000, blob.size / 8));
+          let startedDownloadId = null;
+          let timeout = null;
+          const onTimeout = async () => {
+            if (startedDownloadId != null && chrome.downloads?.search) {
+              const [item] = await chrome.downloads
+                .search({ id: startedDownloadId })
+                .catch(() => []);
+              if (item?.state === "in_progress" && item.paused) {
+                armTimeout();
+                return;
+              }
+            }
             cleanup();
             reject(new Error("저장 페이지 시간 초과"));
-          }, Math.min(20 * 60 * 1000, Math.max(180_000, blob.size / 8)));
+          };
+          function armTimeout() {
+            clearTimeout(timeout);
+            timeout = setTimeout(onTimeout, timeoutMs);
+          }
+          armTimeout();
 
           function onMsg(msg, sender, sendResponse) {
-            if (msg?.type !== "SAVE_PAGE_DONE" || msg.key !== key) return false;
+            if (msg?.key !== key || sender?.tab?.id !== tab?.id) return false;
+            if (msg.type === "SAVE_PAGE_STARTED" && msg.downloadId != null) {
+              startedDownloadId = msg.downloadId;
+              try {
+                sendResponse({ ok: true });
+              } catch {
+                /* ignore */
+              }
+              return true;
+            }
+            if (msg.type !== "SAVE_PAGE_DONE") return false;
             cleanup();
             try {
               sendResponse({ ok: true });
             } catch {
               /* ignore */
             }
-            if (msg.ok && msg.downloadId != null) resolve(msg);
-            else reject(new Error(msg.error || "저장 페이지 실패"));
+            if (msg.ok && msg.downloadId != null && msg.state !== "in_progress") {
+              resolve(msg);
+            } else {
+              reject(new Error(msg.error || "저장 페이지 실패"));
+            }
             return true;
           }
           function cleanup() {

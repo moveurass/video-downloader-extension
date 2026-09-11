@@ -14,8 +14,13 @@ const YtDlp = (() => {
   let cachedToken = null;
   let tokenLoaded = false;
   try {
+    chrome.storage?.session?.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" });
+  } catch {
+    /* ignore */
+  }
+  try {
     chrome.storage?.onChanged?.addListener((changes, area) => {
-      if (area === "local" && changes.helperToken) {
+      if ((area === "session" || area === "local") && changes.helperToken) {
         cachedToken = (changes.helperToken.newValue || "").trim() || null;
         tokenLoaded = true;
       }
@@ -24,14 +29,42 @@ const YtDlp = (() => {
     /* ignore */
   }
 
+  function storageArea(name) {
+    try {
+      return chrome.storage?.[name] || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function readStoredToken() {
+    for (const name of ["session", "local"]) {
+      const area = storageArea(name);
+      if (!area?.get) continue;
+      try {
+        const st = await area.get("helperToken");
+        const token = String(st.helperToken || "").trim();
+        if (token) return token;
+      } catch {
+        /* try next */
+      }
+    }
+    return null;
+  }
+
+  async function writeStoredToken(token) {
+    const session = storageArea("session");
+    if (session?.set) {
+      await session.set({ helperToken: token });
+      return;
+    }
+    const local = storageArea("local");
+    if (local?.set) await local.set({ helperToken: token });
+  }
+
   async function authHeaders() {
     if (!tokenLoaded) {
-      try {
-        const st = await chrome.storage.local.get("helperToken");
-        cachedToken = String(st.helperToken || "").trim() || null;
-      } catch {
-        cachedToken = null;
-      }
+      cachedToken = await readStoredToken();
       tokenLoaded = true;
     }
     return cachedToken ? { "X-UVD-Token": cachedToken } : {};
@@ -66,7 +99,7 @@ const YtDlp = (() => {
         if (!response.ok || !data.ok) {
           return { pairingError: data.error || "pairing failed" };
         }
-        await chrome.storage.local.set({ helperToken: token });
+        await writeStoredToken(token);
         cachedToken = token;
         tokenLoaded = true;
         tokenVerifiedAt = Date.now();

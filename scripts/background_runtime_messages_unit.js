@@ -47,7 +47,10 @@ function makeHarness(options = {}) {
     handleDirectDownloadMessage: handler("direct")
   };
   const { dispatch } = createDispatcher(deps);
-  const sender = { tab: { id: 17 } };
+  const sender = {
+    tab: { id: 17 },
+    url: "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/popup.html"
+  };
   const sendResponse = (response) => responses.push(response);
   return { dispatch, sender, sendResponse, calls, responses };
 }

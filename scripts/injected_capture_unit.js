@@ -38,8 +38,14 @@ function makePage() {
   class HTMLMediaElement {
     play() {}
   }
+  const BRIDGE_NONCE = "0123456789abcdef0123456789abcdef";
   const sandbox = {
     window,
+    document: {
+      currentScript: {
+        src: `chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/src/injected.js#${BRIDGE_NONCE}`
+      }
+    },
     MediaSource,
     XMLHttpRequest,
     HTMLMediaElement,
@@ -74,13 +80,16 @@ function makePage() {
     fs.readFileSync(path.join(__dirname, "../src/injected.js"), "utf8"),
     sandbox
   );
-  return { sandbox, posted, appended, MediaSource: sandbox.MediaSource };
+  return { sandbox, posted, appended, MediaSource: sandbox.MediaSource, nonce: BRIDGE_NONCE };
 }
 
 function ask(page, type) {
   const requestId = `${type}_${Math.random()}`;
   const before = page.posted.length;
-  page.sandbox.window.postMessage({ source: "uvd-content", type, requestId }, "*");
+  page.sandbox.window.postMessage(
+    { source: "uvd-content", nonce: page.nonce, type, requestId },
+    "*"
+  );
   const reply = page.posted
     .slice(before)
     .find((m) => m.source === "universal-video-downloader" && m.requestId === requestId);
@@ -131,7 +140,14 @@ async function main() {
   assert.equal(ask(page, "CAPTURE_STATUS").mse[0].total, 60_000, "over-budget append is not retained");
 
   // Disarm clears everything.
-  page.sandbox.window.postMessage({ source: "uvd-content", type: "DISARM_CAPTURE" }, "*");
+  page.sandbox.window.postMessage(
+    { source: "uvd-content", nonce: page.nonce, type: "DISARM_CAPTURE" },
+    "*"
+  );
+
+  // A page-forged ARM_CAPTURE without the nonce must not arm capture.
+  page.sandbox.window.postMessage({ source: "uvd-content", type: "ARM_CAPTURE" }, "*");
+  assert.equal(ask(page, "CAPTURE_STATUS").armed, false, "forged ARM_CAPTURE is ignored");
   status = ask(page, "CAPTURE_STATUS");
   assert.equal(status.armed, false);
   assert.equal(status.netTotal, 0);
@@ -145,6 +161,7 @@ async function main() {
   assert.match(settings, /captureAlways:\s*false/, "capture is opt-in by default");
   const content = fs.readFileSync(path.join(__dirname, "../src/content.js"), "utf8");
   assert.match(content, /captureAlways === true\) armPageCapture\(\)/);
+  assert.match(content, /data\.nonce !== BRIDGE_NONCE/, "content ignores page messages without the nonce");
   assert.match(content, /\.player-wrap/, "known-code cover reads player-wrap background");
 
   console.log("injected capture: opt-in retention, budget, export handshake passed");

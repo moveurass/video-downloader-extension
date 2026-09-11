@@ -125,6 +125,15 @@
       };
     }
 
+    function jobCanResume(job) {
+      const state = job?.resumeState;
+      if (!state || typeof state !== "object") return false;
+      if (state.kind === "hls" && state.partBase) return true;
+      if (state.kind === "direct" && state.downloadId != null) return true;
+      if (state.resumeKey) return true;
+      return false;
+    }
+
     const INTERRUPTED_RESUMABLE_MESSAGE = "중단됨 · 이어받기 가능";
     const INTERRUPTED_ERROR_MESSAGE =
       "브라우저가 재시작되어 다운로드가 중단되었습니다";
@@ -400,7 +409,9 @@
       if (job.status === "cancelled" || job.status === "done") return;
       job.status = "paused";
       job.phase = "paused";
-      job.message = "일시정지됨 · 이어받기 가능";
+      job.message = jobCanResume(job)
+        ? "일시정지됨 · 이어받기 가능"
+        : "일시정지됨 · 처음부터 다시 시작";
       job.pauseRequested = true;
       job.cancelRequested = false;
       job.error = null;
@@ -917,22 +928,17 @@
         const job = activeDownloads.get(explicitJobId);
         if (job) return job;
       }
-      const running = countRunningJobs();
-      if (running <= 1 && currentJobContext) {
-        const contextJob = activeDownloads.get(currentJobContext);
-        if (contextJob?.status === "running") return contextJob;
-      }
-      if (running === 1) {
-        for (const job of activeDownloads.values()) {
-          if (job.status === "running") return job;
-        }
-      }
-      if (running > 1) return null;
       if (tabId != null && tabId >= 0) {
         const mapped = tabJobMap.get(tabId);
         if (mapped) {
           const job = activeDownloads.get(mapped);
           if (job?.status === "running") return job;
+        }
+      }
+      const running = countRunningJobs();
+      if (running === 1) {
+        for (const job of activeDownloads.values()) {
+          if (job.status === "running") return job;
         }
       }
       return null;

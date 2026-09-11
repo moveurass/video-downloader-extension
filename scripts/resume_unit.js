@@ -1211,6 +1211,48 @@ async function testPausedFinalSaveIsNotTornDown() {
   assert.match(saveSource, /item\.paused\)\s*\{\s*\n\s*\/\/ User paused/);
 }
 
+async function testIncompleteChromeWriteIsNotSuccess() {
+  const timers = [];
+  const realSetTimeout = global.setTimeout;
+  const realSetInterval = global.setInterval;
+  const realClearTimeout = global.clearTimeout;
+  const realClearInterval = global.clearInterval;
+  global.setTimeout = (fn, ms) => {
+    const id = timers.push({ fn, ms, cleared: false });
+    return id;
+  };
+  global.clearTimeout = (id) => {
+    if (timers[id - 1]) timers[id - 1].cleared = true;
+  };
+  global.setInterval = () => 999;
+  global.clearInterval = () => {};
+  try {
+    const pipeline = SavePipeline.createPipeline({
+      chrome: {
+        runtime: {},
+        downloads: {
+          search: async () => [
+            { id: 9, state: "in_progress", paused: false, bytesReceived: 80, filename: "x.mp4" }
+          ],
+          onChanged: { addListener() {}, removeListener() {} }
+        }
+      },
+      safeDownloadName: String,
+      relDownloadPath: async (v) => v
+    });
+    const waiting = pipeline.waitDownloadComplete(9, 50);
+    const deadline = timers.find((t) => t.ms === 50 && !t.cleared);
+    assert.ok(deadline, "deadline armed");
+    await deadline.fn();
+    await assert.rejects(waiting, /완료되지 않았습니다/);
+  } finally {
+    global.setTimeout = realSetTimeout;
+    global.setInterval = realSetInterval;
+    global.clearTimeout = realClearTimeout;
+    global.clearInterval = realClearInterval;
+  }
+}
+
 async function testManifestsRouteByMime() {
   // A DASH manifest detected only by Content-Type must go to the helper, and
   // a token-less HLS manifest must go to the HLS path — never to a direct
@@ -1614,6 +1656,7 @@ async function main() {
   await testByteRangeSegmentsFetchSubRanges();
   await testStartChromeDownloadKeepsDottedTitles();
   await testPausedFinalSaveIsNotTornDown();
+  await testIncompleteChromeWriteIsNotSuccess();
   await testManifestsRouteByMime();
   await testRefererRuleOnlyTargetsExtensionRequests();
   await testNativeDirectPauseResume();
