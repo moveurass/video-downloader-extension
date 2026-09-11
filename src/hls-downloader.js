@@ -334,6 +334,26 @@ const HLS = (() => {
     return s;
   }
 
+  /**
+   * Soft-fail only this segment when allowPartial is on. A prior 403 on
+   * another segment must not skip decrypt/range failures here; a 5xx/timeout
+   * with no 403s at all is still skippable.
+   */
+  function isSkippableSegmentError(error) {
+    const msg = String(error?.message || error || "");
+    if (!msg || /CANCELLED/i.test(msg)) return false;
+    if (/범위|바이트 범위|byte.?range|불일치/i.test(msg)) return false;
+    if (/AES|decrypt|복호|OperationError|crypto\.subtle/i.test(msg)) return false;
+    if (/HTTP\s*(401|403|404|408|410|429|5\d\d)\b/i.test(msg)) return true;
+    if (/접근 거부/i.test(msg)) return true;
+    if (/요청 시간 초과|시간 초과|timed?\s*out/i.test(msg)) return true;
+    if (/네트워크|Failed to fetch|NetworkError|Load failed|CORS/i.test(msg)) {
+      return true;
+    }
+    if (/세그먼트 데이터 없음/i.test(msg)) return true;
+    return false;
+  }
+
   function headerBag(h) {
     if (!h) return {};
     if (h instanceof Headers) {
@@ -1427,9 +1447,14 @@ const HLS = (() => {
             }
           }
         }
-        // Soft-fail individual segment if enough others succeed (caller checks ratio)
-        if (softFail && hard403 > 0) {
-          console.warn("[HLS] segment skip after 403:", (seg.url || "").slice(0, 80));
+        // Soft-fail this segment only when *its* last error is skippable.
+        // hard403 is reserved for concurrency backoff, not a global skip flag.
+        if (softFail && isSkippableSegmentError(lastErr)) {
+          console.warn(
+            "[HLS] segment skip:",
+            String(lastErr?.message || lastErr || "").slice(0, 80),
+            (seg.url || "").slice(0, 80)
+          );
           return null;
         }
         throw lastErr || new Error("세그먼트 실패: " + (seg.url || "").slice(0, 60));
@@ -1570,7 +1595,8 @@ const HLS = (() => {
     pickVariant,
     parseByteRange,
     segmentIdentity,
-    interleaveTs
+    interleaveTs,
+    isSkippableSegmentError
   };
 })();
 

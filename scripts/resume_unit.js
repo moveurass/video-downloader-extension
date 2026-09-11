@@ -752,6 +752,18 @@ async function testPartialDownloadsAreExplicit() {
     finished.message,
     "final outcome text is not rewritten by the segment-word filter"
   );
+
+  const saveSource = fs.readFileSync(path.join(__dirname, "../src/save.js"), "utf8");
+  assert.match(
+    saveSource,
+    /async function report\(type, payload\)/,
+    "save page report takes an explicit type"
+  );
+  assert.match(
+    saveSource,
+    /\{\s*key,\s*\.\.\.payload,\s*type\s*\}/,
+    "report type wins over payload.type"
+  );
 }
 
 async function testInterruptedRunningJobsAreRestored() {
@@ -1644,6 +1656,187 @@ async function testPlaceholderSupportProbeRouting() {
   }
 }
 
+async function testHlsSkippableSegmentPolicy() {
+  assert.equal(HLS.isSkippableSegmentError(new Error("Segment HTTP 503")), true);
+  assert.equal(HLS.isSkippableSegmentError(new Error("Segment HTTP 403")), true);
+  assert.equal(HLS.isSkippableSegmentError(new Error("Segment HTTP 404")), true);
+  assert.equal(HLS.isSkippableSegmentError(new Error("요청 시간 초과")), true);
+  assert.equal(
+    HLS.isSkippableSegmentError(new Error("네트워크 접근 실패 (CORS/차단)")),
+    true
+  );
+  assert.equal(HLS.isSkippableSegmentError(new Error("세그먼트 데이터 없음")), true);
+  assert.equal(
+    HLS.isSkippableSegmentError(
+      new Error("세그먼트 범위 응답 크기 불일치 (10/20)")
+    ),
+    false
+  );
+  assert.equal(
+    HLS.isSkippableSegmentError(new Error("AES-CBC decrypt failed")),
+    false
+  );
+  assert.equal(HLS.isSkippableSegmentError(new Error("CANCELLED")), false);
+
+  async function withFakeHlsFetch(handler, run) {
+    const originalFetch = global.fetch;
+    const originalTimeout = global.setTimeout;
+    global.setTimeout = (fn, _ms, ...args) => originalTimeout(fn, 0, ...args);
+    global.fetch = handler;
+    try {
+      return await run();
+    } finally {
+      global.fetch = originalFetch;
+      global.setTimeout = originalTimeout;
+    }
+  }
+
+  const playlist = [
+    "#EXTM3U",
+    "#EXT-X-TARGETDURATION:10",
+    ...Array.from({ length: 6 }, (_, i) => [`#EXTINF:10,`, `seg${i}.ts`]).flat(),
+    "#EXT-X-ENDLIST"
+  ].join("\n");
+  const segment = new Uint8Array(120_000);
+  segment[0] = 0x47;
+
+  const engine503 = await withFakeHlsFetch(async (url) => {
+    const value = String(url);
+    if (value.endsWith("playlist.m3u8")) {
+      return new Response(playlist, { status: 200 });
+    }
+    if (value.endsWith("seg3.ts")) return new Response("", { status: 503 });
+    return new Response(segment.slice(), { status: 200 });
+  }, () =>
+    HLS.downloadAndMerge("https://media.test/playlist.m3u8", {
+      allowPartial: true,
+      speedProfile: "safe"
+    })
+  );
+  assert.equal(engine503.partial, true, "503 without any 403 is still skippable");
+  assert.equal(engine503.skippedSegments, 1);
+
+  const aesPlaylist = [
+    "#EXTM3U",
+    "#EXT-X-TARGETDURATION:10",
+    '#EXT-X-KEY:METHOD=AES-128,URI="key.bin"',
+    ...Array.from({ length: 6 }, (_, i) => [`#EXTINF:10,`, `seg${i}.ts`]).flat(),
+    "#EXT-X-ENDLIST"
+  ].join("\n");
+  const aesKey = new Uint8Array(16);
+  await assert.rejects(
+    () =>
+      withFakeHlsFetch(async (url) => {
+        const value = String(url);
+        if (value.endsWith("playlist.m3u8")) {
+          return new Response(aesPlaylist, { status: 200 });
+        }
+        if (value.endsWith("key.bin")) {
+          return new Response(aesKey.slice(), { status: 200 });
+        }
+        if (value.endsWith("seg0.ts")) return new Response("", { status: 403 });
+        return new Response(segment.slice(), { status: 200 });
+      }, () =>
+        HLS.downloadAndMerge("https://media.test/playlist.m3u8", {
+          allowPartial: true,
+          speedProfile: "safe"
+        })
+      ),
+    (error) => {
+      const msg = String(error?.message || error);
+      assert.equal(
+        HLS.isSkippableSegmentError(error),
+        false,
+        `decrypt/AES failure must not soft-skip: ${msg}`
+      );
+      return true;
+    }
+  );
+}
+
+async function testWaitTabCompleteTimeoutIsNotSuccess() {
+  function makeChrome(getImpl) {
+    const listeners = [];
+    return {
+      listeners,
+      chrome: {
+        tabs: {
+          get: getImpl,
+          onUpdated: {
+            addListener(fn) {
+              listeners.push(fn);
+            },
+            removeListener(fn) {
+              const index = listeners.indexOf(fn);
+              if (index >= 0) listeners.splice(index, 1);
+            }
+          }
+        }
+      }
+    };
+  }
+
+  {
+    const { chrome } = makeChrome(async () => ({ id: 3, status: "complete" }));
+    const executor = DownloadExecution.createExecutor({ chrome });
+    await executor.waitTabComplete(3, 50);
+  }
+
+  {
+    const { chrome, listeners } = makeChrome(async () => ({
+      id: 3,
+      status: "loading"
+    }));
+    const executor = DownloadExecution.createExecutor({ chrome });
+    const pending = executor.waitTabComplete(3, 50_000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(listeners.length, 1);
+    listeners[0](3, { status: "complete" });
+    await pending;
+  }
+
+  const timers = [];
+  const realSetTimeout = global.setTimeout;
+  const realClearTimeout = global.clearTimeout;
+  global.setTimeout = (fn, ms) => {
+    timers.push({ fn, ms, cleared: false });
+    return timers.length;
+  };
+  global.clearTimeout = (id) => {
+    if (timers[id - 1]) timers[id - 1].cleared = true;
+  };
+  try {
+    {
+      let gets = 0;
+      const { chrome } = makeChrome(async () => {
+        gets += 1;
+        return { id: 4, status: gets === 1 ? "loading" : "complete" };
+      });
+      const executor = DownloadExecution.createExecutor({ chrome });
+      const pending = executor.waitTabComplete(4, 1000);
+      await new Promise((resolve) => setImmediate(resolve));
+      const timer = timers.find((item) => item.ms === 1000 && !item.cleared);
+      assert.ok(timer, "timeout is armed while the tab is still loading");
+      await timer.fn();
+      await pending;
+    }
+
+    {
+      const { chrome } = makeChrome(async () => ({ id: 5, status: "loading" }));
+      const executor = DownloadExecution.createExecutor({ chrome });
+      const pending = executor.waitTabComplete(5, 2500);
+      await new Promise((resolve) => setImmediate(resolve));
+      const timer = timers.find((item) => item.ms === 2500 && !item.cleared);
+      assert.ok(timer, "timeout is armed for an unfinished tab");
+      await timer.fn();
+      await assert.rejects(pending, /완전히 열리기 전에 시간이 초과/);
+    }
+  } finally {
+    global.setTimeout = realSetTimeout;
+    global.clearTimeout = realClearTimeout;
+  }
+}
+
 async function main() {
   await testHlsSkipsCheckpointedSegments();
   await testLiveHlsRequiresSequenceIdentity();
@@ -1651,6 +1844,8 @@ async function main() {
   await testFinalSavePublishesNativeCheckpoint();
   await testHlsRuntimePreservesPauseCheckpoint();
   await testPartialDownloadsAreExplicit();
+  await testHlsSkippableSegmentPolicy();
+  await testWaitTabCompleteTimeoutIsNotSuccess();
   await testInterruptedRunningJobsAreRestored();
   await testDirectTransportRegistersCheckpoint();
   await testByteRangeSegmentsFetchSubRanges();

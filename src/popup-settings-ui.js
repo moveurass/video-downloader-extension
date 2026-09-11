@@ -141,8 +141,8 @@
         const qbs = uvdSettings.qualityBySite || {};
         if (sub) sub.value = uvdSettings.subfolder || "VideoDownloader";
         if (tpl) {
-          // Always show/use readable legacy names
-          tpl.value = "legacy";
+          const stored = String(uvdSettings.filenameTemplate || "legacy");
+          tpl.value = /^legacy$/i.test(stored) ? "" : stored;
         }
         if (mode) mode.value = uvdSettings.mediaMode || "video";
         if (maxHistory) {
@@ -265,8 +265,7 @@
       }
 
       async function saveSettingsFromForm() {
-        // Always readable legacy filenames (title + optional quality)
-        const template = "legacy";
+        const template = $("#setTemplate")?.value?.trim() || "legacy";
         const uiDensity = $("#setUiDensity")?.value || "compact";
         const patch = {
           subfolder:
