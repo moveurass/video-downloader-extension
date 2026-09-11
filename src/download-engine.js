@@ -292,6 +292,43 @@
     return full;
   }
 
+  function escapeDownloadRegex(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  /**
+   * Chrome's default "uniquify" adds " (1)" even when the file is gone and
+   * only a download-history row remains. Overwrite when nothing exists on
+   * disk; uniquify only for a real in-progress or completed file.
+   */
+  async function chooseDownloadConflictAction(chromeObj, filename) {
+    const relative = String(filename || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "");
+    const leaf = relative.split("/").filter(Boolean).pop() || "";
+    if (!leaf || !chromeObj?.downloads?.search) return "overwrite";
+    try {
+      const items = await chromeObj.downloads.search({
+        filenameRegex: `${escapeDownloadRegex(leaf)}$`,
+        exists: true,
+        limit: 15
+      });
+      const hit = (items || []).some((item) => {
+        if (!item || item.state === "interrupted") return false;
+        const path = String(item.filename || "").replace(/\\/g, "/");
+        return (
+          path.endsWith(`/${relative}`) ||
+          path.endsWith(`/${leaf}`) ||
+          path === relative ||
+          path === leaf
+        );
+      });
+      return hit ? "uniquify" : "overwrite";
+    } catch {
+      return "overwrite";
+    }
+  }
+
   return {
     extFromUrl,
     isHlsUrl,
@@ -307,6 +344,7 @@
     phaseRank,
     hlsPhasePercent,
     estimateSavePercent,
-    safeDownloadName
+    safeDownloadName,
+    chooseDownloadConflictAction
   };
 });

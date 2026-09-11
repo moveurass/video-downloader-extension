@@ -156,15 +156,36 @@ function sanitizeName(filename) {
   return name;
 }
 
+async function chooseConflictAction(filename) {
+  const leaf = String(filename || "").replace(/\\/g, "/").split("/").pop() || "";
+  if (!leaf || !chrome.downloads?.search) return "overwrite";
+  try {
+    const items = await chrome.downloads.search({
+      filenameRegex: `${leaf.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      exists: true,
+      limit: 15
+    });
+    const hit = (items || []).some((item) => {
+      if (!item || item.state === "interrupted") return false;
+      const path = String(item.filename || "").replace(/\\/g, "/");
+      return path.endsWith(`/${filename}`) || path.endsWith(`/${leaf}`) || path === leaf;
+    });
+    return hit ? "uniquify" : "overwrite";
+  } catch {
+    return "overwrite";
+  }
+}
+
 function tryDownload(objectUrl, name) {
-  const tryDl = (path) =>
-    new Promise((resolve, reject) => {
+  const tryDl = async (path) => {
+    const conflictAction = await chooseConflictAction(path);
+    return new Promise((resolve, reject) => {
       chrome.downloads.download(
         {
           url: objectUrl,
           filename: path,
           saveAs: false,
-          conflictAction: "uniquify"
+          conflictAction
         },
         (id) => {
           if (chrome.runtime.lastError || id == null) {
@@ -175,6 +196,7 @@ function tryDownload(objectUrl, name) {
         }
       );
     });
+  };
 
   return tryDl(`VideoDownloader/${name}`).catch(() => tryDl(name));
 }

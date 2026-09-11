@@ -165,6 +165,16 @@ async function main() {
     }),
     true
   );
+  equal(
+    helperHandledThumbnail({
+      downloadId: null,
+      ytdlp: true,
+      path: "/Downloads/VideoDownloader/movie.mp4",
+      writeThumbnail: true
+    }),
+    false,
+    "a requested helper thumbnail is not treated as saved"
+  );
 
   const harness = makeHarness();
   const {
@@ -319,7 +329,7 @@ async function main() {
   );
   const helperDone = manager.activeDownloads.get(helperId);
   equal(helperDone.status, "done");
-  equal(lateCalls.saveCompanionThumbnail, 1);
+  equal(lateCalls.saveCompanionThumbnail, 2);
   ok(helperDone.message.includes("helper-video.mkv"));
   ok(helperDone.message.includes("/Users/unit/Downloads/VideoDownloader"));
   ok(helperDone.message.includes("Chrome 다운로드 선반"));
@@ -344,7 +354,7 @@ async function main() {
     },
     null
   );
-  equal(lateCalls.saveCompanionThumbnail, 2);
+  equal(lateCalls.saveCompanionThumbnail, 3);
 
   const detachedId = manager.createDownloadJob({
     tabId: 77,
