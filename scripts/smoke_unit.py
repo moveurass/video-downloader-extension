@@ -198,7 +198,26 @@ def main() -> int:
         and helper_server.is_tiktok_video_url(qa_tiktok)
         and helper_server.reject_tiktok_non_video_target(qa_tiktok) is None
         and helper_server.expand_tiktok_share_url(qa_tiktok)
-        == "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+        == "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+        and helper_server.tiktok_formats_target(
+            qa_tiktok, "https://www.tiktok.com/explore"
+        )
+        == (
+            "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+            None,
+        )
+        and helper_server.tiktok_formats_target(
+            "https://www.tiktok.com/explore", "https://www.tiktok.com/explore"
+        )
+        == (None, helper_server.tiktok_need_permalink_message()),
+    )
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 400
+    check(
+        "helper cover bytes become a JPEG data URL",
+        helper_server.guess_image_mime(jpeg) == "image/jpeg"
+        and helper_server.image_bytes_to_data_url(jpeg).startswith(
+            "data:image/jpeg;base64,"
+        ),
     )
     check(
         "TikTok permalink normalize and explore rejection",

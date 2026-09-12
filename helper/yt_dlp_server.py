@@ -1019,10 +1019,30 @@ def output_template_basename(payload: dict) -> str:
     return "%(title).100s.%(ext)s"
 
 
-def download_image_to_file(image_url: str, dest: Path, referer: str = "") -> bool:
-    """Save a cover/thumbnail image next to a TikTok video. Returns True on success."""
+def guess_image_mime(data: bytes, ctype: str = "") -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    cleaned = (ctype or "").split(";", 1)[0].strip().lower()
+    if cleaned.startswith("image/") and "octet-stream" not in cleaned:
+        return cleaned
+    return "image/jpeg"
+
+
+def image_bytes_to_data_url(data: bytes, ctype: str = "") -> str:
+    mime = guess_image_mime(data, ctype)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def download_image_bytes(image_url: str, referer: str = "") -> tuple[bytes, str] | None:
+    """Fetch a cover/thumbnail with a TikTok-friendly Referer. Returns (bytes, content-type)."""
     if not image_url or not image_url.startswith("http"):
-        return False
+        return None
     hdrs = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
@@ -1033,10 +1053,10 @@ def download_image_to_file(image_url: str, dest: Path, referer: str = "") -> boo
         with urlopen(req, timeout=20) as resp:
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if ctype and not ctype.startswith("image/") and "octet-stream" not in ctype:
-                return False
+                return None
             data = resp.read(2_500_000)
         if len(data) < 400:
-            return False
+            return None
         is_image = (
             data[:3] == b"\xff\xd8\xff"
             or data[:8] == b"\x89PNG\r\n\x1a\n"
@@ -1044,7 +1064,19 @@ def download_image_to_file(image_url: str, dest: Path, referer: str = "") -> boo
             or data[:4] == b"GIF8"
         )
         if not is_image and not ctype.startswith("image/"):
-            return False
+            return None
+        return data, ctype
+    except Exception:
+        return None
+
+
+def download_image_to_file(image_url: str, dest: Path, referer: str = "") -> bool:
+    """Save a cover/thumbnail image next to a TikTok video. Returns True on success."""
+    got = download_image_bytes(image_url, referer)
+    if not got:
+        return False
+    data, _ctype = got
+    try:
         dest.write_bytes(data)
         return dest.is_file() and dest.stat().st_size >= 400
     except Exception:
@@ -1053,6 +1085,35 @@ def download_image_to_file(image_url: str, dest: Path, referer: str = "") -> boo
         except Exception:
             pass
         return False
+
+
+def tiktok_formats_target(url: str, page_url: str = "") -> tuple[str | None, str | None]:
+    """Prefer a video permalink over Explore/FYP when probing /formats."""
+    for candidate in (url, page_url):
+        cleaned = clean_tiktok_url(candidate or "")
+        if is_tiktok_video_url(cleaned):
+            return cleaned, None
+    for candidate in (url, page_url):
+        err = reject_tiktok_non_video_target(candidate or "")
+        if err:
+            return None, err
+    return None, None
+
+
+def tiktok_formats_preview(url: str, page_url: str = "") -> dict | None:
+    """Resolve a TikTok permalink for title/cover without yt-dlp."""
+    target, err = tiktok_formats_target(url, page_url)
+    if err or not target:
+        return None
+    resolved = resolve_tiktok_via_public_apis(target)
+    if not resolved:
+        return None
+    return {
+        "title": resolved.get("title") or "",
+        "thumbnail": resolved.get("cover") or "",
+        "duration": resolved.get("duration") or 0,
+        "id": resolved.get("id") or "",
+    }
 
 
 def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) -> bool:
@@ -3306,11 +3367,67 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        # Fetch a remote cover as a data URL (TikTok CDN blocks extension origin)
+        if self.path == "/thumb" or self.path.startswith("/thumb?"):
+            payload = read_json(self)
+            image_url = str(payload.get("url") or "").strip()
+            referer = str(payload.get("referer") or payload.get("pageUrl") or "").strip()
+            if image_url.startswith("data:image/"):
+                send_json(self, 200, {"ok": True, "dataUrl": image_url})
+                return
+            if not image_url.startswith(("http://", "https://")):
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            got = download_image_bytes(image_url, referer)
+            if not got:
+                send_json(self, 502, {"ok": False, "error": "thumbnail fetch failed"})
+                return
+            data, ctype = got
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "dataUrl": image_bytes_to_data_url(data, ctype),
+                    "bytes": len(data),
+                },
+            )
+            return
+
         # List available video heights / quality labels (no download)
         if self.path == "/formats" or self.path.startswith("/formats?"):
             payload = read_json(self)
+            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
+            page_url = (payload.get("pageUrl") or url or "").strip()
+            if not url:
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            tt_target, tt_err = tiktok_formats_target(url, page_url)
+            if tt_err:
+                send_json(self, 400, {"ok": False, "error": tt_err})
+                return
+            tt_meta = tiktok_formats_preview(url, page_url) if tt_target else None
             bin_path = find_ytdlp()
             if not bin_path:
+                if tt_meta and (tt_meta.get("thumbnail") or tt_meta.get("title")):
+                    send_json(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "url": tt_target or url,
+                            "title": tt_meta.get("title") or "",
+                            "duration": tt_meta.get("duration") or 0,
+                            "estimatedSize": 0,
+                            "thumbnail": tt_meta.get("thumbnail") or "",
+                            "heights": [],
+                            "qualities": [{"id": "best", "label": "최고"}],
+                            "audioTracks": [],
+                            "subtitleTracks": [],
+                            "source": "tiktok-resolve",
+                        },
+                    )
+                    return
                 send_json(
                     self,
                     503,
@@ -3320,10 +3437,6 @@ class Handler(BaseHTTPRequestHandler):
                         "hint": "pip install -U yt-dlp",
                     },
                 )
-                return
-            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
-            if not url:
-                send_json(self, 400, {"ok": False, "error": "url required"})
                 return
             site = (payload.get("site") or "").lower()
             is_youtube = is_youtube_download(site, url)
@@ -3445,6 +3558,26 @@ class Handler(BaseHTTPRequestHandler):
                     msg = verdict["message"]
                 if "IP address is blocked" in msg or "blocked from accessing" in msg:
                     msg = "TikTok 접근이 막혔습니다. 브라우저에서 재생 후 다시 열어 주세요"
+                if tt_meta and (tt_meta.get("thumbnail") or tt_meta.get("title")):
+                    send_json(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "url": tt_target or url,
+                            "title": tt_meta.get("title") or "",
+                            "duration": tt_meta.get("duration") or 0,
+                            "estimatedSize": 0,
+                            "thumbnail": tt_meta.get("thumbnail") or "",
+                            "heights": [],
+                            "qualities": [{"id": "best", "label": "최고"}],
+                            "audioTracks": [],
+                            "subtitleTracks": [],
+                            "source": "tiktok-resolve",
+                            "detail": f"포맷 조회 실패: {msg}",
+                        },
+                    )
+                    return
                 send_json(self, 500, {"ok": False, "error": f"포맷 조회 실패: {msg}"})
                 return
             finally:
@@ -3650,6 +3783,7 @@ class Handler(BaseHTTPRequestHandler):
                 primary.get("thumbnail")
                 or (primary.get("thumbnails") or [{}])[-1].get("url")
                 or info.get("thumbnail")
+                or (tt_meta.get("thumbnail") if tt_meta else "")
                 or ""
             )
             audio_tracks, subtitle_tracks = collect_track_choices(info)

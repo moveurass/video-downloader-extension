@@ -28,6 +28,28 @@
       Object.freeze({ id: "480p", label: "480p" })
     ]);
 
+    function sitesApi(deps) {
+      if (deps?.UVDSites) return deps.UVDSites;
+      if (typeof UVDSites !== "undefined") return UVDSites;
+      try {
+        return require("./site-detection.js");
+      } catch {
+        return null;
+      }
+    }
+
+    function qualityProbePageUrl(itemPage, tabUrl, sites) {
+      const item = String(itemPage || "").trim();
+      const tab = String(tabUrl || "").trim();
+      if (
+        sites?.isTiktokVideoUrl?.(item) &&
+        (!tab || !sites.sameTiktokVideo?.(tab, item))
+      ) {
+        return sites.normalizeTiktokUrl?.(item) || item;
+      }
+      return tab || item || "";
+    }
+
     function createController(deps) {
       const quality = deps.UVDQuality || defaultQuality;
       const {
@@ -313,7 +335,11 @@
         availableAudioTracks = [];
         availableSubtitleTracks = [];
         const currentTabUrl = getCurrentTabUrl();
-        const pageUrl = currentTabUrl || item?.pageUrl || item?.url || "";
+        const pageUrl = qualityProbePageUrl(
+          item?.pageUrl || item?.url || "",
+          currentTabUrl,
+          sitesApi(deps)
+        );
         const mediaUrl = item?.url || pageUrl;
         const isHls =
           item?.isHls ||
@@ -600,6 +626,7 @@
 
     return {
       createController,
+      qualityProbePageUrl,
       INITIAL_QUALITY_CHOICES,
       FALLBACK_QUALITY_CHIPS,
       heightToQualityId,

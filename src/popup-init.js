@@ -137,7 +137,8 @@
         escapeAttr,
         userError,
         pageKey,
-        ensureSiteItems
+        ensureSiteItems,
+        pastedTiktokPreviewUrl
       } = UVDPopupDisplayUtils.createUtils({
         $,
         document,
@@ -192,6 +193,7 @@
         getUvdSettings: () => uvdSettings,
         isDownloadableSiteVideo,
         isSitePage,
+        UVDSites,
         sendRuntimeMessage: (message) => chrome.runtime.sendMessage(message),
         sendTabMessage: (tabId, message) =>
           chrome.tabs.sendMessage(tabId, message),
@@ -761,7 +763,10 @@
         getAvailableAudioTracks,
         getAvailableSubtitleTracks,
         getQualitiesLoading,
-        getSeriesPending: () => seriesPending
+        getSeriesPending: () => seriesPending,
+        fetchThumbDataUrl,
+        getPastedTiktokPreviewUrl: (tabUrl) =>
+          pastedTiktokPreviewUrl(tabUrl || currentTabUrl)
       });
       const render = mediaRenderer.render;
       const patchMedia = mediaRenderer.patch;
@@ -954,6 +959,44 @@
         maybeOfferListEpisodes
       });
 
+      let lastPastedPreviewKey = "";
+      function syncPastedTikTokPreview() {
+        const paste = pastedTiktokPreviewUrl(currentTabUrl) || "";
+        if (paste === lastPastedPreviewKey) return;
+        lastPastedPreviewKey = paste;
+        if (!paste) {
+          const top = allItems[0];
+          if (
+            top &&
+            UVDSites.isTiktokVideoUrl?.(top.pageUrl || top.url) &&
+            !UVDSites.sameTiktokVideo?.(currentTabUrl, top.pageUrl || top.url) &&
+            !UVDSites.isTiktokVideoUrl?.(currentTabUrl)
+          ) {
+            allItems = [];
+            render();
+          }
+          return;
+        }
+        allItems = ensureSiteItems(allItems, {
+          url: paste,
+          title: allItems[0]?.title || "TikTok"
+        });
+        render();
+        const item = allItems[0];
+        if (!item) return;
+        Promise.resolve(loadAvailableQualities(item))
+          .then(() => {
+            if (!(typeof patchMedia === "function" && patchMedia())) render();
+          })
+          .catch(() => {});
+      }
+
+      function updateLinkCountWithPreview() {
+        const urls = updateLinkCount();
+        syncPastedTikTokPreview();
+        return urls;
+      }
+
       const {
         downloadItem,
         normalizePastedUrl,
@@ -986,7 +1029,7 @@
         renderDownloadQueue,
         runningJobCount,
         ensureQueuePoll,
-        updateLinkCount,
+        updateLinkCount: updateLinkCountWithPreview,
         updateQuickPageUi,
         loadPlaylistInfo,
         applySiteDefaultQuality,
@@ -1012,7 +1055,7 @@
         render,
         downloadByPastedLink,
         downloadThisPage,
-        updateLinkCount,
+        updateLinkCount: updateLinkCountWithPreview,
         switchTab,
         applyModeChips,
         updateFooterNote,

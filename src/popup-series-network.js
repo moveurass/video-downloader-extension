@@ -8,7 +8,7 @@
   function createClient(deps) {
     const thumbCache = new Map();
 
-    async function fetchThumbDataUrl(url) {
+    async function fetchThumbDataUrl(url, referer) {
       const key = String(url || "").trim();
       if (!key) return "";
       if (key.startsWith("data:image/")) return key;
@@ -17,7 +17,8 @@
         const response = await deps.sendMessage({
           type: "FETCH_THUMB",
           url: key,
-          tabId: deps.getTabId()
+          tabId: deps.getTabId(),
+          referer: referer || deps.getPageUrl?.() || ""
         });
         const dataUrl = response?.ok && String(response.dataUrl || "").startsWith("data:image/")
           ? response.dataUrl

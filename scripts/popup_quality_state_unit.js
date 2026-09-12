@@ -355,6 +355,56 @@ async function main() {
   check(QualityState.heightToQualityId(1440), "1440p", "quality alias exported");
   check(QualityState.formatMb(5 * 1024 * 1024), "5.0MB", "format alias exported");
 
+  const Sites = require("../src/site-detection.js");
+  const qaPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  check(
+    QualityState.qualityProbePageUrl(
+      qaPermalink,
+      "https://www.tiktok.com/explore",
+      Sites
+    ),
+    qaPermalink,
+    "quality probe uses the pasted TikTok permalink instead of Explore"
+  );
+  check(
+    QualityState.qualityProbePageUrl(
+      qaPermalink,
+      qaPermalink + "?is_from_webapp=1",
+      Sites
+    ),
+    qaPermalink + "?is_from_webapp=1",
+    "same TikTok video keeps the current tab URL for the quality probe"
+  );
+
+  const exploreHarness = makeHarness();
+  exploreHarness.setCurrentTabUrl("https://www.tiktok.com/explore");
+  exploreHarness.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true
+  }]);
+  exploreHarness.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    title: "jumping killing shoot"
+  });
+  await exploreHarness.controller.loadAvailableQualities(
+    exploreHarness.getAllItems()[0]
+  );
+  check(
+    exploreHarness.runtimeMessages.at(-1).pageUrl,
+    qaPermalink,
+    "LIST_QUALITIES pageUrl is the pasted permalink while the tab is Explore"
+  );
+  check(
+    exploreHarness.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/cover",
+    "formats cover hydrates an empty paste-target card"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

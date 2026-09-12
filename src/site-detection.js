@@ -107,6 +107,21 @@
    * Credentialed thumbnail fetches must stay on the page's site, or on a
    * known video CDN when the page itself is a known-code host.
    */
+  function isTikTokImageCdnHost(host) {
+    const h = String(host || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    if (!h) return false;
+    return (
+      /(?:^|\.)tiktokcdn(?:-[a-z0-9]+)?\.com$/i.test(h) ||
+      /(?:^|\.)ibyteimg\.com$/i.test(h) ||
+      /(?:^|\.)byteicdn\.com$/i.test(h) ||
+      /(?:^|\.)byteoversea\.com$/i.test(h) ||
+      /(?:^|\.)muscdn\.com$/i.test(h) ||
+      /(?:^|\.)tiktokv\.com$/i.test(h)
+    );
+  }
+
   function isTrustedThumbUrl(pageUrl, imageUrl) {
     let pageHost = "";
     let imageHost = "";
@@ -122,6 +137,10 @@
       return false;
     }
     if (isSameRegistrableSite(pageHost, imageHost)) return true;
+    // TikTok covers live on ByteDance image CDNs (often no .jpg in the path).
+    // Explore/FYP tabs are still first-party TikTok, so page-credentialed
+    // FETCH_THUMB_PAGE must be allowed for those hosts.
+    if (isTiktokUrl(pageUrl) && isTikTokImageCdnHost(imageHost)) return true;
     return isKnownCodeHost(pageHost) && isKnownVideoCdnHost(imageHost);
   }
 
@@ -661,6 +680,7 @@
     isSameRegistrableSite,
     isKnownCodeHost,
     isKnownVideoCdnHost,
+    isTikTokImageCdnHost,
     isTrustedThumbUrl,
     isYoutubeUrl,
     youtubeVideoId,

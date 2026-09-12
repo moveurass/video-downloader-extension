@@ -655,6 +655,50 @@ async function main() {
     "CAWB-035 실제 영상 제목 받기",
     "primary action uses the human title instead of the raw URL"
   );
+  check(
+    MediaRenderer.needsRemoteThumbHydration(
+      "https://p19-common-sign.tiktokcdn-us.com/obj/tos/~tplv-cropcenter"
+    ),
+    true,
+    "TikTok CDN covers need FETCH_THUMB hydration"
+  );
+  check(
+    MediaRenderer.needsRemoteThumbHydration("data:image/jpeg;base64,abc"),
+    false,
+    "data URLs are already displayable"
+  );
+
+  const hydrateItem = {
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    pageUrl: "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  };
+  let hydratedSrc = hydrateItem.thumbnail;
+  const hydrateImg = {
+    getAttribute: (name) => (name === "src" ? hydratedSrc : ""),
+    setAttribute: (name, value) => {
+      if (name === "src") hydratedSrc = value;
+    }
+  };
+  const hydrateCard = {
+    querySelector: (selector) =>
+      selector === ".thumb-img" ? hydrateImg : null
+  };
+  const hydrateRenderer = MediaRenderer.createRenderer({
+    listEl: { querySelector: (selector) => (selector === ".card" ? hydrateCard : null) },
+    document: {},
+    fetchThumbDataUrl: async (url, referer) => {
+      check(url, hydrateItem.thumbnail, "hydrate fetches the CDN cover");
+      check(referer, hydrateItem.pageUrl, "hydrate sends the permalink as referer");
+      return "data:image/jpeg;base64,Y292ZXI=";
+    }
+  });
+  await hydrateRenderer.hydrateRemoteThumbnails([hydrateItem]);
+  check(
+    hydrateItem.thumbnail,
+    "data:image/jpeg;base64,Y292ZXI=",
+    "hydrate stores a data URL on the card item"
+  );
+  check(hydratedSrc, "data:image/jpeg;base64,Y292ZXI=", "hydrate patches the visible img");
 
   console.log(`popup media loader: ${assertions} assertions passed`);
 }

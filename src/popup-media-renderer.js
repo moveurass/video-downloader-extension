@@ -19,6 +19,11 @@
       return siteName ? `${siteName} 영상 받기` : "영상 받기";
     }
 
+    function needsRemoteThumbHydration(url) {
+      const value = String(url || "").trim();
+      return !!value && /^https?:/i.test(value);
+    }
+
     function createRenderer(deps) {
       const {
         listEl,
@@ -76,28 +81,115 @@
         }\n${item?.url || ""}`;
       }
 
-      function bindThumbFallback(card) {
+      function replaceThumbWithFallback(img) {
+        if (!img?.replaceWith || !document?.createElement) return;
+        img.replaceWith(
+          Object.assign(document.createElement("span"), {
+            className: "thumb-fallback",
+            textContent: "🎬"
+          })
+        );
+      }
+
+      function applyThumbSrc(card, dataUrl) {
+        if (!card || !dataUrl) return;
+        const img = card.querySelector?.(".thumb-img");
+        if (img) {
+          if (img.getAttribute?.("src") !== dataUrl) {
+            img.setAttribute("src", dataUrl);
+          }
+          return;
+        }
+        const thumb = card.querySelector?.(".thumb");
+        if (thumb && typeof thumbHtml === "function") {
+          thumb.innerHTML = thumbHtml({ thumbnail: dataUrl });
+          bindThumbFallback(card);
+        }
+      }
+
+      function bindThumbFallback(card, item) {
         const img = card?.querySelector?.(".thumb-img");
-        if (!img) return;
-        img.addEventListener("error", () => {
-          img.replaceWith(
-            Object.assign(document.createElement("span"), {
-              className: "thumb-fallback",
-              textContent: "🎬"
-            })
-          );
+        if (!img?.addEventListener) return;
+        img.addEventListener("error", async () => {
+          const src = img.getAttribute?.("src") || item?.thumbnail || "";
+          if (String(src).startsWith("data:")) {
+            replaceThumbWithFallback(img);
+            return;
+          }
+          const fetchThumb = deps.fetchThumbDataUrl;
+          if (
+            typeof fetchThumb === "function" &&
+            needsRemoteThumbHydration(src) &&
+            img.dataset?.thumbTried !== "1"
+          ) {
+            if (img.dataset) img.dataset.thumbTried = "1";
+            try {
+              const dataUrl = await fetchThumb(src, item?.pageUrl || item?.url || "");
+              if (dataUrl) {
+                if (item) item.thumbnail = dataUrl;
+                img.setAttribute("src", dataUrl);
+                return;
+              }
+            } catch {
+              /* fall through */
+            }
+          }
+          replaceThumbWithFallback(img);
         });
+      }
+
+      async function hydrateRemoteThumbnails(items) {
+        const fetchThumb = deps.fetchThumbDataUrl;
+        if (typeof fetchThumb !== "function") return;
+        const card = listEl?.querySelector?.(".card");
+        await Promise.all(
+          (items || []).map(async (item) => {
+            const url = String(item?.thumbnail || "");
+            if (!needsRemoteThumbHydration(url)) return;
+            try {
+              const dataUrl = await fetchThumb(
+                url,
+                item.pageUrl || item.url || ""
+              );
+              if (!dataUrl) return;
+              item.thumbnail = dataUrl;
+              applyThumbSrc(card, dataUrl);
+            } catch {
+              /* keep the HTTPS src; bindThumbFallback still runs */
+            }
+          })
+        );
+      }
+
+      function scheduleThumbHydration(items) {
+        if (typeof deps.fetchThumbDataUrl !== "function") return;
+        Promise.resolve()
+          .then(() => hydrateRemoteThumbnails(items))
+          .catch(() => {});
+      }
+
+      function resolveRenderTabLike(currentTabUrl, allItems) {
+        const pasteUrl =
+          typeof deps.getPastedTiktokPreviewUrl === "function"
+            ? deps.getPastedTiktokPreviewUrl(currentTabUrl)
+            : "";
+        return {
+          url: pasteUrl || currentTabUrl,
+          title: allItems[0]?.title || ""
+        };
       }
 
       function render() {
         const currentTabUrl = getCurrentTabUrl();
         let allItems = getAllItems();
 
-        // Always re-apply YT/TT card before paint
-        allItems = ensureSiteItems(allItems, {
-          url: currentTabUrl,
-          title: allItems[0]?.title || ""
-        });
+        // Always re-apply YT/TT card before paint. A pasted TikTok
+        // permalink wins over Explore/FYP so the visible card matches
+        // what 받기 will download.
+        allItems = ensureSiteItems(
+          allItems,
+          resolveRenderTabLike(currentTabUrl, allItems)
+        );
         setAllItems(allItems);
         const items = allItems.slice(0, 1);
         listEl.innerHTML = "";
@@ -203,7 +295,7 @@
     </details>
   `;
 
-        bindThumbFallback(card);
+        bindThumbFallback(card, item);
 
         card.querySelectorAll(".q-chip").forEach((chip) => {
           chip.addEventListener("click", async () => {
@@ -335,14 +427,15 @@
         listEl.appendChild(card);
         // Card already has quality chips — hide the global bar
         syncGlobalQualityBox(true);
+        scheduleThumbHydration(items);
       }
 
       function patch() {
         const currentTabUrl = getCurrentTabUrl();
-        const allItems = ensureSiteItems(getAllItems(), {
-          url: currentTabUrl,
-          title: getAllItems()[0]?.title || ""
-        });
+        const allItems = ensureSiteItems(
+          getAllItems(),
+          resolveRenderTabLike(currentTabUrl, getAllItems())
+        );
         setAllItems(allItems);
         const item = allItems[0];
         const card = listEl.querySelector?.(".card");
@@ -403,7 +496,7 @@
             }
           } else if (thumb) {
             thumb.innerHTML = thumbHtml(item);
-            bindThumbFallback(card);
+            bindThumbFallback(card, item);
           }
         } else if (image) {
           if (typeof image.removeAttribute === "function") {
@@ -415,12 +508,13 @@
             thumb.innerHTML = thumbHtml(item);
           }
         }
+        scheduleThumbHydration([item]);
         return true;
       }
 
-      return { render, patch };
+      return { render, patch, hydrateRemoteThumbnails };
     }
 
-    return { createRenderer, primaryDownloadLabel };
+    return { createRenderer, primaryDownloadLabel, needsRemoteThumbHydration };
   }
 );

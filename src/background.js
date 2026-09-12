@@ -541,6 +541,7 @@ const handleMediaMessage = UVDBackgroundMediaMessages.createHandler({
   chrome,
   fetch: (...args) => fetch(...args),
   btoa,
+  YtDlp,
   activeDownloads,
   jobIsStopping,
   hlsPhasePercent,

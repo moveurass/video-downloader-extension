@@ -632,6 +632,87 @@ function main() {
   h.timers[0].fn();
   check(h.appended[0].removed, true, "toast timer removes element");
 
+  const Sites = require("../src/site-detection.js");
+  const qaPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  check(
+    DisplayUtils.pastedTiktokPreviewUrl(
+      qaPermalink,
+      "https://www.tiktok.com/explore",
+      Sites
+    ),
+    qaPermalink,
+    "pasted TikTok permalink previews while sitting on Explore"
+  );
+  check(
+    DisplayUtils.pastedTiktokPreviewUrl(
+      qaPermalink,
+      qaPermalink + "?lang=ko",
+      Sites
+    ),
+    "",
+    "same-video tab does not create a second paste card"
+  );
+  check(
+    DisplayUtils.pastedTiktokPreviewUrl(
+      "https://www.tiktok.com/explore",
+      "https://www.tiktok.com/explore",
+      Sites
+    ),
+    "",
+    "Explore itself is not a paste preview"
+  );
+
+  const pasteUtils = DisplayUtils.createUtils({
+    $: () => null,
+    document: {
+      body: { appendChild() {} },
+      createElement() {
+        return {};
+      }
+    },
+    UVDSites: Sites,
+    UVDPopupMedia: {
+      cleanTitleText: (raw) => raw,
+      displayName: () => "n",
+      downloadFilename: () => "f.mp4",
+      isUglyName: () => false
+    },
+    Naming: {
+      extractProductCode: () => "",
+      cleanPageTitle: (title) => title,
+      bindTitleToPage: (_url, title) => title,
+      buildFilename: () => "f.mp4",
+      isKnownCodeVideoPage: () => false
+    },
+    UVD: {
+      parseUrlsFromText: (text) => String(text).match(/https?:\/\/\S+/g) || [],
+      isGenericSaveName: () => false
+    },
+    isSitePage: (url) => Sites.isDownloadableSiteVideo(url),
+    isKnownDownloadablePage: (url) => Sites.isDownloadableSiteVideo(url),
+    getCurrentTabUrl: () => "https://www.tiktok.com/explore",
+    getAllItems: () => [],
+    getUvdSettings: () => ({}),
+    getSelectedQuality: () => "best",
+    pageHost: { textContent: "" }
+  });
+  const pasteCard = pasteUtils.ensureSiteItems([], {
+    url: qaPermalink,
+    title: "TikTok"
+  });
+  check(pasteCard.length, 1, "Explore + pasted permalink builds a card");
+  check(
+    pasteCard[0].pageUrl,
+    qaPermalink,
+    "paste card uses the permalink, not Explore"
+  );
+  check(
+    pasteUtils.ensureSiteItems([], { url: "https://www.tiktok.com/explore" }).length,
+    0,
+    "Explore without a pasted video still has no card"
+  );
+
   console.log(`popup display utils unit: ${assertions} assertions passed`);
 }
 

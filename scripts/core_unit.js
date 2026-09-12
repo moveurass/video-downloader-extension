@@ -559,6 +559,20 @@ assert.equal(Sites.isTrustedThumbUrl(
   "https://watch.example/v",
   "https://other.example/cover.jpg"
 ), false);
+assert.equal(Sites.isTikTokImageCdnHost("p19-common-sign.tiktokcdn-us.com"), true);
+assert.equal(Sites.isTikTokImageCdnHost("evil-tiktokcdn.com.example"), false);
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.tiktok.com/explore",
+  "https://p19-common-sign.tiktokcdn-us.com/obj/tos-maliva-p-0068/~tplv-tiktokx-cropcenter:300:400.jpeg"
+), true, "TikTok Explore may fetch ByteDance cover CDNs");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+  "https://p16-sign.tiktokcdn-eu.com/tos-useast2a-p-0068/~tplv-photomode"
+), true, "TikTok video pages may fetch cover CDNs without a .jpg suffix");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.youtube.com/watch?v=abc",
+  "https://p19-common-sign.tiktokcdn-us.com/cover"
+), false, "non-TikTok pages must not page-fetch TikTok CDNs");
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),

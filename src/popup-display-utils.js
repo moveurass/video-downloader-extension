@@ -7,6 +7,19 @@
   function makePopupDisplayUtils() {
     "use strict";
 
+    function pastedTiktokPreviewUrl(text, tabUrl, sites, parseUrlsFromText) {
+      const parse =
+        typeof parseUrlsFromText === "function"
+          ? parseUrlsFromText
+          : (value) => String(value || "").match(/https?:\/\/[^\s]+/g) || [];
+      const urls = parse(text);
+      if (!Array.isArray(urls) || urls.length !== 1) return "";
+      const first = String(urls[0] || "").trim();
+      if (!sites?.isTiktokVideoUrl?.(first)) return "";
+      if (tabUrl && sites.sameTiktokVideo?.(tabUrl, first)) return "";
+      return sites.normalizeTiktokUrl?.(first) || first;
+    }
+
     function createUtils(deps) {
       const documentRef = deps.document;
       const setTimeoutFn = deps.setTimeout || setTimeout;
@@ -427,12 +440,34 @@
         }
       }
 
+      function resolveEnsurePageUrl(tabLike) {
+        const tabUrl = getCurrentTabUrl() || "";
+        const hintUrl = tabLike?.url || "";
+        const sites = deps.UVDSites || {};
+        if (sites.isTiktokVideoUrl?.(hintUrl)) {
+          if (!tabUrl || !sites.sameTiktokVideo?.(tabUrl, hintUrl)) {
+            return sites.normalizeTiktokUrl?.(hintUrl) || hintUrl;
+          }
+        }
+        return tabUrl || hintUrl || "";
+      }
+
+      function pastedPreviewFromInput(tabUrl) {
+        const text = deps.$("#linkInput")?.value || "";
+        return pastedTiktokPreviewUrl(
+          text,
+          tabUrl || getCurrentTabUrl() || "",
+          deps.UVDSites,
+          (value) => deps.UVD.parseUrlsFromText(value)
+        );
+      }
+
       function ensureSiteItems(items, tabLike) {
         const source = items == null ? getAllItems() : items;
         let list = Array.isArray(source)
           ? source.map((item) => ({ ...item }))
           : [];
-        const url = getCurrentTabUrl() || tabLike?.url || "";
+        const url = resolveEnsurePageUrl(tabLike);
         const curKey = pageKey(url);
         const cached = lastGoodItemsByPage.get(curKey) || [];
         if (!isKnownDownloadablePage(url)) return list;
@@ -528,10 +563,11 @@
         escapeAttr,
         userError,
         pageKey,
-        ensureSiteItems
+        ensureSiteItems,
+        pastedTiktokPreviewUrl: pastedPreviewFromInput
       };
     }
 
-    return { createUtils };
+    return { createUtils, pastedTiktokPreviewUrl };
   }
 );

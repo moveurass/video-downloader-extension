@@ -724,6 +724,56 @@ async function main() {
   ]);
   assert.equal(response.items[0].title, "CAWB-035 실제 영상 제목 - 123AV");
 
+  const helperThumbs = [];
+  let thumbResponse = null;
+  const thumbHandler = createMediaMessageHandler({
+    chrome: {
+      tabs: {
+        get: async () => ({ url: "https://www.tiktok.com/explore" })
+      }
+    },
+    fetch: async () => ({
+      ok: false,
+      status: 403,
+      headers: { get: () => "text/plain" }
+    }),
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    YtDlp: {
+      fetchThumb: async (url, referer) => {
+        helperThumbs.push([url, referer]);
+        return { ok: true, dataUrl: "data:image/jpeg;base64,ZmFrZQ==" };
+      }
+    }
+  });
+  assert.deepEqual(
+    thumbHandler(
+      {
+        type: "FETCH_THUMB",
+        url: "https://p19-common-sign.tiktokcdn-us.com/cover",
+        referer: "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+      },
+      9,
+      {},
+      (value) => {
+        thumbResponse = value;
+      }
+    ),
+    { handled: true, keepChannel: true }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(thumbResponse.ok, true);
+  assert.equal(thumbResponse.source, "helper");
+  assert.equal(
+    thumbResponse.dataUrl,
+    "data:image/jpeg;base64,ZmFrZQ=="
+  );
+  assert.deepEqual(helperThumbs, [
+    [
+      "https://p19-common-sign.tiktokcdn-us.com/cover",
+      "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+    ]
+  ]);
+
   const oembedRequests = [];
   const youtubeMetaHandler = createMediaMessageHandler({
     fetch: async (url, options) => {
