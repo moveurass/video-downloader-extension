@@ -152,6 +152,17 @@ assert.equal(
   ),
   true
 );
+assert.deepEqual(
+  Sites.collectInstagramMediaUrlsFromText(
+    'static https://static.cdninstagram.com/rsrc.php/foo.webp ' +
+      'play https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQNclip?_nc_cat=1 ' +
+      'escaped https:\\/\\/scontent.cdninstagram.com\\/o1\\/v\\/t16\\/f2\\/m86\\/clip2.mp4'
+  ),
+  [
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQNclip?_nc_cat=1",
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip2.mp4"
+  ]
+);
 assert.equal(
   Sites.isDownloadableSiteVideo("https://www.instagram.com/reel/abc_123/"),
   true

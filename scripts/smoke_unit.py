@@ -148,11 +148,76 @@ def main() -> int:
             "https://instagr.am/reels/CODE"
         )
         == "https://www.instagram.com/reel/CODE/"
+        and helper_server.normalize_instagram_target(
+            "https://www.instagram.com/reels/"
+        )
+        == "https://www.instagram.com/reels/"
         and helper_server.is_instagram_download(
             "", "https://www.instagram.com/reel/CODE/"
         )
         and not helper_server.is_instagram_download(
             "", "https://instagram.com.evil.example/reel/CODE"
+        ),
+    )
+    check(
+        "Chrome Domain cookies become Netscape subdomain cookies",
+        helper_server.netscape_cookie_domain(
+            {"domain": "instagram.com", "hostOnly": False}
+        )
+        == (".instagram.com", "TRUE")
+        and helper_server.netscape_cookie_domain(
+            {"domain": "instagram.com"}
+        )
+        == (".instagram.com", "TRUE")
+        and helper_server.netscape_cookie_domain(
+            {"domain": "www.instagram.com", "hostOnly": True}
+        )
+        == ("www.instagram.com", "FALSE"),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        netscape_path = Path(tmp) / "ig.txt"
+        helper_server.write_netscape_cookies(
+            [
+                {
+                    "name": "sessionid",
+                    "value": "sid",
+                    "domain": "instagram.com",
+                    "path": "/",
+                    "secure": True,
+                    "hostOnly": False,
+                }
+            ],
+            netscape_path,
+        )
+        row = [line for line in netscape_path.read_text().splitlines() if "sessionid" in line][0]
+        check(
+            "sessionid Netscape row includes subdomains",
+            row.startswith(".instagram.com\tTRUE\t/") and "\tsessionid\tsid" in row,
+            row,
+        )
+    check(
+        "Instagram helper errors distinguish login vs extractor empty",
+        helper_server.classify_instagram_helper_error("empty media response", False)
+        .startswith("Instagram 로그인이 필요합니다")
+        and "쿠키는 보냈지만"
+        in helper_server.classify_instagram_helper_error("Failed to parse JSON", True)
+        and helper_server.instagram_logged_in_extract_failed("Failed to parse JSON")
+        and helper_server.cookie_has_name(
+            [{"name": "sessionid", "value": "x"}], "sessionid"
+        )
+        and helper_server.cookies_without_name(
+            [{"name": "sessionid", "value": "x"}, {"name": "mid", "value": "1"}],
+            "sessionid",
+        )
+        == [{"name": "mid", "value": "1"}],
+    )
+    check(
+        "Instagram CDN detector matches progressive /v/t URLs",
+        helper_server.is_instagram_cdn_url(
+            "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip?_nc_cat=1"
+        )
+        and not helper_server.is_instagram_cdn_url(
+            "https://static.cdninstagram.com/rsrc.php/foo.webp"
         ),
     )
     original_which = helper_server.shutil.which

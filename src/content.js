@@ -1011,6 +1011,12 @@
       v.querySelectorAll("source").forEach((s) => add(s.src));
     });
 
+    if (typeof UVDSites !== "undefined" && UVDSites.collectInstagramMediaUrlsFromText) {
+      UVDSites.collectInstagramMediaUrlsFromText(
+        document.documentElement?.innerHTML || ""
+      ).forEach(add);
+    }
+
     // Walk JSON blobs in scripts
     function walk(obj, depth) {
       if (!obj || depth > 30) return;
@@ -1043,18 +1049,33 @@
       }
     }
 
-    document.querySelectorAll('script[type="application/ld+json"], script').forEach((s) => {
-      const t = (s.textContent || "").trim();
-      if (t.length < 80 || t.length > 2_000_000) return;
-      if (!/video|cdninstagram|fbcdn|\.mp4|shortcode|browser_native/i.test(t)) return;
-      try {
-        if (t.startsWith("{") || t.startsWith("[")) walk(JSON.parse(t), 0);
-      } catch {
-        const re = /https?:\/\/[^"'\\\s]+(?:\.mp4|cdninstagram|fbcdn\.net)[^"'\\\s]*/gi;
-        let m;
-        while ((m = re.exec(t)) !== null) add(m[0]);
-      }
-    });
+    document
+      .querySelectorAll('script[data-sjs], script[type="application/json"], script[type="application/ld+json"], script')
+      .forEach((s) => {
+        const t = (s.textContent || "").trim();
+        if (t.length < 80) return;
+        if (!/video|cdninstagram|fbcdn|\.mp4|shortcode|browser_native|video_versions/i.test(t)) {
+          return;
+        }
+        if (t.length > 2_000_000) {
+          if (typeof UVDSites !== "undefined" && UVDSites.collectInstagramMediaUrlsFromText) {
+            UVDSites.collectInstagramMediaUrlsFromText(t).forEach(add);
+          }
+          return;
+        }
+        try {
+          if (t.startsWith("{") || t.startsWith("[")) walk(JSON.parse(t), 0);
+        } catch {
+          // Fall through to regex extract.
+        }
+        if (typeof UVDSites !== "undefined" && UVDSites.collectInstagramMediaUrlsFromText) {
+          UVDSites.collectInstagramMediaUrlsFromText(t).forEach(add);
+        } else {
+          const re = /https?:\/\/[^"'\\\s]+(?:\.mp4|cdninstagram|fbcdn\.net)[^"'\\\s]*/gi;
+          let m;
+          while ((m = re.exec(t)) !== null) add(m[0]);
+        }
+      });
 
     return [...found].slice(0, 10);
   }
@@ -1074,6 +1095,9 @@
     consider(document.querySelector('link[rel="canonical"]')?.href);
     consider(document.querySelector('meta[property="og:url"]')?.content);
     consider(location.href);
+    document
+      .querySelectorAll('a[href*="/reel/"], a[href*="/reels/"], a[href*="/p/"]')
+      .forEach((a) => consider(a.href));
     if (found[0]) return found[0];
     const html = document.documentElement?.innerHTML || "";
     const re =

@@ -226,6 +226,36 @@
     );
   }
 
+  function collectInstagramMediaUrlsFromText(text) {
+    const found = [];
+    const seen = new Set();
+    const add = (raw) => {
+      if (!raw || typeof raw !== "string") return;
+      let value = raw
+        .replace(/\\u0026/g, "&")
+        .replace(/\\u002f/gi, "/")
+        .replace(/\\\//g, "/");
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        // Keep the unescaped form.
+      }
+      if (!/^https?:\/\//i.test(value)) return;
+      const clean = value.split("#")[0];
+      if (!isInstagramCdnUrl(clean) || seen.has(clean)) return;
+      seen.add(clean);
+      found.push(clean);
+    };
+    const src = String(text || "")
+      .replace(/\\u0026/g, "&")
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\\//g, "/");
+    const re = /https?:\/\/[^"'\\\s]+(?:cdninstagram\.com|fbcdn\.net)[^"'\\\s]*/gi;
+    let match;
+    while ((match = re.exec(src)) !== null) add(match[0]);
+    return found.slice(0, 20);
+  }
+
   function isTiktokCdnUrl(url) {
     const value = url || "";
     if (!value || !/^https?:/i.test(value)) return false;
@@ -451,6 +481,7 @@
     isInstagramPostUrl,
     isInstagramUrl,
     isInstagramCdnUrl,
+    collectInstagramMediaUrlsFromText,
     isTiktokCdnUrl,
     looksLikeVideoFileUrl,
     isXUrl,
