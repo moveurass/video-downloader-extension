@@ -192,6 +192,67 @@ async function testPairingRecovery() {
   assert.equal(await ytdlp.available(), false);
 }
 
+async function testDownloadAndCancelAttachToken() {
+  const writes = [];
+  let stored = "";
+  const calls = [];
+  let cancelHits = 0;
+  const ytdlp = loadYtDlp(
+    async (url, options = {}) => {
+      calls.push({ url: String(url), headers: options.headers || {} });
+      if (String(url).endsWith("/health")) {
+        return { ok: true, json: async () => ({ ok: true, ytdlp: true, pairingMode: "available" }) };
+      }
+      if (String(url).endsWith("/pair")) {
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      if (String(url).endsWith("/download")) {
+        const token = options.headers?.["X-UVD-Token"];
+        if (!token) {
+          return { ok: false, status: 403, json: async () => ({ ok: false, error: "missing token" }) };
+        }
+        return { ok: true, json: async () => ({ ok: true, jobId: "ig-1" }) };
+      }
+      if (String(url).endsWith("/cancel")) {
+        cancelHits += 1;
+        const token = options.headers?.["X-UVD-Token"];
+        if (cancelHits === 1) {
+          return { ok: false, status: 403, json: async () => ({ ok: false, error: "missing token" }) };
+        }
+        if (!token) {
+          return { ok: false, status: 403, json: async () => ({ ok: false, error: "missing token" }) };
+        }
+        return { ok: true, json: async () => ({ ok: true }) };
+      }
+      return { ok: true, json: async () => ({ ok: true }) };
+    },
+    {
+      chrome: {
+        storage: {
+          session: {
+            get: async () => (stored ? { helperToken: stored } : {}),
+            set: async (value) => {
+              writes.push(value);
+              if (value.helperToken) stored = value.helperToken;
+            },
+            setAccessLevel: async () => {}
+          },
+          local: { get: async () => ({}), set: async () => {} },
+          onChanged: { addListener() {} }
+        }
+      }
+    }
+  );
+  await ytdlp.health(true);
+  const started = await ytdlp.startDownload({ url: "https://www.instagram.com/reel/ABC/" });
+  assert.equal(started.jobId, "ig-1");
+  const downloadCall = calls.find((c) => c.url.endsWith("/download"));
+  assert.ok(downloadCall.headers["X-UVD-Token"], "download always sends the pairing token");
+  const cancelled = await ytdlp.cancelJob("ig-1", { purge: true });
+  assert.equal(cancelled.ok, true);
+  assert.equal(cancelHits, 2, "cancel retries once after a 403");
+}
+
 async function testHelperPollingFailsFast() {
   // Helper restarted: /job/<id> 404s forever. Must not spin to the timeout.
   const calls = [];
@@ -270,10 +331,13 @@ async function testHelperPollingFailsFast() {
     return { ok: true, json: async () => ({ ok: true }) };
   });
   await purging.cancelJob("j3", { purge: true });
-  assert.deepEqual(JSON.parse(purgeCalls[0].options.body), { purge: true });
+  const purgeReq = purgeCalls.find((c) => String(c.url).endsWith("/cancel"));
+  assert.ok(purgeReq, "cancel is posted after helper auth");
+  assert.deepEqual(JSON.parse(purgeReq.options.body), { purge: true });
 
   await purging.cancelJob("j4", { pause: true });
-  const pauseBody = JSON.parse(purgeCalls[1].options.body);
+  const pauseReq = purgeCalls.filter((c) => String(c.url).endsWith("/cancel"))[1];
+  const pauseBody = JSON.parse(pauseReq.options.body);
   assert.deepEqual(pauseBody, { pause: true });
   assert.equal("purge" in pauseBody, false);
 }
@@ -533,6 +597,7 @@ async function main() {
   await testYtdlpRevealPath();
   await testBulkSetters();
   await testPairingRecovery();
+  await testDownloadAndCancelAttachToken();
   await testHistoryCap();
   testPermissionReductionAndTrackPlumbing();
   console.log("remaining recommendations: tracks, permissions, pairing, and history cap passed");

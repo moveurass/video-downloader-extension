@@ -63,11 +63,39 @@ const YtDlp = (() => {
   }
 
   async function authHeaders() {
-    if (!tokenLoaded) {
+    if (!cachedToken) {
+      cachedToken = await readStoredToken();
+      tokenLoaded = true;
+    }
+    if (!cachedToken && pairingPromise) {
+      await pairingPromise.catch(() => {});
+    }
+    return cachedToken ? { "X-UVD-Token": cachedToken } : {};
+  }
+
+  async function ensureAuthed() {
+    let headers = await authHeaders();
+    if (headers["X-UVD-Token"]) return headers;
+    try {
+      await health(true);
+    } catch {
+      /* helper down — send whatever we have */
+    }
+    if (pairingPromise) await pairingPromise.catch(() => {});
+    if (!cachedToken) {
       cachedToken = await readStoredToken();
       tokenLoaded = true;
     }
     return cachedToken ? { "X-UVD-Token": cachedToken } : {};
+  }
+
+  function isAuthRejected(status, data) {
+    if (status !== 403) return false;
+    const error = String(data?.error || "");
+    return (
+      !error ||
+      /origin|token|paired|forbidden/i.test(error)
+    );
   }
 
   function generatePairToken() {
@@ -189,12 +217,14 @@ const YtDlp = (() => {
   async function startDownload(payload, retried = false) {
     const res = await fetch(`${BASE}/download`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+      headers: { "Content-Type": "application/json", ...(await ensureAuthed()) },
       body: JSON.stringify(payload)
     });
     if (res.status === 403 && !retried) {
-      // Token rejected (helper re-paired / cache wiped): re-pair once and retry.
+      // Token rejected or omitted (race before pairing): re-pair once and retry.
       tokenVerifiedAt = 0;
+      cachedToken = null;
+      tokenLoaded = false;
       const repaired = await requestPairing();
       if (repaired.pairingMode === "paired") return startDownload(payload, true);
     }
@@ -213,7 +243,7 @@ const YtDlp = (() => {
 
   async function getJob(jobId) {
     const res = await fetch(`${BASE}/job/${jobId}`, {
-      headers: await authHeaders()
+      headers: await ensureAuthed()
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
@@ -237,12 +267,26 @@ const YtDlp = (() => {
         : options.purge
           ? { purge: true }
           : {};
-      const res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
+      let res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        headers: { "Content-Type": "application/json", ...(await ensureAuthed()) },
         body: JSON.stringify(body)
       });
-      const data = await res.json().catch(() => ({}));
+      let data = await res.json().catch(() => ({}));
+      if (isAuthRejected(res.status, data)) {
+        tokenVerifiedAt = 0;
+        cachedToken = null;
+        tokenLoaded = false;
+        const repaired = await requestPairing();
+        if (repaired.pairingMode === "paired") {
+          res = await fetch(`${BASE}/job/${encodeURIComponent(jobId)}/cancel`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(await ensureAuthed()) },
+            body: JSON.stringify(body)
+          });
+          data = await res.json().catch(() => ({}));
+        }
+      }
       return { ok: !!(res.ok && data.ok), ...data };
     } catch (e) {
       return { ok: false, error: String(e?.message || e) };
@@ -256,7 +300,7 @@ const YtDlp = (() => {
   async function listFormats(url, extra = {}) {
     const res = await fetch(`${BASE}/formats`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+      headers: { "Content-Type": "application/json", ...(await ensureAuthed()) },
       body: JSON.stringify({ url, pageUrl: url, ...extra })
     });
     const data = await res.json().catch(() => ({}));

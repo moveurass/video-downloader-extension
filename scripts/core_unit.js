@@ -133,7 +133,80 @@ assert.ok(
 assert.equal(Sites.siteKind("https://youtu.be/abc", ""), "youtube");
 assert.equal(Sites.isInstagramPostUrl("https://instagram.com/reel/abc_123/"), true);
 assert.equal(Sites.isInstagramPostUrl("https://instagram.com/example-user/"), false);
+assert.equal(
+  Sites.isInstagramPostUrl("https://www.instagram.com/share/reel/ABC123/"),
+  true
+);
+assert.equal(
+  Sites.isInstagramPostUrl("https://www.instagram.com/user.name/reel/ABC123/"),
+  true
+);
+assert.equal(
+  Sites.isInstagramPostUrl("https://www.instagram.com/stories/user.name/1234567890/"),
+  true
+);
+assert.equal(Sites.isInstagramPostUrl("https://www.instagram.com/reels/"), false);
+assert.equal(
+  Sites.isInstagramCdnUrl(
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQNclip?_nc_cat=1"
+  ),
+  true
+);
+assert.equal(
+  Sites.isInstagramDashFragmentUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4"
+  ),
+  true
+);
+assert.equal(
+  Sites.isInstagramCdnUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?bytestart=0&byteend=833"
+  ),
+  false
+);
+assert.equal(
+  Sites.isInstagramCdnUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?efg=" +
+      Buffer.from('{"encode_tag":"dash_baseline_1"}').toString("base64")
+  ),
+  false
+);
+assert.deepEqual(
+  Sites.rankInstagramMediaUrls([
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4",
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4?efg=" +
+      Buffer.from('{"encode_tag":"progressive_recap"}').toString("base64")
+  ]),
+  [
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4?efg=" +
+      Buffer.from('{"encode_tag":"progressive_recap"}').toString("base64"),
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4"
+  ]
+);
+assert.deepEqual(
+  Sites.collectInstagramMediaUrlsFromText(
+    'static https://static.cdninstagram.com/rsrc.php/foo.webp ' +
+      'play https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQNclip?_nc_cat=1 ' +
+      'escaped https:\\/\\/scontent.cdninstagram.com\\/o1\\/v\\/t16\\/f2\\/m86\\/clip2.mp4'
+  ),
+  [
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQNclip?_nc_cat=1",
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip2.mp4"
+  ]
+);
+assert.equal(
+  Sites.isDownloadableSiteVideo("https://www.instagram.com/reel/abc_123/"),
+  true
+);
+assert.equal(Sites.isDownloadableSiteVideo("https://www.instagram.com/"), false);
 assert.equal(Sites.isTiktokCdnUrl("https://cdn.example/image.jpg"), false);
+assert.equal(
+  Sites.looksLikeVideoFileUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4"
+  ),
+  false
+);
 
 const current = {
   id: "job",

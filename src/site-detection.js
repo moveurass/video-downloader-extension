@@ -188,32 +188,143 @@
     );
   }
 
+  const INSTAGRAM_POST_PATH =
+    /\/(?:share\/)?(?:p|reel|reels|tv)\/[A-Za-z0-9_-]+/i;
+  const INSTAGRAM_STORY_PATH = /\/stories\/(?:highlights\/)?[^/]+\/\d+/i;
+
   function isInstagramPostUrl(url) {
     if (!url) return false;
     try {
       const parsed = new URL(url);
       const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
-      if (host === "instagr.am") return (parsed.pathname || "/").length > 2;
+      const path = parsed.pathname || "";
+      if (host === "instagr.am") {
+        return path.length > 2 || INSTAGRAM_POST_PATH.test(path) || INSTAGRAM_STORY_PATH.test(path);
+      }
       if (host === "instagram.com" || host.endsWith(".instagram.com")) {
-        return /\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(parsed.pathname || "");
+        return INSTAGRAM_POST_PATH.test(path) || INSTAGRAM_STORY_PATH.test(path);
       }
     } catch {
       // Fall through to the conservative string check.
     }
-    return /instagram\.com\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(url);
+    return (
+      /instagram\.com\/(?:share\/)?(?:p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(url) ||
+      /instagram\.com\/stories\/(?:highlights\/)?[^/?#]+\/\d+/i.test(url)
+    );
   }
 
   const isInstagramUrl = isInstagramPostUrl;
 
+  function decodeInstagramEfg(efg) {
+    const raw = String(efg || "");
+    if (!raw) return "";
+    const padded = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const withPad = padded + "=".repeat((4 - (padded.length % 4)) % 4);
+    try {
+      if (typeof atob === "function") return atob(withPad);
+      if (typeof Buffer !== "undefined") {
+        return Buffer.from(withPad, "base64").toString("binary");
+      }
+    } catch {
+      /* ignore */
+    }
+    return "";
+  }
+
+  function instagramEfgLooksLikeDash(url) {
+    try {
+      const efg = new URL(url).searchParams.get("efg");
+      if (!efg) return false;
+      if (/dash/i.test(efg)) return true;
+      return /dash/i.test(decodeInstagramEfg(efg));
+    } catch {
+      return /[?&]efg=[^&]*(?:dash|Rhc2h|ZGFza)/i.test(url || "");
+    }
+  }
+
+  function isInstagramDashFragmentUrl(url) {
+    const value = url || "";
+    if (!/^https?:/i.test(value)) return false;
+    if (/\.(?:m4s|mpd)(?:\?|$)/i.test(value)) return true;
+    if (/(?:^|[/_-])(?:init|init-stream|dashinit|dash_init)(?:[._-]|\.mp4)/i.test(value)) {
+      return true;
+    }
+    if (/[?&](?:bytestart|byteend|start_byte|end_byte)=/i.test(value)) return true;
+    if (/\/dash(?:\/|_)/i.test(value)) return true;
+    if (/[?&](?:cmfaz|fragment_type|dash_manifest)=/i.test(value)) return true;
+    return instagramEfgLooksLikeDash(value);
+  }
+
   function isInstagramCdnUrl(url) {
     const value = url || "";
     if (!/^https?:/i.test(value)) return false;
-    if (/\.(jpe?g|png|gif|webp|bmp|svg|js|css)(\?|$)/i.test(value)) return false;
+    if (isInstagramDashFragmentUrl(value)) return false;
+    if (/\.(jpe?g|png|gif|webp|bmp|svg|js|css|mpd|m4s)(\?|$)/i.test(value)) return false;
     return (
       (/cdninstagram\.com|fbcdn\.net/i.test(value) &&
         (/\.mp4(\?|$)/i.test(value) || /video|\/v\/t/i.test(value))) ||
       (/\.mp4(\?|$)/i.test(value) && /instagram/i.test(value))
     );
+  }
+
+  function instagramMediaUrlScore(url) {
+    const value = String(url || "");
+    if (!isInstagramCdnUrl(value)) return -1;
+    let score = 10;
+    if (/browser_native_hd/i.test(value)) score += 50;
+    if (/browser_native_sd/i.test(value)) score += 35;
+    try {
+      const efg = new URL(value).searchParams.get("efg") || "";
+      const decoded = decodeInstagramEfg(efg);
+      if (/progressive/i.test(efg) || /progressive/i.test(decoded)) score += 30;
+    } catch {
+      if (/[?&]efg=[^&]*progressive/i.test(value)) score += 30;
+    }
+    if (/\.mp4(\?|$)/i.test(value)) score += 20;
+    if (/\/o1\/v\/t16\//i.test(value)) score += 8;
+    return score;
+  }
+
+  function rankInstagramMediaUrls(urls) {
+    const seen = new Set();
+    return (urls || [])
+      .map((url) => String(url || "").split("#")[0])
+      .filter((url) => {
+        if (!url || seen.has(url) || instagramMediaUrlScore(url) < 0) return false;
+        seen.add(url);
+        return true;
+      })
+      .sort((a, b) => instagramMediaUrlScore(b) - instagramMediaUrlScore(a));
+  }
+
+  function collectInstagramMediaUrlsFromText(text) {
+    const found = [];
+    const seen = new Set();
+    const add = (raw) => {
+      if (!raw || typeof raw !== "string") return;
+      let value = raw
+        .replace(/\\u0026/g, "&")
+        .replace(/\\u002f/gi, "/")
+        .replace(/\\\//g, "/");
+      try {
+        value = decodeURIComponent(value);
+      } catch {
+        // Keep the unescaped form.
+      }
+      if (!/^https?:\/\//i.test(value)) return;
+      const clean = value.split("#")[0];
+      if (!isInstagramCdnUrl(clean) || seen.has(clean)) return;
+      seen.add(clean);
+      found.push(clean);
+    };
+    const src = String(text || "")
+      .replace(/\\u0026/g, "&")
+      .replace(/\\u002f/gi, "/")
+      .replace(/\\\//g, "/");
+    const re = /https?:\/\/[^"'\\\s]+(?:cdninstagram\.com|fbcdn\.net)[^"'\\\s]*/gi;
+    let match;
+    while ((match = re.exec(src)) !== null) add(match[0]);
+    return found.slice(0, 20);
   }
 
   function isTiktokCdnUrl(url) {
@@ -232,6 +343,7 @@
 
   function looksLikeVideoFileUrl(url) {
     if (!url || !/^https?:/i.test(url)) return false;
+    if (isInstagramDashFragmentUrl(url)) return false;
     if (/\.(js|css|json|map|html?|woff2?|jpe?g|png|gif|webp|bmp|svg)(\?|$)/i.test(url)) {
       return false;
     }
@@ -441,6 +553,9 @@
     isInstagramPostUrl,
     isInstagramUrl,
     isInstagramCdnUrl,
+    isInstagramDashFragmentUrl,
+    rankInstagramMediaUrls,
+    collectInstagramMediaUrlsFromText,
     isTiktokCdnUrl,
     looksLikeVideoFileUrl,
     isXUrl,

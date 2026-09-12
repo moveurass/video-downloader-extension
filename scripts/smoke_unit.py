@@ -2,6 +2,7 @@
 """Lightweight smoke checks for UVD release (no browser)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -130,6 +131,143 @@ def main() -> int:
             "/usr/local/bin/aria2c", "fast", True
         ),
     )
+    ig_attempts = helper_server.instagram_ytdlp_attempts("best")
+    class _AuthHandler:
+        def __init__(self, origin="", token=""):
+            self.headers = {"Origin": origin, "X-UVD-Token": token}
+
+    check(
+        "helper auth names missing token separately from a bad origin",
+        helper_server.authorization_error(_AuthHandler("https://evil.example", "x"))
+        == "forbidden origin"
+        and helper_server.authorization_error(
+            _AuthHandler("chrome-extension://" + ("a" * 32), "")
+        )
+        in ("missing token", "helper not paired", "forbidden origin"),
+    )
+    check(
+        "Instagram helper impersonates Chrome before cookies-from-browser",
+        any(attempt[2][:2] == ["--impersonate", "chrome"] for attempt in ig_attempts)
+        and ig_attempts[0][2] == ["--impersonate", "chrome"]
+        and any("--cookies-from-browser" in attempt[2] for attempt in ig_attempts)
+        and ig_attempts[0][2] != ["--cookies-from-browser", "chrome"],
+    )
+    dash_efg = base64.b64encode(b'{"encode_tag":"dash_baseline_1"}').decode("ascii")
+    prog_efg = base64.b64encode(b'{"encode_tag":"progressive_recap"}').decode("ascii")
+    check(
+        "Instagram DASH init / byte-range URLs are not playable CDNs",
+        helper_server.is_instagram_dash_fragment_url(
+            "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4"
+        )
+        and not helper_server.is_instagram_cdn_url(
+            f"https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?efg={dash_efg}"
+        )
+        and not helper_server.is_instagram_cdn_url(
+            "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?bytestart=0&byteend=833"
+        )
+        and helper_server.is_instagram_cdn_url(
+            f"https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4?efg={prog_efg}"
+        ),
+    )
+    dash_ftyp = (32).to_bytes(4, "big") + b"ftyp" + b"dash" + b"\x00\x00\x00\x00" + b"cmfc" + b"iso6"
+    prog_ftyp = (32).to_bytes(4, "big") + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"mp42" + b"iso2"
+    check(
+        "DASH init ftyp is not treated as a playable video",
+        helper_server._is_dash_init_segment(dash_ftyp)
+        and not helper_server._sniff_is_video(dash_ftyp)
+        and helper_server._sniff_is_video(prog_ftyp)
+        and not helper_server.try_instagram_direct_download(
+            "ig-dash-skip",
+            {
+                "mediaUrl": "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4",
+                "pageUrl": "https://www.instagram.com/reel/ABC123/",
+                "title": "Should not publish",
+            },
+            "Should not publish",
+        ),
+    )
+    check(
+        "Instagram share links normalize to /reel/ or /p/",
+        helper_server.normalize_instagram_target(
+            "https://www.instagram.com/share/reel/CODE/?igsh=1"
+        )
+        == "https://www.instagram.com/reel/CODE/"
+        and helper_server.normalize_instagram_target(
+            "https://instagr.am/reels/CODE"
+        )
+        == "https://www.instagram.com/reel/CODE/"
+        and helper_server.normalize_instagram_target(
+            "https://www.instagram.com/reels/"
+        )
+        == "https://www.instagram.com/reels/"
+        and helper_server.is_instagram_download(
+            "", "https://www.instagram.com/reel/CODE/"
+        )
+        and not helper_server.is_instagram_download(
+            "", "https://instagram.com.evil.example/reel/CODE"
+        ),
+    )
+    check(
+        "Chrome Domain cookies become Netscape subdomain cookies",
+        helper_server.netscape_cookie_domain(
+            {"domain": "instagram.com", "hostOnly": False}
+        )
+        == (".instagram.com", "TRUE")
+        and helper_server.netscape_cookie_domain(
+            {"domain": "instagram.com"}
+        )
+        == (".instagram.com", "TRUE")
+        and helper_server.netscape_cookie_domain(
+            {"domain": "www.instagram.com", "hostOnly": True}
+        )
+        == ("www.instagram.com", "FALSE"),
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        netscape_path = Path(tmp) / "ig.txt"
+        helper_server.write_netscape_cookies(
+            [
+                {
+                    "name": "sessionid",
+                    "value": "sid",
+                    "domain": "instagram.com",
+                    "path": "/",
+                    "secure": True,
+                    "hostOnly": False,
+                }
+            ],
+            netscape_path,
+        )
+        row = [line for line in netscape_path.read_text().splitlines() if "sessionid" in line][0]
+        check(
+            "sessionid Netscape row includes subdomains",
+            row.startswith(".instagram.com\tTRUE\t/") and "\tsessionid\tsid" in row,
+            row,
+        )
+    check(
+        "Instagram helper errors distinguish login vs extractor empty",
+        helper_server.classify_instagram_helper_error("empty media response", False)
+        .startswith("Instagram 로그인이 필요합니다")
+        and "쿠키는 보냈지만"
+        in helper_server.classify_instagram_helper_error("Failed to parse JSON", True)
+        and helper_server.instagram_logged_in_extract_failed("Failed to parse JSON")
+        and helper_server.cookie_has_name(
+            [{"name": "sessionid", "value": "x"}], "sessionid"
+        )
+        and helper_server.cookies_without_name(
+            [{"name": "sessionid", "value": "x"}, {"name": "mid", "value": "1"}],
+            "sessionid",
+        )
+        == [{"name": "mid", "value": "1"}],
+    )
+    check(
+        "Instagram CDN detector matches progressive /v/t URLs",
+        helper_server.is_instagram_cdn_url(
+            "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip?_nc_cat=1"
+        )
+        and not helper_server.is_instagram_cdn_url(
+            "https://static.cdninstagram.com/rsrc.php/foo.webp"
+        ),
+    )
     original_which = helper_server.shutil.which
     try:
         helper_server.shutil.which = lambda name: {
@@ -200,7 +338,7 @@ def main() -> int:
     check(
         "/update is auth-gated and clears the version cache after an update",
         (lambda src: src.index('self.path == "/update"')
-         > src.index("if not request_authorized(self):")
+         > src.index("reason = authorization_error(self)")
          and "_version_cache.pop(bin_path, None)" in src)(
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
@@ -519,7 +657,7 @@ def main() -> int:
     check(
         "/files endpoints registered behind the auth gate",
         (lambda src: src.index('self.path == "/files/list"')
-         > src.index("if not request_authorized(self):")
+         > src.index("reason = authorization_error(self)")
          and 'self.path == "/files/trash"' in src)(
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
@@ -997,6 +1135,13 @@ def main() -> int:
         check("origin-less download blocked until paired token", True, "skipped")
 
     background_source = (ROOT / "src/background.js").read_text(encoding="utf-8")
+    check(
+        "site helper does not pass unbound Date.now / fetch / setTimeout",
+        "now: Date.now" not in background_source
+        and "now: () => Date.now()" in background_source
+        and "fetch: (...args) => fetch(...args)" in background_source
+        and "setTimeout: (...args) => setTimeout(...args)" in background_source,
+    )
     check(
         "background filename importScripts",
         '"background-filename.js"' in background_source.split(");", 1)[0],

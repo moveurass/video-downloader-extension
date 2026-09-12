@@ -6,6 +6,37 @@
   "use strict";
 
   function createRunner(deps) {
+    function nowMs() {
+      try {
+        if (typeof deps.now === "function") {
+          const value = Number(deps.now());
+          if (Number.isFinite(value)) return value;
+        }
+      } catch {
+        // Chrome SW: unbound Date.now throws TypeError: Illegal invocation.
+      }
+      return Date.now();
+    }
+
+    function delay(ms) {
+      return new Promise((resolve) => {
+        try {
+          deps.setTimeout(resolve, ms);
+        } catch {
+          setTimeout(resolve, ms);
+        }
+      });
+    }
+
+    function fetchMedia(url, options) {
+      try {
+        return deps.fetch(url, options);
+      } catch (error) {
+        if (!/Illegal invocation/i.test(String(error?.message || error))) throw error;
+        return fetch(url, options);
+      }
+    }
+
     async function ytdlpExtraFromSettings(pageUrl, force = {}) {
       const s = await deps.UVD.getSettings();
       const mediaMode = force.mediaMode || s.mediaMode || "video";
@@ -59,6 +90,8 @@
             "instagram.com",
             ".instagram.com",
             "www.instagram.com",
+            "i.instagram.com",
+            ".i.instagram.com",
             "cdninstagram.com",
             ".cdninstagram.com"
           ].forEach((h) => hosts.add(h));
@@ -116,6 +149,21 @@
         } catch {
           // Ignore URL cookie lookup failures.
         }
+        if (/instagram|instagr\.am/i.test(base) && typeof deps.chrome.cookies.get === "function") {
+          for (const cookieUrl of ["https://www.instagram.com/", "https://i.instagram.com/"]) {
+            try {
+              const sid = await deps.chrome.cookies.get({
+                url: cookieUrl,
+                name: "sessionid"
+              });
+              if (sid?.name && sid.value) {
+                byKey.set(`${sid.domain}|${sid.path}|${sid.name}`, sid);
+              }
+            } catch {
+              // Ignore missing sessionid lookups.
+            }
+          }
+        }
         return [...byKey.values()].map((c) => ({
           name: c.name,
           value: c.value,
@@ -123,6 +171,7 @@
           path: c.path || "/",
           secure: !!c.secure,
           httpOnly: !!c.httpOnly,
+          hostOnly: c.hostOnly === true,
           expirationDate: c.expirationDate || 0
         }));
       } catch {
@@ -183,7 +232,10 @@
         if (/instagr\.am$/i.test(u.hostname)) {
           u.hostname = "www.instagram.com";
         }
-        u.pathname = u.pathname.replace(/\/reels\//i, "/reel/");
+        u.pathname = u.pathname
+          .replace(/\/share\/(reels?)\//i, "/reel/")
+          .replace(/\/share\/(p|tv)\//i, "/$1/")
+          .replace(/\/reels\/([A-Za-z0-9_-]+)/i, "/reel/$1");
         u.search = "";
         u.hash = "";
         if (!u.pathname.endsWith("/")) u.pathname += "/";
@@ -228,11 +280,11 @@
         throw new Error("영상 파일이 아닌 주소입니다");
       }
       const name = deps.safeDownloadName(
-        filename || `tiktok_${deps.now()}.mp4`,
+        filename || `tiktok_${nowMs()}.mp4`,
         "video/mp4"
       );
       const blob = await deps.withTabReferer(tabId, async () => {
-        const res = await deps.fetch(mediaUrl, {
+        const res = await fetchMedia(mediaUrl, {
           credentials: "include",
           cache: "no-store",
           headers: {
@@ -534,59 +586,97 @@
       const jid = jobId || deps.getCurrentJobContext();
       let targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
       targetPage = normalizeInstagramUrl(targetPage);
-      if (!targetPage || !deps.isInstagramUrl(targetPage)) {
-        throw new Error(
-          "Instagram 게시물 링크가 아닙니다. /p/… 또는 /reel/… 주소를 붙여 넣어 주세요"
-        );
-      }
       deps.emitDownloadProgress(tabId, 5, "Instagram 준비 중…", "start", jid);
+
+      const extractedUrls = [];
+      let extractedPermalink = "";
       if (tabId != null) {
         try {
           await deps.ensureContentScripts(tabId);
           await deps.chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" }).catch(() => {});
-          await deps.chrome.tabs
+          const ext = await deps.chrome.tabs
             .sendMessage(tabId, { type: "EXTRACT_INSTAGRAM" })
-            .catch(() => {});
+            .catch(() => null);
+          if (Array.isArray(ext?.urls)) extractedUrls.push(...ext.urls);
+          extractedPermalink = String(ext?.permalink || "").trim();
         } catch {
           // Use captured items.
         }
-        await new Promise((resolve) => deps.setTimeout(resolve, 400));
-        const items = deps.getTabItems(tabId);
-        if (items.length) {
-          const cdns = items.map((i) => i.url).filter((u) => deps.isInstagramCdnUrl(u));
-          for (const mediaUrl of cdns.slice(0, 5)) {
-            try {
-              deps.emitDownloadProgress(
-                tabId,
-                18,
-                "재생 스트림 저장 중…",
-                "download",
-                jid
-              );
-              const saved = await downloadDirectMediaUrl(
-                tabId,
-                mediaUrl,
-                targetPage,
-                filename
-              );
-              if (saved?.ok || saved?.downloadId != null) {
-                deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
-                return {
-                  ok: true,
-                  downloadId: saved.downloadId ?? null,
-                  path: saved.path || "",
-                  filename: saved.filename || filename,
-                  size: saved.size || 0,
-                  method: saved.method || "instagram-cdn",
-                  ytdlp: false
-                };
-              }
-            } catch (e) {
-              deps.console.warn("[UVD] instagram CDN", e);
-            }
-          }
+        await delay(400);
+      }
+
+      if (extractedPermalink) {
+        const permalink = normalizeInstagramUrl(extractedPermalink);
+        if (deps.isInstagramUrl(permalink) && !deps.isInstagramUrl(targetPage)) {
+          targetPage = permalink;
         }
       }
+
+      const cdnCandidates = [];
+      const seenCdn = new Set();
+      const pushCdn = (raw) => {
+        if (!raw || typeof raw !== "string") return;
+        if (deps.isInstagramDashFragmentUrl?.(raw)) return;
+        if (!deps.isInstagramCdnUrl(raw) && !deps.looksLikeVideoFileUrl(raw)) return;
+        const key = raw.split("#")[0];
+        if (seenCdn.has(key)) return;
+        seenCdn.add(key);
+        cdnCandidates.push(key);
+      };
+      extractedUrls.forEach(pushCdn);
+      if (tabId != null) {
+        for (const item of deps.getTabItems(tabId) || []) pushCdn(item?.url);
+      }
+      const rankedCdns =
+        typeof deps.rankInstagramMediaUrls === "function"
+          ? deps.rankInstagramMediaUrls(cdnCandidates)
+          : cdnCandidates.filter(
+              (url) =>
+                !deps.isInstagramDashFragmentUrl ||
+                !deps.isInstagramDashFragmentUrl(url)
+            );
+      let helperMediaUrl = "";
+      for (const mediaUrl of rankedCdns.slice(0, 5)) {
+        try {
+          deps.emitDownloadProgress(
+            tabId,
+            18,
+            "재생 스트림 저장 중…",
+            "download",
+            jid
+          );
+          const saved = await downloadDirectMediaUrl(
+            tabId,
+            mediaUrl,
+            targetPage,
+            filename
+          );
+          if (saved?.ok || saved?.downloadId != null) {
+            deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+            return {
+              ok: true,
+              downloadId: saved.downloadId ?? null,
+              path: saved.path || "",
+              filename: saved.filename || filename,
+              size: saved.size || 0,
+              method: saved.method || "instagram-cdn",
+              ytdlp: false
+            };
+          }
+          if (!helperMediaUrl) helperMediaUrl = mediaUrl;
+        } catch (e) {
+          deps.console.warn("[UVD] instagram CDN", e);
+          if (!helperMediaUrl) helperMediaUrl = mediaUrl;
+        }
+      }
+      if (!helperMediaUrl && rankedCdns.length) helperMediaUrl = rankedCdns[0];
+
+      if (!targetPage || !deps.isInstagramUrl(targetPage)) {
+        throw new Error(
+          "Instagram 게시물 링크가 아닙니다. 홈/릴스 피드가 아니라 /p/… 또는 /reel/… 주소를 열어 주세요"
+        );
+      }
+
       const helperUp = await deps.YtDlp.available().catch(() => false);
       if (!helperUp) {
         throw new Error(
@@ -597,15 +687,19 @@
         collectCookiesForUrl("https://www.instagram.com/"),
         getCookieHeaderForUrl("https://www.instagram.com/")
       ]);
-      if (!cookiesList.length) {
-        throw new Error(
-          "Instagram 로그인 쿠키가 없습니다. Chrome에서 instagram.com 에 로그인한 뒤 다시 시도해 주세요"
-        );
-      }
+      const hasSession = cookiesList.some(
+        (c) => String(c?.name || "").toLowerCase() === "sessionid" && c.value
+      );
+      // Public posts work with helper impersonate; sessionid is required for
+      // most current reels. hostOnly must travel with the cookie list.
       deps.emitDownloadProgress(
         tabId,
         28,
-        `Instagram 받는 중… (쿠키 ${cookiesList.length}개)`,
+        hasSession
+          ? `Instagram 받는 중… (로그인 쿠키)`
+          : cookiesList.length
+            ? "Instagram 받는 중… (로그인 없음)"
+            : "Instagram 받는 중…",
         "download",
         jid
       );
@@ -625,6 +719,12 @@
             outputStem: nameHint || undefined,
             cookieHeader: cookieHeader || undefined,
             cookiesList,
+            mediaUrl:
+              helperMediaUrl &&
+              (deps.isInstagramCdnUrl(helperMediaUrl) ||
+                deps.looksLikeVideoFileUrl(helperMediaUrl))
+                ? helperMediaUrl
+                : undefined,
             ...extra
           },
           (p) => {
@@ -634,9 +734,12 @@
             if (/\[download\]/i.test(message)) {
               message = `받는 중… ${Math.round(p.percent || 0)}%`;
             }
-            if (/login|log in|not logged|empty media|rate-limit|403|400/i.test(message)) {
-              message =
-                "Instagram 인증 문제 — 브라우저에서 로그인·새로고침 후 링크를 다시 붙여 넣어 주세요";
+            if (/impersonat|curl_cffi/i.test(message)) {
+              message = "yt-dlp 브라우저 흉내가 필요합니다. 도우미를 업데이트해 주세요";
+            } else if (/empty media|failed to parse json|video info extraction/i.test(message)) {
+              message = hasSession
+                ? "Instagram이 영상 정보를 주지 않았습니다. 릴스를 한 번 재생해 주세요"
+                : "Instagram 로그인이 필요합니다";
             }
             const pct = Math.min(98, Math.max(2, Number(p.percent) || 28));
             deps.emitDownloadProgress(tabId, pct, message, "download", jid, {
@@ -662,9 +765,28 @@
         };
       } catch (e) {
         const msg = String(e?.message || e);
-        if (/login|cookie|empty media|not granting|400|403|rate/i.test(msg)) {
+        if (/Illegal invocation/i.test(msg)) {
           throw new Error(
-            "Instagram 다운로드 실패. ① Chrome에서 로그인 ② 게시물/릴스를 한 번 열기 ③ 공유 링크를 다시 붙여 넣기"
+            "다운로드를 시작하지 못했습니다. 확장 프로그램을 새로고침한 뒤 다시 시도해 주세요"
+          );
+        }
+        if (/로컬 도우미가 필요합니다|게시물 링크가 아닙니다/.test(msg)) {
+          throw e;
+        }
+        if (/impersonat|curl_cffi/i.test(msg)) {
+          throw new Error(
+            "Instagram 추출에 브라우저 흉내(curl_cffi)가 필요합니다. helper에서 yt-dlp를 업데이트해 주세요"
+          );
+        }
+        if (
+          /empty media|failed to parse json|not granting|video info extraction|login required|rate-limit/i.test(
+            msg
+          )
+        ) {
+          throw new Error(
+            hasSession
+              ? "로그인 쿠키는 보냈지만 Instagram이 영상을 주지 않았습니다. 개별 릴스를 열고 한 번 재생한 뒤 다시 시도해 주세요"
+              : "Instagram 로그인이 필요합니다. Chrome에서 instagram.com에 로그인한 뒤 /reel/… 또는 /p/… 페이지에서 다시 받아 주세요"
           );
         }
         throw new Error(

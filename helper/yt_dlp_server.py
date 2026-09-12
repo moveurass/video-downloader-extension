@@ -15,6 +15,7 @@ Default: http://127.0.0.1:8787
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -404,10 +405,36 @@ def finish_stopped_job(job_id: str) -> bool:
     return False
 
 
+def netscape_cookie_domain(cookie: dict) -> tuple[str, str] | None:
+    """Map a Chrome cookie to a Netscape (domain, includeSubdomains) pair.
+
+    Chrome MV3 often returns Domain cookies as `instagram.com` with
+    `hostOnly: false` and no leading dot. Writing that as a host-only
+    Netscape row makes yt-dlp treat Instagram as logged-in, then fail
+    `media/{id}/info` without falling back to the public GraphQL path.
+    """
+    if not isinstance(cookie, dict):
+        return None
+    domain = str(cookie.get("domain") or "").strip()
+    if not domain:
+        return None
+    host_only = cookie.get("hostOnly")
+    if host_only is True:
+        return domain.lstrip("."), "FALSE"
+    if host_only is False or domain.startswith("."):
+        dotted = domain if domain.startswith(".") else f".{domain.lstrip('.')}"
+        return dotted, "TRUE"
+    # Legacy payloads omit hostOnly. A registrable domain without a leading
+    # dot is almost always a Domain cookie from chrome.cookies.
+    if domain.count(".") <= 1:
+        return f".{domain}", "TRUE"
+    return domain, "FALSE"
+
+
 def write_netscape_cookies(cookies: list, path: Path) -> int:
     """
     Write Chrome-exported cookies (list of dicts) as Netscape format for yt-dlp.
-    dict keys: name, value, domain, path, secure, expirationDate
+    dict keys: name, value, domain, path, secure, hostOnly, expirationDate
     """
     lines = ["# Netscape HTTP Cookie File", "# https://curl.se/docs/http-cookies.html", ""]
     n = 0
@@ -418,11 +445,10 @@ def write_netscape_cookies(cookies: list, path: Path) -> int:
         value = str(c.get("value") or "")
         if not name:
             continue
-        domain = str(c.get("domain") or "")
-        if not domain:
+        mapped = netscape_cookie_domain(c)
+        if not mapped:
             continue
-        # Netscape: subdomain flag TRUE if domain starts with .
-        flag = "TRUE" if domain.startswith(".") else "FALSE"
+        domain, flag = mapped
         cpath = str(c.get("path") or "/")
         secure = "TRUE" if c.get("secure") else "FALSE"
         try:
@@ -440,6 +466,69 @@ def write_netscape_cookies(cookies: list, path: Path) -> int:
     except OSError:
         pass
     return n
+
+
+def cookie_has_name(cookies: list, name: str) -> bool:
+    want = (name or "").lower()
+    return any(
+        isinstance(c, dict)
+        and str(c.get("name") or "").lower() == want
+        and str(c.get("value") or "")
+        for c in (cookies or [])
+    )
+
+
+def cookies_without_name(cookies: list, name: str) -> list:
+    want = (name or "").lower()
+    return [
+        c
+        for c in (cookies or [])
+        if not (
+            isinstance(c, dict) and str(c.get("name") or "").lower() == want
+        )
+    ]
+
+
+def instagram_logged_in_extract_failed(text: str) -> bool:
+    """yt-dlp took the sessionid path and did not fall back to GraphQL."""
+    t = (text or "").lower()
+    return any(
+        needle in t
+        for needle in (
+            "empty media",
+            "failed to parse json",
+            "http error 404",
+            "http error 403",
+            "http error 400",
+            "no longer valid",
+            "not granting access",
+            "login required",
+            "video info extraction failed",
+        )
+    )
+
+
+def classify_instagram_helper_error(err: str, has_session: bool) -> str:
+    """Honest Instagram failure line — do not collapse every cause into login."""
+    t = (err or "").lower()
+    if "impersonat" in t or "curl_cffi" in t:
+        return (
+            "Instagram 추출에 브라우저 흉내(curl_cffi)가 필요합니다. "
+            "도우미의 yt-dlp를 최신으로 업데이트해 주세요"
+        )
+    if "unsupported url" in t:
+        return "Instagram 게시물/릴스 주소가 아닙니다. /p/… 또는 /reel/… 링크를 넣어 주세요"
+    if instagram_logged_in_extract_failed(err) or "unable to extract" in t or "status code 0" in t:
+        if has_session:
+            return (
+                "로그인 쿠키는 보냈지만 Instagram이 영상을 주지 않았습니다. "
+                "개별 릴스를 열고 한 번 재생한 뒤 다시 시도해 주세요"
+            )
+        return (
+            "Instagram 로그인이 필요합니다. Chrome에서 instagram.com에 로그인한 뒤 "
+            "개별 릴스(/reel/…) 또는 게시물(/p/…)을 열고 다시 받아 주세요"
+        )
+    return ""
 
 
 def cookie_header_to_list(cookie_header: str, scope_url: str) -> list[dict]:
@@ -477,6 +566,7 @@ def cookie_header_to_list(cookie_header: str, scope_url: str) -> list[dict]:
                 "path": "/",
                 "secure": secure,
                 "httpOnly": False,
+                "hostOnly": False,
                 "expirationDate": 0,
             }
         )
@@ -676,6 +766,19 @@ def resolve_tiktok_via_public_apis(page_url: str) -> dict | None:
     return None
 
 
+DASH_INIT_BRANDS = {b"dash", b"cmfc", b"cmfs"}
+
+
+def _is_dash_init_segment(head: bytes) -> bool:
+    """True for CMAF/DASH init boxes (ftyp dash/cmfc), not a playable progressive mp4."""
+    if not head or len(head) < 16 or head[4:8] != b"ftyp":
+        return False
+    brands = {head[8:12]}
+    for offset in range(16, min(len(head), 64) - 3, 4):
+        brands.add(head[offset : offset + 4])
+    return bool(brands & DASH_INIT_BRANDS)
+
+
 def _sniff_is_video(head: bytes) -> bool:
     if not head or len(head) < 12:
         return False
@@ -692,7 +795,7 @@ def _sniff_is_video(head: bytes) -> bool:
         return False
     # Video containers
     if len(head) >= 8 and head[4:8] == b"ftyp":  # MP4/MOV
-        return True
+        return not _is_dash_init_segment(head)
     if head[:4] == b"\x1aE\xdf\xa3":  # WebM/MKV
         return True
     if head[:1] == b"G":  # MPEG-TS sync
@@ -742,6 +845,7 @@ def download_url_to_file(
     referer: str = "https://www.tiktok.com/",
     cookie_header: str = "",
     should_cancel=None,
+    origin: str | None = None,
 ) -> int:
     """Stream download media_url to dest. Returns bytes written. Rejects non-video."""
     # Block obvious non-video URLs
@@ -751,7 +855,7 @@ def download_url_to_file(
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Referer": referer or "https://www.tiktok.com/",
         "Accept": "video/mp4,video/*,*/*;q=0.8",
-        "Origin": "https://www.tiktok.com",
+        "Origin": origin or "https://www.tiktok.com",
     }
     # play_url may come from a third-party resolver (tikwm etc.) or a page-
     # supplied CDN URL; never hand the session cookie jar to those hosts.
@@ -772,13 +876,20 @@ def download_url_to_file(
             if not chunk:
                 break
             if written == 0:
-                first = chunk[:16]
+                first = chunk[:64]
+                if _is_dash_init_segment(first):
+                    raise ValueError("dash init segment, not a playable mp4")
                 if not _sniff_is_video(first) and not ctype.startswith("video/"):
                     raise ValueError("response is not a video file")
             f.write(chunk)
             written += len(chunk)
     if written < 100_000:
         raise ValueError(f"file too small ({written})")
+    if dest.is_file() and dest.stat().st_size < 100_000:
+        raise ValueError(f"file too small ({dest.stat().st_size})")
+    with dest.open("rb") as probe:
+        if _is_dash_init_segment(probe.read(64)):
+            raise ValueError("dash init segment, not a playable mp4")
     return written
 
 
@@ -894,6 +1005,73 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
             except Exception:
                 pass
         # A cancelled or paused job must not fall through to the yt-dlp attempts.
+        return stopped
+
+
+def try_instagram_direct_download(job_id: str, payload: dict, outtmpl_base: str) -> bool:
+    """Save a page-extracted Instagram CDN URL. Returns True if the job finished."""
+    page_url = (payload.get("pageUrl") or payload.get("url") or "").strip()
+    media_hint = (payload.get("mediaUrl") or "").strip()
+    if not media_hint.startswith("http") or not is_instagram_cdn_url(media_hint):
+        return False
+    title_hint = supplied_title_hint(payload) or outtmpl_base
+    shortcode = instagram_shortcode(page_url) or instagram_shortcode(media_hint)
+    title = title_hint if title_hint and not is_generic_name(title_hint) else ""
+    if not title:
+        title = f"instagram_{shortcode}" if shortcode else "instagram_video"
+    safe = clean_name(title) or "instagram_video"
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    work = TMP_ROOT / f"ig-{job_id}.part"
+    dest: Path | None = None
+    with jobs_lock:
+        jobs[job_id]["message"] = "Instagram 재생 주소로 받는 중…"
+        jobs[job_id]["percent"] = 15
+        jobs[job_id]["target"] = media_hint[:120]
+    try:
+        size = download_url_to_file(
+            media_hint,
+            work,
+            referer=page_url or "https://www.instagram.com/",
+            cookie_header="",
+            origin="https://www.instagram.com",
+            should_cancel=lambda: bool(
+                jobs.get(job_id, {}).get("cancel")
+                or jobs.get(job_id, {}).get("pause")
+            ),
+        )
+        if size < 100_000:
+            work.unlink(missing_ok=True)
+            return False
+        dest = unique_output_path(OUT_DIR, f"{safe}.mp4")
+        shutil.move(str(work), str(dest))
+        with jobs_lock:
+            jobs[job_id].update(
+                {
+                    "status": "done",
+                    "percent": 100,
+                    "message": f"저장 완료 → {dest}",
+                    "path": str(dest),
+                    "filename": dest.name,
+                    "size": size,
+                    "method": "instagram-cdn",
+                    "finishedAt": time.time(),
+                }
+            )
+        return True
+    except Exception as e:
+        with jobs_lock:
+            cancelled = bool(jobs[job_id].get("cancel"))
+            paused = bool(jobs[job_id].get("pause"))
+            stopped = cancelled or paused
+            if not stopped:
+                jobs[job_id]["message"] = f"Instagram 직접 저장 실패: {e}"
+        for path in (work, dest):
+            if path is None:
+                continue
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
         return stopped
 
 
@@ -1282,6 +1460,119 @@ def find_ytdlp() -> str | None:
     return None
 
 
+def is_instagram_download(site: str, *urls: str) -> bool:
+    """Recognize Instagram pages and share/short hosts."""
+    if (site or "").lower() == "instagram":
+        return True
+    instagram_domains = ("instagram.com", "instagr.am", "cdninstagram.com")
+    for value in urls:
+        try:
+            host = (urlparse(value or "").hostname or "").lower().rstrip(".")
+        except Exception:
+            continue
+        if any(host == domain or host.endswith(f".{domain}") for domain in instagram_domains):
+            return True
+    return False
+
+
+def normalize_instagram_target(target: str) -> str:
+    """Canonicalize share /reels/ and instagr.am links for the Instagram extractor."""
+    raw = (target or "").strip()
+    if not raw:
+        return raw
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        netloc = "www.instagram.com" if host.endswith("instagr.am") else parsed.netloc
+        path = parsed.path or "/"
+        path = re.sub(r"/share/(reels?)/", "/reel/", path, flags=re.I)
+        path = re.sub(r"/share/(p|tv)/", r"/\1/", path, flags=re.I)
+        # Only rewrite /reels/SHORTCODE — the /reels/ feed has no shortcode.
+        path = re.sub(r"/reels/([A-Za-z0-9_-]+)", r"/reel/\1", path, flags=re.I)
+        if not path.endswith("/"):
+            path += "/"
+        return urlunparse((parsed.scheme or "https", netloc, path, "", "", ""))
+    except Exception:
+        return raw
+
+
+def instagram_shortcode(url: str) -> str:
+    match = re.search(r"/(?:reel|reels|p|tv)/([A-Za-z0-9_-]+)", url or "", flags=re.I)
+    return match.group(1) if match else ""
+
+
+def _decode_instagram_efg(efg: str) -> str:
+    raw = (efg or "").replace("-", "+").replace("_", "/")
+    raw += "=" * (-len(raw) % 4)
+    try:
+        return base64.b64decode(raw).decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def is_instagram_dash_fragment_url(url: str) -> bool:
+    value = url or ""
+    if not re.match(r"^https?://", value, re.I):
+        return False
+    if re.search(r"\.(?:m4s|mpd)(?:\?|$)", value, re.I):
+        return True
+    if re.search(r"(?:^|[/_-])(?:init|init-stream|dashinit|dash_init)(?:[._-]|\.mp4)", value, re.I):
+        return True
+    if re.search(r"[?&](?:bytestart|byteend|start_byte|end_byte)=", value, re.I):
+        return True
+    if re.search(r"/dash(?:/|_)", value, re.I):
+        return True
+    if re.search(r"[?&](?:cmfaz|fragment_type|dash_manifest)=", value, re.I):
+        return True
+    try:
+        efg = (parse_qs(urlparse(value).query).get("efg") or [""])[0]
+    except Exception:
+        efg = ""
+    if efg and ("dash" in efg.lower() or "dash" in _decode_instagram_efg(efg).lower()):
+        return True
+    return bool(re.search(r"[?&]efg=[^&]*(?:dash|Rhc2h|ZGFza)", value, re.I))
+
+
+def is_instagram_cdn_url(url: str) -> bool:
+    value = url or ""
+    if not re.match(r"^https?://", value, re.I):
+        return False
+    if is_instagram_dash_fragment_url(value):
+        return False
+    if re.search(r"\.(jpe?g|png|gif|webp|bmp|svg|js|css|mpd|m4s)(\?|$)", value, re.I):
+        return False
+    if re.search(r"cdninstagram\.com|fbcdn\.net", value, re.I) and (
+        re.search(r"\.mp4(\?|$)", value, re.I) or re.search(r"video|/v/t", value, re.I)
+    ):
+        return True
+    return bool(re.search(r"\.mp4(\?|$)", value, re.I) and re.search(r"instagram", value, re.I))
+
+
+def instagram_ytdlp_attempts(fmt: str) -> list[tuple[str, str, list[str]]]:
+    """Instagram GraphQL extraction needs TLS impersonation (curl_cffi).
+
+    Extension Netscape cookies are attached separately in build_cmd when
+    present. cookies-from-browser stays last because Chrome locks that DB
+    while the user is still browsing.
+    """
+    fmt = (fmt or "best").strip() or "best"
+    imp_chrome = ["--impersonate", "chrome"]
+    imp_android = ["--impersonate", "chrome-131:android-14"]
+    imp_ios = ["--impersonate", "safari-18.0:ios-18.0"]
+    cfb = ["--cookies-from-browser", "chrome", "--impersonate", "chrome"]
+    return [
+        (fmt, "mp4", imp_chrome),
+        ("best", "mp4", imp_chrome),
+        ("b", "mp4", imp_chrome),
+        ("b", "mp4", imp_android),
+        ("b", "mp4", imp_ios),
+        ("best", "mp4", cfb),
+        (fmt, "mp4", []),
+        ("best", "mp4", []),
+        ("b", "mp4", ["--cookies-from-browser", "chrome"]),
+    ]
+
+
 def is_youtube_download(site: str, *urls: str) -> bool:
     """Recognize YouTube pages and the googlevideo media URLs they resolve to."""
     if (site or "").lower() == "youtube":
@@ -1472,20 +1763,34 @@ def origin_allowed(origin: str) -> bool:
     return origin.startswith("chrome-extension://")
 
 
-def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
+def authorization_error(handler: BaseHTTPRequestHandler) -> str:
+    """Empty string when authorized; otherwise a short 403 reason.
+
+    The previous single 'forbidden origin' label hid missing/stale tokens,
+    which made /formats (token attached) succeed while /download 403'd.
+    """
     origin = (handler.headers.get("Origin") or "").strip()
     token = (handler.headers.get("X-UVD-Token") or "").strip()
     expected_token = AUTH_TOKEN or auto_pairing.get("token") or ""
     # Local tools (curl, smoke) may omit Origin only when they present the
     # paired or configured token. Browsers cannot omit Origin on CORS fetches.
     if not origin:
-        return bool(expected_token) and token == expected_token
+        if expected_token and token == expected_token:
+            return ""
+        return "missing origin"
     if not origin_allowed(origin):
-        return False
+        return "forbidden origin"
     if not expected_token:
-        # Unpaired: /pair is the only unauthenticated write path.
-        return False
-    return token == expected_token
+        return "helper not paired"
+    if not token:
+        return "missing token"
+    if token != expected_token:
+        return "invalid token"
+    return ""
+
+
+def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
+    return not authorization_error(handler)
 
 
 def cors(handler: BaseHTTPRequestHandler) -> None:
@@ -1642,11 +1947,18 @@ def run_download(job_id: str, payload: dict) -> None:
 
     # ── TikTok first: SnapTik/TikWM-style resolve (no yt-dlp required) ──
     site_early = (payload.get("site") or "").lower()
+    media_hint_early = (payload.get("mediaUrl") or "").strip()
+    # A non-empty mediaUrl used to force the TikTok path. Instagram CDN
+    # hints must not inherit TikTok referers / cookie scoping.
     if (
-        site_early == "tiktok"
-        or is_tiktok_page(target)
-        or is_tiktok_page(page_url)
-        or (payload.get("mediaUrl") or "").strip()
+        site_early != "instagram"
+        and not is_instagram_download(site_early, target, page_url, media_hint_early)
+        and (
+            site_early == "tiktok"
+            or is_tiktok_page(target)
+            or is_tiktok_page(page_url)
+            or media_hint_early
+        )
     ):
         try:
             if try_tiktok_direct_download(job_id, payload, title_hint):
@@ -1715,12 +2027,7 @@ def run_download(job_id: str, payload: dict) -> None:
     is_youtube = is_youtube_download(site, target, page_url)
     youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []
     is_tiktok = site == "tiktok" or "tiktok" in host
-    is_instagram = (
-        site == "instagram"
-        or "instagram.com" in host
-        or "instagr.am" in host
-        or "instagram.com" in target
-    )
+    is_instagram = is_instagram_download(site, target, page_url)
     is_x = (
         site in ("x", "twitter")
         or host in ("x.com", "twitter.com", "t.co", "mobile.twitter.com")
@@ -1748,16 +2055,16 @@ def run_download(job_id: str, payload: dict) -> None:
 
     # Normalize Instagram URLs for yt-dlp
     if is_instagram and target:
+        target = normalize_instagram_target(target)
         try:
-            p = urlparse(target)
-            path = p.path.replace("/reels/", "/reel/")
-            if not path.endswith("/"):
-                path += "/"
-            target = urlunparse((p.scheme or "https", p.netloc, path, "", "", ""))
-        except Exception:
-            pass
+            if try_instagram_direct_download(job_id, payload, title_hint):
+                return
+        except Exception as e:
+            with jobs_lock:
+                jobs[job_id]["message"] = f"Instagram 직접 경로 실패, yt-dlp 시도… ({e})"
 
-    # Write browser cookies (from extension) to Netscape file — required for Instagram.
+    # Write browser cookies (from extension) to Netscape file when present.
+    # Public Instagram posts can still be extracted with --impersonate.
     # A bare cookieHeader is scoped to the page host here; it is never passed as a
     # global --add-header, which yt-dlp would send to every CDN/redirect host.
     cookies_file: str | None = None
@@ -2061,15 +2368,7 @@ def run_download(job_id: str, payload: dict) -> None:
         # for a plain file URL and only waste time when the CDN rejects us.
         attempts: list[tuple[str, str, list[str]]] = [("b", "mp4", [])]
     elif is_instagram:
-        # Instagram: cookies file first, then cookies-from-browser fallback
-        attempts: list[tuple[str, str, list[str]]] = [
-            (fmt, "mp4", []),
-            ("best", "mp4", []),
-            ("b", "mp4", []),
-            ("bestvideo+bestaudio/best", "mp4", []),
-            ("best", "mp4", ["--cookies-from-browser", "chrome"]),
-            ("b", "mp4", ["--cookies-from-browser", "chrome"]),
-        ]
+        attempts: list[tuple[str, str, list[str]]] = instagram_ytdlp_attempts(fmt)
     elif is_tiktok:
         # Impersonate real browsers — TikTok blocks bare yt-dlp IPs
         imp_chrome = ["--impersonate", "chrome"]
@@ -2132,6 +2431,7 @@ def run_download(job_id: str, payload: dict) -> None:
     js_runtime_fallback_used = False
     native_retry_index = -1
     js_runtime_retry_index = -1
+    ig_session_stripped = False
 
     try:
         for attempt_i, (fmt_try, merge_try, extra) in enumerate(attempts):
@@ -2305,6 +2605,34 @@ def run_download(job_id: str, payload: dict) -> None:
                 aria2_for_job = False
                 native_retry_index = attempt_i + 1
                 attempts.insert(native_retry_index, (fmt_try, merge_try, extra))
+                continue
+            if (
+                is_instagram
+                and not ig_session_stripped
+                and cookie_has_name(cookies_list, "sessionid")
+                and instagram_logged_in_extract_failed(last_line)
+            ):
+                ig_session_stripped = True
+                stripped = cookies_without_name(cookies_list, "sessionid")
+                if cookies_file:
+                    if stripped:
+                        write_netscape_cookies(stripped, Path(cookies_file))
+                    else:
+                        try:
+                            Path(cookies_file).unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        cookies_file = None
+                with jobs_lock:
+                    jobs[job_id]["message"] = (
+                        "로그인 API가 실패해 공개 추출로 다시 시도…"
+                    )
+                attempts.extend(
+                    [
+                        ("best", "mp4", ["--impersonate", "chrome"]),
+                        ("b", "mp4", ["--impersonate", "chrome"]),
+                    ]
+                )
                 continue
             if should_retry_without_js_runtimes(
                 bool(youtube_js_args),
@@ -2501,12 +2829,16 @@ def run_download(job_id: str, payload: dict) -> None:
                         "TikTok이 이 PC의 접근을 막았습니다. "
                         "브라우저에서 해당 영상을 재생한 뒤(로그인 권장) 다시 시도해 주세요"
                     )
-                elif "unable to extract" in err.lower() or "status code 0" in err.lower():
-                    err = "TikTok 정보를 읽지 못했습니다. 영상 페이지를 새로고침한 뒤 재생 후 다시 시도해 주세요"
-                elif "instagram" in err.lower() and (
-                    "login" in err.lower() or "cookie" in err.lower() or "rate-limit" in err.lower()
+                elif is_tiktok and (
+                    "unable to extract" in err.lower() or "status code 0" in err.lower()
                 ):
-                    err = "Instagram 로그인이 필요합니다. Chrome에서 로그인한 뒤 링크를 다시 붙여 넣어 주세요"
+                    err = "TikTok 정보를 읽지 못했습니다. 영상 페이지를 새로고침한 뒤 재생 후 다시 시도해 주세요"
+                elif is_instagram:
+                    friendly = classify_instagram_helper_error(
+                        err, cookie_has_name(cookies_list, "sessionid")
+                    )
+                    if friendly:
+                        err = friendly
                 elif aria2_fallback_used:
                     err = (
                         "aria2 고속 다운로드가 실패해 기본 다운로더로 다시 시도했지만 "
@@ -2601,8 +2933,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/job/"):
-            if not request_authorized(self):
-                send_json(self, 403, {"ok": False, "error": "forbidden origin"})
+            reason = authorization_error(self)
+            if reason:
+                send_json(self, 403, {"ok": False, "error": reason})
                 return
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
             if rest.endswith("/cancel"):
@@ -2638,8 +2971,9 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": ok, "error": error or None, "pairingMode": "paired" if ok else "manual" if AUTH_TOKEN else "unavailable"},
             )
             return
-        if not request_authorized(self):
-            send_json(self, 403, {"ok": False, "error": "forbidden origin"})
+        reason = authorization_error(self)
+        if reason:
+            send_json(self, 403, {"ok": False, "error": reason})
             return
 
         # Cancel running yt-dlp job
@@ -2806,6 +3140,9 @@ class Handler(BaseHTTPRequestHandler):
             site = (payload.get("site") or "").lower()
             is_youtube = is_youtube_download(site, url)
             is_tt = "tiktok" in url.lower()
+            is_ig = is_instagram_download(site, url)
+            if is_ig:
+                url = normalize_instagram_target(url)
             cookies_file = None
             try:
                 cookies_list = payload_cookie_list(payload, url)
@@ -2823,7 +3160,7 @@ class Handler(BaseHTTPRequestHandler):
                     "-J",
                 ]
                 cmd.extend(youtube_js_args)
-                if is_tt:
+                if is_tt or is_ig:
                     cmd.extend(["--impersonate", "chrome"])
                 if cookies_file:
                     cmd.extend(["--cookies", cookies_file])
@@ -2838,17 +3175,42 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 except subprocess.CalledProcessError as e:
                     err_text = getattr(e, "output", "") or str(e)
-                    if not should_retry_without_js_runtimes(
+                    if (
+                        is_ig
+                        and cookies_file
+                        and cookie_has_name(cookies_list, "sessionid")
+                        and instagram_logged_in_extract_failed(err_text)
+                    ):
+                        stripped = cookies_without_name(cookies_list, "sessionid")
+                        if stripped:
+                            write_netscape_cookies(stripped, Path(cookies_file))
+                        else:
+                            try:
+                                Path(cookies_file).unlink(missing_ok=True)
+                            except Exception:
+                                pass
+                            cookies_file = None
+                            if "--cookies" in cmd:
+                                idx = cmd.index("--cookies")
+                                del cmd[idx : idx + 2]
+                        out = subprocess.check_output(
+                            cmd,
+                            text=True,
+                            timeout=90,
+                            stderr=subprocess.STDOUT,
+                        )
+                    elif not should_retry_without_js_runtimes(
                         bool(youtube_js_args), False, e.returncode or 1, err_text
                     ):
                         raise
-                    cmd = drop_js_runtime_args(cmd)
-                    out = subprocess.check_output(
-                        cmd,
-                        text=True,
-                        timeout=90,
-                        stderr=subprocess.STDOUT,
-                    )
+                    else:
+                        cmd = drop_js_runtime_args(cmd)
+                        out = subprocess.check_output(
+                            cmd,
+                            text=True,
+                            timeout=90,
+                            stderr=subprocess.STDOUT,
+                        )
                 # -J prints JSON; may have warnings before/after — find last JSON object
                 text = out.strip()
                 # Prefer last line that looks like JSON object

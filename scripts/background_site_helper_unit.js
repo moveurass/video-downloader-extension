@@ -52,6 +52,8 @@ function baseDeps(overrides = {}) {
     isTiktokUrl: Sites.isTiktokUrl,
     isInstagramUrl: Sites.isInstagramUrl,
     isInstagramCdnUrl: Sites.isInstagramCdnUrl,
+    isInstagramDashFragmentUrl: Sites.isInstagramDashFragmentUrl,
+    rankInstagramMediaUrls: Sites.rankInstagramMediaUrls,
     looksLikeVideoFileUrl: (url) => /\.mp4(?:[?#]|$)/i.test(url),
     siteKind: Sites.siteKind,
     sniffIsVideo: () => true,
@@ -154,6 +156,7 @@ async function main() {
       path: "/",
       secure: true,
       httpOnly: true,
+      hostOnly: false,
       expirationDate: 99
     },
     {
@@ -163,6 +166,7 @@ async function main() {
       path: "/video",
       secure: true,
       httpOnly: true,
+      hostOnly: false,
       expirationDate: 99
     }
   ]);
@@ -180,7 +184,80 @@ async function main() {
     lazyRunner.normalizeInstagramUrl(" https://instagram.com/p/POST "),
     "https://instagram.com/p/POST/"
   );
+  equal(
+    lazyRunner.normalizeInstagramUrl(
+      "https://www.instagram.com/share/reel/SHARECODE/?igsh=x"
+    ),
+    "https://www.instagram.com/reel/SHARECODE/"
+  );
+  equal(
+    lazyRunner.normalizeInstagramUrl("https://www.instagram.com/share/p/POSTID/"),
+    "https://www.instagram.com/p/POSTID/"
+  );
+  equal(
+    lazyRunner.normalizeInstagramUrl("https://www.instagram.com/reels/"),
+    "https://www.instagram.com/reels/"
+  );
   equal(lazyRunner.normalizeInstagramUrl("not a url "), "not a url");
+
+  const igCookieQueries = [];
+  const igCookieRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: {
+        getAll: async (query) => {
+          igCookieQueries.push(query);
+          if (query.domain === "instagram.com") {
+            return [{
+              name: "csrftoken",
+              value: "tok",
+              domain: "instagram.com",
+              path: "/",
+              secure: true,
+              httpOnly: false,
+              hostOnly: false,
+              expirationDate: 99
+            }];
+          }
+          return [];
+        },
+        get: async (query) => {
+          igCookieQueries.push(query);
+          if (query.name === "sessionid") {
+            return {
+              name: "sessionid",
+              value: "sid123",
+              domain: "instagram.com",
+              path: "/",
+              secure: true,
+              httpOnly: true,
+              hostOnly: false,
+              expirationDate: 99
+            };
+          }
+          return null;
+        }
+      },
+      tabs: { sendMessage: async () => ({ urls: [] }) }
+    }
+  }));
+  const igCookies = await igCookieRunner.collectCookiesForUrl(
+    "https://www.instagram.com/reel/ABC123/"
+  );
+  equal(
+    igCookieQueries.some((q) => q.domain === "i.instagram.com"),
+    true,
+    "Instagram cookie lookup includes i.instagram.com"
+  );
+  equal(
+    igCookieQueries.some((q) => q.name === "sessionid"),
+    true,
+    "sessionid is fetched explicitly"
+  );
+  equal(
+    igCookies.some((c) => c.name === "sessionid" && c.value === "sid123" && c.hostOnly === false),
+    true,
+    "sessionid is exported with hostOnly"
+  );
 
   let ensureCalls = 0;
   const mediaRunner = createRunner(baseDeps({
@@ -439,6 +516,342 @@ async function main() {
     provisionalPayload.title,
     "Current provisional title.mp4"
   );
+
+  let igPayload;
+  const igNoCookieRunner = createRunner(baseDeps({
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igPayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    }
+  }));
+  const igResult = await igNoCookieRunner.downloadInstagram(
+    3,
+    "https://www.instagram.com/reel/ABC123/",
+    "Reel.mp4",
+    "best",
+    "ig-job"
+  );
+  equal(igPayload.site, "instagram");
+  equal(igPayload.url, "https://www.instagram.com/reel/ABC123/");
+  equal(igPayload.cookiesList.length, 0);
+  equal(igResult.ok, true);
+  equal(igResult.ytdlp, true);
+
+  let igHelperCalls = 0;
+  let igFetched = "";
+  const igCdnRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [
+                "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4"
+              ],
+              permalink: ""
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    fetch: async (url) => {
+      igFetched = url;
+      return {
+        ok: true,
+        headers: { get: () => "video/mp4" },
+        arrayBuffer: async () => new ArrayBuffer(100_001)
+      };
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async () => {
+        igHelperCalls += 1;
+        return {};
+      }
+    },
+    looksLikeVideoFileUrl: Sites.looksLikeVideoFileUrl,
+    sniffIsVideo: () => true,
+    downloadBlob: async (_blob, filename) => ({
+      filename,
+      size: 100_001,
+      downloadId: 77
+    })
+  }));
+  const igCdn = await igCdnRunner.downloadInstagram(
+    4,
+    "https://www.instagram.com/reel/ABC123/",
+    "FromPage.mp4",
+    "best",
+    "ig-cdn"
+  );
+  equal(
+    igFetched,
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4"
+  );
+  equal(igHelperCalls, 0);
+  equal(igCdn.ok, true);
+  equal(igCdn.ytdlp, false);
+
+  let igMediaPayload;
+  const igCdnFailRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [
+                "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4"
+              ],
+              permalink: ""
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    fetch: async () => {
+      throw new Error("HTTP 403");
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igMediaPayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    },
+    looksLikeVideoFileUrl: Sites.looksLikeVideoFileUrl
+  }));
+  await igCdnFailRunner.downloadInstagram(
+    7,
+    "https://www.instagram.com/reel/ABC123/",
+    "FromPage.mp4",
+    "best",
+    "ig-cdn-fail"
+  );
+  equal(
+    igMediaPayload.mediaUrl,
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4",
+    "failed page CDN fetch is handed to the helper"
+  );
+
+  let igDashPayload;
+  const igDashRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [
+                "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4",
+                "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4"
+              ],
+              permalink: ""
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    fetch: async () => {
+      throw new Error("HTTP 403");
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igDashPayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    },
+    looksLikeVideoFileUrl: Sites.looksLikeVideoFileUrl,
+    isInstagramCdnUrl: Sites.isInstagramCdnUrl,
+    isInstagramDashFragmentUrl: Sites.isInstagramDashFragmentUrl,
+    rankInstagramMediaUrls: Sites.rankInstagramMediaUrls
+  }));
+  await igDashRunner.downloadInstagram(
+    11,
+    "https://www.instagram.com/reel/ABC123/",
+    "Dash.mp4",
+    "best",
+    "ig-dash"
+  );
+  equal(
+    igDashPayload.mediaUrl,
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    "DASH init URLs are skipped; progressive play URL is handed to the helper"
+  );
+
+  let igPermalinkPayload;
+  const igPermalinkRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [],
+              permalink: "https://www.instagram.com/reel/FROMFEED/"
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igPermalinkPayload = payload;
+        return { path: "/tmp/feed.mp4", filename: "feed.mp4", size: 12 };
+      }
+    }
+  }));
+  await igPermalinkRunner.downloadInstagram(
+    5,
+    "https://www.instagram.com/reels/",
+    "Feed.mp4",
+    "best",
+    "ig-feed"
+  );
+  equal(igPermalinkPayload.url, "https://www.instagram.com/reel/FROMFEED/");
+
+  await rejects(
+    () => createRunner(baseDeps({
+      YtDlp: { available: async () => false, downloadAndWait: async () => ({}) }
+    })).downloadInstagram(
+      6,
+      "https://www.instagram.com/reel/ABC123/",
+      "x.mp4",
+      "best"
+    ),
+    /로컬 도우미가 필요합니다/
+  );
+
+  await rejects(
+    () => createRunner(baseDeps({
+      YtDlp: {
+        available: async () => true,
+        downloadAndWait: async () => {
+          throw new Error("Instagram sent an empty media response");
+        }
+      }
+    })).downloadInstagram(
+      8,
+      "https://www.instagram.com/reel/ABC123/",
+      "x.mp4",
+      "best"
+    ),
+    /Instagram 로그인이 필요합니다/
+  );
+
+  await rejects(
+    () => createRunner(baseDeps({
+      chrome: {
+        cookies: {
+          getAll: async () => [{
+            name: "sessionid",
+            value: "abc",
+            domain: "instagram.com",
+            path: "/",
+            secure: true,
+            httpOnly: true,
+            hostOnly: false,
+            expirationDate: 99
+          }],
+          get: async () => ({
+            name: "sessionid",
+            value: "abc",
+            domain: "instagram.com",
+            path: "/",
+            secure: true,
+            httpOnly: true,
+            hostOnly: false,
+            expirationDate: 99
+          })
+        },
+        tabs: { sendMessage: async () => ({ urls: [] }) }
+      },
+      YtDlp: {
+        available: async () => true,
+        downloadAndWait: async () => {
+          throw new Error("Failed to parse JSON");
+        }
+      }
+    })).downloadInstagram(
+      9,
+      "https://www.instagram.com/reel/ABC123/",
+      "x.mp4",
+      "best"
+    ),
+    /로그인 쿠키는 보냈지만/
+  );
+
+  await rejects(
+    () => createRunner(baseDeps({
+      YtDlp: { available: async () => true, downloadAndWait: async () => ({}) }
+    })).downloadInstagram(
+      10,
+      "https://www.instagram.com/reels/",
+      "x.mp4",
+      "best"
+    ),
+    /홈\/릴스 피드/
+  );
+
+  function chromeUnboundNow() {
+    if (this !== Date) throw new TypeError("Illegal invocation");
+    return 99;
+  }
+  function chromeUnboundSetTimeout() {
+    throw new TypeError("Illegal invocation");
+  }
+  let igHostSafePayload;
+  const igHostSafeRunner = createRunner(baseDeps({
+    now: chromeUnboundNow,
+    setTimeout: chromeUnboundSetTimeout,
+    fetch() {
+      throw new TypeError("Illegal invocation");
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igHostSafePayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    }
+  }));
+  const igHostSafe = await igHostSafeRunner.downloadInstagram(
+    12,
+    "https://www.instagram.com/reel/ABC123/",
+    "Reel.mp4",
+    "best",
+    "ig-host"
+  );
+  equal(igHostSafe.ok, true, "unbound Date.now / setTimeout / fetch must not abort Instagram");
+  equal(igHostSafePayload.site, "instagram");
+
+  const igDirect = await createRunner(baseDeps({
+    now: chromeUnboundNow,
+    fetch: async () => ({
+      ok: true,
+      headers: { get: () => "video/mp4" },
+      arrayBuffer: async () => new ArrayBuffer(100_001)
+    }),
+    sniffIsVideo: () => true,
+    downloadBlob: async (_blob, filename) => ({ filename, size: 100_001, downloadId: 9 })
+  })).downloadDirectMediaUrl(
+    1,
+    "https://cdn.example/clip.mp4",
+    "https://www.instagram.com/reel/ABC123/",
+    ""
+  );
+  equal(igDirect.ok, true);
+  equal(/^tiktok_\d+\.mp4$/.test(igDirect.filename), true);
 
   console.log(`background_site_helper_unit: ${assertions} assertions passed`);
 }
