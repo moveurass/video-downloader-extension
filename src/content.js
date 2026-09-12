@@ -790,6 +790,49 @@
       }
     }
 
+    // Instagram: og:video / page JSON CDNs, plus a permalink when the
+    // address bar is still /reels/ (home feed) or a share link.
+    if (isInstagramHost()) {
+      const permalink = extractInstagramPermalink();
+      for (const u of extractInstagramPlayUrls()) {
+        items.push({
+          url: u,
+          title,
+          pageTitle: title,
+          host,
+          filename: buildFilename(title, null, "mp4"),
+          type: "video",
+          source: "instagram-page",
+          isHls: false,
+          isSiteDownload: false,
+          site: "instagram",
+          thumbnail: thumb || undefined,
+          pageUrl: permalink || location.href
+        });
+      }
+      if (
+        permalink &&
+        !items.some((item) => item.url === permalink) &&
+        typeof UVDSites !== "undefined" &&
+        !UVDSites.isInstagramPostUrl(location.href)
+      ) {
+        items.push({
+          url: permalink,
+          pageUrl: permalink,
+          title,
+          pageTitle: title,
+          host,
+          filename: buildFilename(title, null, "mp4"),
+          type: "video",
+          source: "instagram-permalink",
+          isHls: false,
+          isSiteDownload: true,
+          site: "instagram",
+          thumbnail: thumb || undefined
+        });
+      }
+    }
+
     chrome.runtime
       .sendMessage({
         type: "PAGE_META",
@@ -921,9 +964,24 @@
    */
   function extractInstagramPlayUrls() {
     const found = new Set();
+    const videoKeys = new Set([
+      "video_url",
+      "video_src",
+      "playback_url",
+      "content_url",
+      "contenturl",
+      "src",
+      "browser_native_hd_url",
+      "browser_native_sd_url",
+      "video_dash_manifest"
+    ]);
+
     function add(raw) {
       if (!raw || typeof raw !== "string") return;
-      let u = raw.replace(/\\u0026/g, "&").replace(/\\\//g, "/");
+      let u = raw
+        .replace(/\\u0026/g, "&")
+        .replace(/\\u002f/gi, "/")
+        .replace(/\\\//g, "/");
       try {
         u = decodeURIComponent(u);
       } catch {
@@ -931,8 +989,14 @@
       }
       if (!/^https?:\/\//i.test(u)) return;
       if (/\.(jpe?g|png|gif|webp|bmp)(\?|$)/i.test(u)) return;
-      if (!/\.mp4(\?|$)/i.test(u) && !/cdninstagram|fbcdn\.net/i.test(u)) return;
-      if (/\.mp4(\?|$)/i.test(u) || /video/i.test(u)) found.add(u.split("#")[0]);
+      const clean = u.split("#")[0];
+      if (typeof UVDSites !== "undefined" && UVDSites.isInstagramCdnUrl(clean)) {
+        found.add(clean);
+        return;
+      }
+      if (/\.mp4(\?|$)/i.test(clean) && /cdninstagram|fbcdn\.net|instagram/i.test(clean)) {
+        found.add(clean);
+      }
     }
 
     document
@@ -951,7 +1015,13 @@
     function walk(obj, depth) {
       if (!obj || depth > 30) return;
       if (typeof obj === "string") {
-        if (/\.mp4/i.test(obj) || /cdninstagram|fbcdn\.net.*video/i.test(obj)) add(obj);
+        if (
+          /\.mp4/i.test(obj) ||
+          /cdninstagram|fbcdn\.net/i.test(obj) ||
+          /browser_native_(hd|sd)_url/i.test(obj)
+        ) {
+          add(obj);
+        }
         return;
       }
       if (Array.isArray(obj)) {
@@ -961,10 +1031,7 @@
       if (typeof obj !== "object") return;
       for (const [k, v] of Object.entries(obj)) {
         const kl = String(k).toLowerCase();
-        if (
-          ["video_url", "video_src", "playback_url", "content_url", "src"].includes(kl) &&
-          typeof v === "string"
-        ) {
+        if (videoKeys.has(kl) && typeof v === "string") {
           add(v);
         } else if (kl === "video_versions" && Array.isArray(v)) {
           for (const x of v) {
@@ -979,17 +1046,45 @@
     document.querySelectorAll('script[type="application/ld+json"], script').forEach((s) => {
       const t = (s.textContent || "").trim();
       if (t.length < 80 || t.length > 2_000_000) return;
-      if (!/video|cdninstagram|fbcdn|\.mp4/i.test(t)) return;
+      if (!/video|cdninstagram|fbcdn|\.mp4|shortcode|browser_native/i.test(t)) return;
       try {
         if (t.startsWith("{") || t.startsWith("[")) walk(JSON.parse(t), 0);
       } catch {
-        const re = /https?:\/\/[^"'\\\s]+\.mp4[^"'\\\s]*/gi;
+        const re = /https?:\/\/[^"'\\\s]+(?:\.mp4|cdninstagram|fbcdn\.net)[^"'\\\s]*/gi;
         let m;
         while ((m = re.exec(t)) !== null) add(m[0]);
       }
     });
 
     return [...found].slice(0, 10);
+  }
+
+  function extractInstagramPermalink() {
+    const found = [];
+    const consider = (raw) => {
+      if (!raw || typeof raw !== "string") return;
+      let u = raw.replace(/\\u0026/g, "&").replace(/\\\//g, "/").split("#")[0];
+      if (!/^https?:\/\//i.test(u) && /^\/?(p|reel|reels|tv|stories)\//i.test(u)) {
+        u = `https://www.instagram.com/${u.replace(/^\//, "")}`;
+      }
+      if (typeof UVDSites !== "undefined" && UVDSites.isInstagramPostUrl(u)) {
+        found.push(u.split("?")[0]);
+      }
+    };
+    consider(document.querySelector('link[rel="canonical"]')?.href);
+    consider(document.querySelector('meta[property="og:url"]')?.content);
+    consider(location.href);
+    if (found[0]) return found[0];
+    const html = document.documentElement?.innerHTML || "";
+    const re =
+      /https?:\/\/(?:www\.)?instagram\.com\/(?:share\/)?(?:p|reel|reels|tv)\/[A-Za-z0-9_-]+/gi;
+    let m;
+    let guard = 0;
+    while ((m = re.exec(html)) !== null && guard < 20) {
+      consider(m[0]);
+      guard += 1;
+    }
+    return found[0] || "";
   }
 
   function scheduleScan() {
@@ -1507,6 +1602,7 @@
 
     if (msg.type === "EXTRACT_INSTAGRAM") {
       const urls = extractInstagramPlayUrls();
+      const permalink = extractInstagramPermalink();
       if (urls.length) {
         const title = pageTitle();
         sendItems(
@@ -1518,15 +1614,17 @@
             filename: buildFilename(title, null, "mp4"),
             type: "video",
             source: "instagram-page",
-            site: "instagram"
+            site: "instagram",
+            pageUrl: permalink || location.href
           }))
         );
       }
       sendResponse({
-        ok: urls.length > 0,
+        ok: urls.length > 0 || !!permalink,
         urls,
+        permalink,
         title: pageTitle(),
-        pageUrl: location.href
+        pageUrl: permalink || location.href
       });
       return false;
     }

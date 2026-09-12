@@ -183,7 +183,10 @@
         if (/instagr\.am$/i.test(u.hostname)) {
           u.hostname = "www.instagram.com";
         }
-        u.pathname = u.pathname.replace(/\/reels\//i, "/reel/");
+        u.pathname = u.pathname
+          .replace(/\/share\/(reels?)\//i, "/reel/")
+          .replace(/\/share\/(p|tv)\//i, "/$1/")
+          .replace(/\/reels\//i, "/reel/");
         u.search = "";
         u.hash = "";
         if (!u.pathname.endsWith("/")) u.pathname += "/";
@@ -534,59 +537,84 @@
       const jid = jobId || deps.getCurrentJobContext();
       let targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
       targetPage = normalizeInstagramUrl(targetPage);
+      deps.emitDownloadProgress(tabId, 5, "Instagram 준비 중…", "start", jid);
+
+      const extractedUrls = [];
+      let extractedPermalink = "";
+      if (tabId != null) {
+        try {
+          await deps.ensureContentScripts(tabId);
+          await deps.chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" }).catch(() => {});
+          const ext = await deps.chrome.tabs
+            .sendMessage(tabId, { type: "EXTRACT_INSTAGRAM" })
+            .catch(() => null);
+          if (Array.isArray(ext?.urls)) extractedUrls.push(...ext.urls);
+          extractedPermalink = String(ext?.permalink || "").trim();
+        } catch {
+          // Use captured items.
+        }
+        await new Promise((resolve) => deps.setTimeout(resolve, 400));
+      }
+
+      if (extractedPermalink) {
+        const permalink = normalizeInstagramUrl(extractedPermalink);
+        if (deps.isInstagramUrl(permalink) && !deps.isInstagramUrl(targetPage)) {
+          targetPage = permalink;
+        }
+      }
+
+      const cdnCandidates = [];
+      const seenCdn = new Set();
+      const pushCdn = (raw) => {
+        if (!raw || typeof raw !== "string") return;
+        if (!deps.isInstagramCdnUrl(raw) && !deps.looksLikeVideoFileUrl(raw)) return;
+        const key = raw.split("#")[0];
+        if (seenCdn.has(key)) return;
+        seenCdn.add(key);
+        cdnCandidates.push(key);
+      };
+      extractedUrls.forEach(pushCdn);
+      if (tabId != null) {
+        for (const item of deps.getTabItems(tabId) || []) pushCdn(item?.url);
+      }
+      for (const mediaUrl of cdnCandidates.slice(0, 5)) {
+        try {
+          deps.emitDownloadProgress(
+            tabId,
+            18,
+            "재생 스트림 저장 중…",
+            "download",
+            jid
+          );
+          const saved = await downloadDirectMediaUrl(
+            tabId,
+            mediaUrl,
+            targetPage,
+            filename
+          );
+          if (saved?.ok || saved?.downloadId != null) {
+            deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
+            return {
+              ok: true,
+              downloadId: saved.downloadId ?? null,
+              path: saved.path || "",
+              filename: saved.filename || filename,
+              size: saved.size || 0,
+              method: saved.method || "instagram-cdn",
+              ytdlp: false
+            };
+          }
+        } catch (e) {
+          deps.console.warn("[UVD] instagram CDN", e);
+        }
+      }
+
       if (!targetPage || !deps.isInstagramUrl(targetPage)) {
         throw new Error(
           "Instagram 게시물 링크가 아닙니다. /p/… 또는 /reel/… 주소를 붙여 넣어 주세요"
         );
       }
-      deps.emitDownloadProgress(tabId, 5, "Instagram 준비 중…", "start", jid);
-      if (tabId != null) {
-        try {
-          await deps.ensureContentScripts(tabId);
-          await deps.chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" }).catch(() => {});
-          await deps.chrome.tabs
-            .sendMessage(tabId, { type: "EXTRACT_INSTAGRAM" })
-            .catch(() => {});
-        } catch {
-          // Use captured items.
-        }
-        await new Promise((resolve) => deps.setTimeout(resolve, 400));
-        const items = deps.getTabItems(tabId);
-        if (items.length) {
-          const cdns = items.map((i) => i.url).filter((u) => deps.isInstagramCdnUrl(u));
-          for (const mediaUrl of cdns.slice(0, 5)) {
-            try {
-              deps.emitDownloadProgress(
-                tabId,
-                18,
-                "재생 스트림 저장 중…",
-                "download",
-                jid
-              );
-              const saved = await downloadDirectMediaUrl(
-                tabId,
-                mediaUrl,
-                targetPage,
-                filename
-              );
-              if (saved?.ok || saved?.downloadId != null) {
-                deps.emitDownloadProgress(tabId, 100, "저장 완료", "done", jid);
-                return {
-                  ok: true,
-                  downloadId: saved.downloadId ?? null,
-                  path: saved.path || "",
-                  filename: saved.filename || filename,
-                  size: saved.size || 0,
-                  method: saved.method || "instagram-cdn",
-                  ytdlp: false
-                };
-              }
-            } catch (e) {
-              deps.console.warn("[UVD] instagram CDN", e);
-            }
-          }
-        }
-      }
+
       const helperUp = await deps.YtDlp.available().catch(() => false);
       if (!helperUp) {
         throw new Error(
@@ -597,15 +625,13 @@
         collectCookiesForUrl("https://www.instagram.com/"),
         getCookieHeaderForUrl("https://www.instagram.com/")
       ]);
-      if (!cookiesList.length) {
-        throw new Error(
-          "Instagram 로그인 쿠키가 없습니다. Chrome에서 instagram.com 에 로그인한 뒤 다시 시도해 주세요"
-        );
-      }
+      // Public posts work with helper impersonate; cookies help private / login walls.
       deps.emitDownloadProgress(
         tabId,
         28,
-        `Instagram 받는 중… (쿠키 ${cookiesList.length}개)`,
+        cookiesList.length
+          ? `Instagram 받는 중… (쿠키 ${cookiesList.length}개)`
+          : "Instagram 받는 중…",
         "download",
         jid
       );

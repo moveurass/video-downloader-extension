@@ -133,6 +133,30 @@ assert.ok(
 assert.equal(Sites.siteKind("https://youtu.be/abc", ""), "youtube");
 assert.equal(Sites.isInstagramPostUrl("https://instagram.com/reel/abc_123/"), true);
 assert.equal(Sites.isInstagramPostUrl("https://instagram.com/example-user/"), false);
+assert.equal(
+  Sites.isInstagramPostUrl("https://www.instagram.com/share/reel/ABC123/"),
+  true
+);
+assert.equal(
+  Sites.isInstagramPostUrl("https://www.instagram.com/user.name/reel/ABC123/"),
+  true
+);
+assert.equal(
+  Sites.isInstagramPostUrl("https://www.instagram.com/stories/user.name/1234567890/"),
+  true
+);
+assert.equal(Sites.isInstagramPostUrl("https://www.instagram.com/reels/"), false);
+assert.equal(
+  Sites.isInstagramCdnUrl(
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/AQNclip?_nc_cat=1"
+  ),
+  true
+);
+assert.equal(
+  Sites.isDownloadableSiteVideo("https://www.instagram.com/reel/abc_123/"),
+  true
+);
+assert.equal(Sites.isDownloadableSiteVideo("https://www.instagram.com/"), false);
 assert.equal(Sites.isTiktokCdnUrl("https://cdn.example/image.jpg"), false);
 
 const current = {

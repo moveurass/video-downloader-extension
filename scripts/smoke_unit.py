@@ -130,6 +130,31 @@ def main() -> int:
             "/usr/local/bin/aria2c", "fast", True
         ),
     )
+    ig_attempts = helper_server.instagram_ytdlp_attempts("best")
+    check(
+        "Instagram helper impersonates Chrome before cookies-from-browser",
+        any(attempt[2][:2] == ["--impersonate", "chrome"] for attempt in ig_attempts)
+        and ig_attempts[0][2] == ["--impersonate", "chrome"]
+        and any("--cookies-from-browser" in attempt[2] for attempt in ig_attempts)
+        and ig_attempts[0][2] != ["--cookies-from-browser", "chrome"],
+    )
+    check(
+        "Instagram share links normalize to /reel/ or /p/",
+        helper_server.normalize_instagram_target(
+            "https://www.instagram.com/share/reel/CODE/?igsh=1"
+        )
+        == "https://www.instagram.com/reel/CODE/"
+        and helper_server.normalize_instagram_target(
+            "https://instagr.am/reels/CODE"
+        )
+        == "https://www.instagram.com/reel/CODE/"
+        and helper_server.is_instagram_download(
+            "", "https://www.instagram.com/reel/CODE/"
+        )
+        and not helper_server.is_instagram_download(
+            "", "https://instagram.com.evil.example/reel/CODE"
+        ),
+    )
     original_which = helper_server.shutil.which
     try:
         helper_server.shutil.which = lambda name: {

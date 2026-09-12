@@ -1282,6 +1282,66 @@ def find_ytdlp() -> str | None:
     return None
 
 
+def is_instagram_download(site: str, *urls: str) -> bool:
+    """Recognize Instagram pages and share/short hosts."""
+    if (site or "").lower() == "instagram":
+        return True
+    instagram_domains = ("instagram.com", "instagr.am", "cdninstagram.com")
+    for value in urls:
+        try:
+            host = (urlparse(value or "").hostname or "").lower().rstrip(".")
+        except Exception:
+            continue
+        if any(host == domain or host.endswith(f".{domain}") for domain in instagram_domains):
+            return True
+    return False
+
+
+def normalize_instagram_target(target: str) -> str:
+    """Canonicalize share /reels/ and instagr.am links for the Instagram extractor."""
+    raw = (target or "").strip()
+    if not raw:
+        return raw
+    try:
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        netloc = "www.instagram.com" if host.endswith("instagr.am") else parsed.netloc
+        path = parsed.path or "/"
+        path = re.sub(r"/share/(reels?)/", "/reel/", path, flags=re.I)
+        path = re.sub(r"/share/(p|tv)/", r"/\1/", path, flags=re.I)
+        path = re.sub(r"/reels/", "/reel/", path, flags=re.I)
+        if not path.endswith("/"):
+            path += "/"
+        return urlunparse((parsed.scheme or "https", netloc, path, "", "", ""))
+    except Exception:
+        return raw
+
+
+def instagram_ytdlp_attempts(fmt: str) -> list[tuple[str, str, list[str]]]:
+    """Instagram GraphQL extraction needs TLS impersonation (curl_cffi).
+
+    Extension Netscape cookies are attached separately in build_cmd when
+    present. cookies-from-browser stays last because Chrome locks that DB
+    while the user is still browsing.
+    """
+    fmt = (fmt or "best").strip() or "best"
+    imp_chrome = ["--impersonate", "chrome"]
+    imp_android = ["--impersonate", "chrome-131:android-14"]
+    imp_ios = ["--impersonate", "safari-18.0:ios-18.0"]
+    cfb = ["--cookies-from-browser", "chrome", "--impersonate", "chrome"]
+    return [
+        (fmt, "mp4", imp_chrome),
+        ("best", "mp4", imp_chrome),
+        ("b", "mp4", imp_chrome),
+        ("b", "mp4", imp_android),
+        ("b", "mp4", imp_ios),
+        ("best", "mp4", cfb),
+        (fmt, "mp4", []),
+        ("best", "mp4", []),
+        ("b", "mp4", ["--cookies-from-browser", "chrome"]),
+    ]
+
+
 def is_youtube_download(site: str, *urls: str) -> bool:
     """Recognize YouTube pages and the googlevideo media URLs they resolve to."""
     if (site or "").lower() == "youtube":
@@ -1715,12 +1775,7 @@ def run_download(job_id: str, payload: dict) -> None:
     is_youtube = is_youtube_download(site, target, page_url)
     youtube_js_args = ytdlp_js_runtime_args() if is_youtube else []
     is_tiktok = site == "tiktok" or "tiktok" in host
-    is_instagram = (
-        site == "instagram"
-        or "instagram.com" in host
-        or "instagr.am" in host
-        or "instagram.com" in target
-    )
+    is_instagram = is_instagram_download(site, target, page_url)
     is_x = (
         site in ("x", "twitter")
         or host in ("x.com", "twitter.com", "t.co", "mobile.twitter.com")
@@ -1748,16 +1803,10 @@ def run_download(job_id: str, payload: dict) -> None:
 
     # Normalize Instagram URLs for yt-dlp
     if is_instagram and target:
-        try:
-            p = urlparse(target)
-            path = p.path.replace("/reels/", "/reel/")
-            if not path.endswith("/"):
-                path += "/"
-            target = urlunparse((p.scheme or "https", p.netloc, path, "", "", ""))
-        except Exception:
-            pass
+        target = normalize_instagram_target(target)
 
-    # Write browser cookies (from extension) to Netscape file — required for Instagram.
+    # Write browser cookies (from extension) to Netscape file when present.
+    # Public Instagram posts can still be extracted with --impersonate.
     # A bare cookieHeader is scoped to the page host here; it is never passed as a
     # global --add-header, which yt-dlp would send to every CDN/redirect host.
     cookies_file: str | None = None
@@ -2061,15 +2110,7 @@ def run_download(job_id: str, payload: dict) -> None:
         # for a plain file URL and only waste time when the CDN rejects us.
         attempts: list[tuple[str, str, list[str]]] = [("b", "mp4", [])]
     elif is_instagram:
-        # Instagram: cookies file first, then cookies-from-browser fallback
-        attempts: list[tuple[str, str, list[str]]] = [
-            (fmt, "mp4", []),
-            ("best", "mp4", []),
-            ("b", "mp4", []),
-            ("bestvideo+bestaudio/best", "mp4", []),
-            ("best", "mp4", ["--cookies-from-browser", "chrome"]),
-            ("b", "mp4", ["--cookies-from-browser", "chrome"]),
-        ]
+        attempts: list[tuple[str, str, list[str]]] = instagram_ytdlp_attempts(fmt)
     elif is_tiktok:
         # Impersonate real browsers — TikTok blocks bare yt-dlp IPs
         imp_chrome = ["--impersonate", "chrome"]
@@ -2501,12 +2542,18 @@ def run_download(job_id: str, payload: dict) -> None:
                         "TikTok이 이 PC의 접근을 막았습니다. "
                         "브라우저에서 해당 영상을 재생한 뒤(로그인 권장) 다시 시도해 주세요"
                     )
-                elif "unable to extract" in err.lower() or "status code 0" in err.lower():
-                    err = "TikTok 정보를 읽지 못했습니다. 영상 페이지를 새로고침한 뒤 재생 후 다시 시도해 주세요"
-                elif "instagram" in err.lower() and (
-                    "login" in err.lower() or "cookie" in err.lower() or "rate-limit" in err.lower()
+                elif is_tiktok and (
+                    "unable to extract" in err.lower() or "status code 0" in err.lower()
                 ):
-                    err = "Instagram 로그인이 필요합니다. Chrome에서 로그인한 뒤 링크를 다시 붙여 넣어 주세요"
+                    err = "TikTok 정보를 읽지 못했습니다. 영상 페이지를 새로고침한 뒤 재생 후 다시 시도해 주세요"
+                elif is_instagram and (
+                    "login" in err.lower()
+                    or "cookie" in err.lower()
+                    or "rate-limit" in err.lower()
+                    or "unable to extract" in err.lower()
+                    or "status code 0" in err.lower()
+                ):
+                    err = "Instagram 정보를 읽지 못했습니다. 게시물/릴스를 연 뒤(로그인 권장) 다시 시도해 주세요"
                 elif aria2_fallback_used:
                     err = (
                         "aria2 고속 다운로드가 실패해 기본 다운로더로 다시 시도했지만 "
@@ -2806,6 +2853,7 @@ class Handler(BaseHTTPRequestHandler):
             site = (payload.get("site") or "").lower()
             is_youtube = is_youtube_download(site, url)
             is_tt = "tiktok" in url.lower()
+            is_ig = is_instagram_download(site, url)
             cookies_file = None
             try:
                 cookies_list = payload_cookie_list(payload, url)
@@ -2823,7 +2871,7 @@ class Handler(BaseHTTPRequestHandler):
                     "-J",
                 ]
                 cmd.extend(youtube_js_args)
-                if is_tt:
+                if is_tt or is_ig:
                     cmd.extend(["--impersonate", "chrome"])
                 if cookies_file:
                     cmd.extend(["--cookies", cookies_file])

@@ -188,19 +188,29 @@
     );
   }
 
+  const INSTAGRAM_POST_PATH =
+    /\/(?:share\/)?(?:p|reel|reels|tv)\/[A-Za-z0-9_-]+/i;
+  const INSTAGRAM_STORY_PATH = /\/stories\/(?:highlights\/)?[^/]+\/\d+/i;
+
   function isInstagramPostUrl(url) {
     if (!url) return false;
     try {
       const parsed = new URL(url);
       const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
-      if (host === "instagr.am") return (parsed.pathname || "/").length > 2;
+      const path = parsed.pathname || "";
+      if (host === "instagr.am") {
+        return path.length > 2 || INSTAGRAM_POST_PATH.test(path) || INSTAGRAM_STORY_PATH.test(path);
+      }
       if (host === "instagram.com" || host.endsWith(".instagram.com")) {
-        return /\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(parsed.pathname || "");
+        return INSTAGRAM_POST_PATH.test(path) || INSTAGRAM_STORY_PATH.test(path);
       }
     } catch {
       // Fall through to the conservative string check.
     }
-    return /instagram\.com\/(p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(url);
+    return (
+      /instagram\.com\/(?:share\/)?(?:p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(url) ||
+      /instagram\.com\/stories\/(?:highlights\/)?[^/?#]+\/\d+/i.test(url)
+    );
   }
 
   const isInstagramUrl = isInstagramPostUrl;

@@ -180,6 +180,16 @@ async function main() {
     lazyRunner.normalizeInstagramUrl(" https://instagram.com/p/POST "),
     "https://instagram.com/p/POST/"
   );
+  equal(
+    lazyRunner.normalizeInstagramUrl(
+      "https://www.instagram.com/share/reel/SHARECODE/?igsh=x"
+    ),
+    "https://www.instagram.com/reel/SHARECODE/"
+  );
+  equal(
+    lazyRunner.normalizeInstagramUrl("https://www.instagram.com/share/p/POSTID/"),
+    "https://www.instagram.com/p/POSTID/"
+  );
   equal(lazyRunner.normalizeInstagramUrl("not a url "), "not a url");
 
   let ensureCalls = 0;
@@ -438,6 +448,131 @@ async function main() {
   equal(
     provisionalPayload.title,
     "Current provisional title.mp4"
+  );
+
+  let igPayload;
+  const igNoCookieRunner = createRunner(baseDeps({
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igPayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    }
+  }));
+  const igResult = await igNoCookieRunner.downloadInstagram(
+    3,
+    "https://www.instagram.com/reel/ABC123/",
+    "Reel.mp4",
+    "best",
+    "ig-job"
+  );
+  equal(igPayload.site, "instagram");
+  equal(igPayload.url, "https://www.instagram.com/reel/ABC123/");
+  equal(igPayload.cookiesList.length, 0);
+  equal(igResult.ok, true);
+  equal(igResult.ytdlp, true);
+
+  let igHelperCalls = 0;
+  let igFetched = "";
+  const igCdnRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [
+                "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4"
+              ],
+              permalink: ""
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    fetch: async (url) => {
+      igFetched = url;
+      return {
+        ok: true,
+        headers: { get: () => "video/mp4" },
+        arrayBuffer: async () => new ArrayBuffer(100_001)
+      };
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async () => {
+        igHelperCalls += 1;
+        return {};
+      }
+    },
+    looksLikeVideoFileUrl: Sites.looksLikeVideoFileUrl,
+    sniffIsVideo: () => true,
+    downloadBlob: async (_blob, filename) => ({
+      filename,
+      size: 100_001,
+      downloadId: 77
+    })
+  }));
+  const igCdn = await igCdnRunner.downloadInstagram(
+    4,
+    "https://www.instagram.com/reel/ABC123/",
+    "FromPage.mp4",
+    "best",
+    "ig-cdn"
+  );
+  equal(
+    igFetched,
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4"
+  );
+  equal(igHelperCalls, 0);
+  equal(igCdn.ok, true);
+  equal(igCdn.ytdlp, false);
+
+  let igPermalinkPayload;
+  const igPermalinkRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [],
+              permalink: "https://www.instagram.com/reel/FROMFEED/"
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igPermalinkPayload = payload;
+        return { path: "/tmp/feed.mp4", filename: "feed.mp4", size: 12 };
+      }
+    }
+  }));
+  await igPermalinkRunner.downloadInstagram(
+    5,
+    "https://www.instagram.com/reels/",
+    "Feed.mp4",
+    "best",
+    "ig-feed"
+  );
+  equal(igPermalinkPayload.url, "https://www.instagram.com/reel/FROMFEED/");
+
+  await rejects(
+    () => createRunner(baseDeps({
+      YtDlp: { available: async () => false, downloadAndWait: async () => ({}) }
+    })).downloadInstagram(
+      6,
+      "https://www.instagram.com/reel/ABC123/",
+      "x.mp4",
+      "best"
+    ),
+    /로컬 도우미가 필요합니다/
   );
 
   console.log(`background_site_helper_unit: ${assertions} assertions passed`);
