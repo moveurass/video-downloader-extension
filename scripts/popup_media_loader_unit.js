@@ -631,6 +631,90 @@ async function main() {
   check(imageSrc, "", "cleared thumbnail removes the previous image");
   check(mediaRebuilds, 0, "clearing a thumbnail does not rebuild the pane");
 
+  const ttPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  const ttCover = "https://p19-common-sign.tiktokcdn-us.com/cover";
+  let ttPatchSrc = "";
+  let ttPatchSrcWrites = 0;
+  let ttDataThumb = "";
+  const ttPatchImg = {
+    getAttribute: (name) => {
+      if (name === "src") return ttPatchSrc;
+      if (name === "data-thumb-url") return ttDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") {
+        ttPatchSrc = value;
+        ttPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") ttDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") {
+        ttPatchSrc = "";
+        ttPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") ttDataThumb = "";
+    }
+  };
+  const ttPatchThumb = { innerHTML: "" };
+  const ttPatchCard = {
+    dataset: {
+      mediaIdentity: `tt:7674902153491664150\nmedia\n${ttPermalink}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? ttPatchImg
+        : selector === ".thumb"
+          ? ttPatchThumb
+          : selector === ".name"
+            ? { textContent: "", title: "" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let ttPatchItems = [{
+    url: ttPermalink,
+    pageUrl: ttPermalink,
+    title: "jumping killing shoot",
+    thumbnail: ttCover
+  }];
+  const ttPatchRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? ttPatchCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "tt:7674902153491664150",
+    displayName: (item) => item.title,
+    downloadFilename: () => "tiktok.mp4",
+    siteLabel: () => "TikTok",
+    thumbHtml: (item) =>
+      `<img class="thumb-img" data-thumb-url="${item.thumbnail}" alt="" />`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => ttPatchItems,
+    setAllItems: (items) => {
+      ttPatchItems = items;
+    },
+    getCurrentTabUrl: () => ttPermalink
+  });
+  check(ttPatchRenderer.patch(), true, "on-page TikTok card patches in place");
+  check(
+    ttPatchSrcWrites,
+    0,
+    "on-page PAGE_META must not paint a TikTok CDN cover as img.src"
+  );
+  check(
+    ttDataThumb,
+    ttCover,
+    "on-page cover is parked on data-thumb-url for FETCH_THUMB"
+  );
+
   const genericItem = {
     filename: "동영상_720p.mp4",
     pageUrl,
@@ -722,6 +806,141 @@ async function main() {
     fallbackThumb.innerHTML.includes("data:image/jpeg;base64,YQ=="),
     true,
     "hydrate recreates the img after a 🎬 fallback"
+  );
+
+  const onPagePermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  const onPageCdn =
+    "https://v16-webapp-prime.us.tiktok.com/video/tos/on-page.mp4";
+  const onPageCover = "https://p19-common-sign.tiktokcdn-us.com/cover";
+  const onPageTab = {
+    id: 11,
+    url: onPagePermalink,
+    title: "jumping killing shoot | TikTok"
+  };
+  let onPageItems = [];
+  let onPageTabUrl = null;
+  let onPageTabId = null;
+  const onPageHydrateCalls = [];
+  const onPageElements = {
+    quickBox: { classList: classList() },
+    btnThisPage: { textContent: "" },
+    quickHint: { textContent: "" },
+    linkInput: { value: "", title: "" }
+  };
+  const onPageLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [onPageTab],
+        get: async () => onPageTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type === "GET_PAGE_META") {
+            return {
+              title: "TikTok",
+              thumbnail: "",
+              pageUrl: onPagePermalink,
+              lastUrl: onPagePermalink
+            };
+          }
+          if (message.type === "EXTRACT_TIKTOK") {
+            return { ok: true, urls: [onPageCdn], thumbnail: "" };
+          }
+          return { ok: true };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: onPageCdn,
+                pageUrl: onPagePermalink,
+                title: "TikTok",
+                pageTitle: "TikTok",
+                thumbnail: "",
+                source: "tiktok-page",
+                site: "tiktok",
+                type: "video"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => onPageElements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items) =>
+      (items || []).map((item) => ({ ...item })),
+    pageKey: (url) => {
+      const match = String(url || "").match(/\/video\/(\d+)/);
+      return match ? `tt:${match[1]}` : String(url || "").replace(/[?#].*$/, "");
+    },
+    isInstagramUrl: () => false,
+    isTiktokUrl: (url) => /tiktok\.com/i.test(url || ""),
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: (url) => /\/@[\w.-]+\/video\/\d+/.test(url || ""),
+    isHlsItem: () => false,
+    cleanTitleText: (value) => value,
+    isUglyName: PopupMedia.isUglyName,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    patchMedia: () => false,
+    hydrateRemoteThumbnails: async (items) => {
+      onPageHydrateCalls.push(
+        (items || []).map((item) => String(item?.thumbnail || ""))
+      );
+    },
+    loadAvailableQualities: async (item) => {
+      onPageItems = [{
+        ...item,
+        thumbnail: onPageCover,
+        title: "jumping killing shoot"
+      }];
+    },
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => onPageItems,
+    setAllItems: (items) => {
+      onPageItems = items;
+    },
+    getCurrentTabId: () => onPageTabId,
+    setCurrentTabId: (value) => {
+      onPageTabId = value;
+    },
+    getCurrentTabUrl: () => onPageTabUrl,
+    setCurrentTabUrl: (value) => {
+      onPageTabUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {}
+  });
+  await onPageLoader.loadMedia();
+  check(onPageTabUrl, onPagePermalink, "on-page loader stays on the video permalink");
+  check(
+    onPageItems[0].thumbnail,
+    onPageCover,
+    "on-page TikTok video card gets the formats cover without pasting"
+  );
+  check(
+    onPageHydrateCalls.some((batch) => batch.includes(onPageCover)),
+    true,
+    "on-page formats cover is handed to FETCH_THUMB hydrate"
+  );
+  check(
+    onPageItems[0].url,
+    onPageCdn,
+    "on-page EXTRACT play-CDN is still the media url"
   );
 
   console.log(`popup media loader: ${assertions} assertions passed`);

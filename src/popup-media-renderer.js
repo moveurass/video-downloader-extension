@@ -500,9 +500,35 @@
         const thumb = card.querySelector(".thumb");
         const image = card.querySelector(".thumb-img");
         if (item.thumbnail) {
+          const thumbUrl = String(item.thumbnail);
+          const isDataThumb = thumbUrl.startsWith("data:image/");
           if (image) {
-            if (image.getAttribute("src") !== item.thumbnail) {
-              image.setAttribute("src", item.thumbnail);
+            const currentSrc = image.getAttribute("src") || "";
+            if (isDataThumb) {
+              if (currentSrc !== thumbUrl) {
+                image.setAttribute("src", thumbUrl);
+              }
+              if (typeof image.removeAttribute === "function") {
+                image.removeAttribute("data-thumb-url");
+              }
+            } else if (needsRemoteThumbHydration(thumbUrl)) {
+              // Never paint a hotlink-blocked CDN as src. On-page PAGE_META
+              // used to do that and bindThumbFallback replaced the img with 🎬
+              // before FETCH_THUMB could hydrate — paste cards skipped this
+              // because they only go through render() + data-thumb-url.
+              if (currentSrc && !currentSrc.startsWith("data:image/")) {
+                if (currentSrc !== thumbUrl) {
+                  if (typeof image.removeAttribute === "function") {
+                    image.removeAttribute("src");
+                  } else {
+                    image.setAttribute("src", "");
+                  }
+                }
+              } else if (!currentSrc && typeof image.setAttribute === "function") {
+                image.setAttribute("data-thumb-url", thumbUrl);
+              }
+            } else if (currentSrc !== thumbUrl) {
+              image.setAttribute("src", thumbUrl);
             }
           } else if (thumb) {
             thumb.innerHTML = thumbHtml(item);

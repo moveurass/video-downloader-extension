@@ -77,6 +77,7 @@
         refreshHelperStatus,
         render,
         patchMedia,
+        hydrateRemoteThumbnails,
         loadAvailableQualities,
         loadPlaylistInfo,
         hidePlaylistBox,
@@ -571,6 +572,17 @@
         }
         if (isSuperseded(requestId, tab)) return;
         render();
+        const painted = getAllItems()[0];
+        const paintedThumb = String(painted?.thumbnail || "");
+        if (
+          paintedThumb &&
+          /^https?:/i.test(paintedThumb) &&
+          typeof hydrateRemoteThumbnails === "function"
+        ) {
+          // On-page TikTok: formats/og covers are CDN URLs. Paste cards
+          // hydrate via render(); the PAGE_META patch path needs this too.
+          void hydrateRemoteThumbnails([painted]);
+        }
 
         currentTabUrl = getCurrentTabUrl();
         // Playlist panel (YouTube /playlist?list= or watch+list)

@@ -405,6 +405,71 @@ async function main() {
     "formats cover hydrates an empty paste-target card"
   );
 
+  const playCdn =
+    "https://v16-webapp-prime.us.tiktok.com/video/tos/on-page.mp4";
+  check(
+    QualityState.isSameProbedMedia(
+      { url: playCdn, pageUrl: qaPermalink },
+      qaPermalink,
+      qaPermalink,
+      qaPermalink,
+      Sites
+    ),
+    true,
+    "EXTRACT play-CDN is the same probed TikTok video as the permalink"
+  );
+  check(
+    QualityState.isSameProbedMedia(
+      { url: "https://cdn.example/feature.m3u8" },
+      "https://cdn.example/preview.m3u8",
+      "https://cdn.example/preview.m3u8",
+      "https://example.com/watch",
+      Sites
+    ),
+    false,
+    "unrelated media URLs are not the same probe"
+  );
+
+  const onPageHarness = makeHarness();
+  onPageHarness.setCurrentTabUrl(qaPermalink);
+  onPageHarness.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true
+  }]);
+  let finishOnPage;
+  const onPageProbe = new Promise((resolve) => {
+    finishOnPage = resolve;
+  });
+  onPageHarness.runtimeResponses.push(onPageProbe);
+  const onPageLoad = onPageHarness.controller.loadAvailableQualities(
+    onPageHarness.getAllItems()[0]
+  );
+  onPageHarness.setAllItems([{
+    title: "TikTok",
+    url: playCdn,
+    pageUrl: qaPermalink,
+    thumbnail: ""
+  }]);
+  finishOnPage({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    title: "jumping killing shoot"
+  });
+  await onPageLoad;
+  check(
+    onPageHarness.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/cover",
+    "on-page TikTok video keeps the formats cover after EXTRACT swaps in a play-CDN"
+  );
+  check(
+    onPageHarness.getAllItems()[0].url,
+    playCdn,
+    "on-page EXTRACT play-CDN url is left in place"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

@@ -940,6 +940,7 @@
         refreshHelperStatus,
         render,
         patchMedia,
+        hydrateRemoteThumbnails: mediaRenderer.hydrateRemoteThumbnails,
         loadAvailableQualities,
         loadPlaylistInfo,
         hidePlaylistBox,
