@@ -153,6 +153,7 @@
               filename: saveName || title,
               pageUrl,
               quality: selectedQuality || "",
+              thumbnail: item.thumbnail || "",
               status: "running",
               percent: 3,
               message: "대기열에 추가됨…",
@@ -170,6 +171,7 @@
                 : "DOWNLOAD",
             url: useHelper || usePageFallback ? pageUrl : item.url,
             pageUrl,
+            thumbnail: item.thumbnail || "",
             filename: saveName,
             tabId: getCurrentTabId(),
             preferQuality: selectedQuality || "best",
@@ -191,6 +193,7 @@
                 filename: saveName || title,
                 pageUrl,
                 quality: selectedQuality || "",
+                thumbnail: item.thumbnail || "",
                 status: "running",
                 percent: 4,
                 message: "백그라운드에서 받는 중…",
@@ -458,6 +461,8 @@
           });
 
           const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const pastedThumb =
+            (sameAsCard && allItems[0]?.thumbnail) || opts.thumbnail || "";
           upsertUiJob(
             {
               id: tempId,
@@ -465,6 +470,7 @@
               filename: filename || displayLabel,
               pageUrl: pageUrlHint,
               quality: preferQ,
+              thumbnail: pastedThumb,
               status: "running",
               percent: 3,
               message: "대기열에 추가됨…",
@@ -484,6 +490,7 @@
               filename: filename || undefined,
               tabId: currentTabId,
               preferQuality: preferQ,
+              thumbnail: pastedThumb,
               title: realTitle && !UVD.isGenericSaveName(realTitle) ? realTitle : undefined
             });
           } else if (
@@ -528,6 +535,7 @@
                 title: displayLabel,
                 filename: filename || displayLabel,
                 pageUrl: link,
+                thumbnail: pastedThumb,
                 status: "running",
                 percent: 4,
                 message: "백그라운드에서 받는 중…",

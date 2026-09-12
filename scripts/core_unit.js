@@ -432,6 +432,19 @@ assert.equal(
   "1080p"
 );
 assert.equal(queuePresenter.jobPhaseLabel({ status: "paused" }), "일시정지");
+assert.ok(
+  queuePresenter.jobThumbHtml({
+    thumbnail: "data:image/jpeg;base64,abc"
+  }).includes('src="data:image/jpeg;base64,abc"'),
+  "queue row paints a data URL cover"
+);
+assert.ok(
+  PopupQueueUI.jobThumbHtml({
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    result: { thumbnailPath: "/tmp/cover.jpg" }
+  }).includes('data-thumb-url="https://p19-common-sign.tiktokcdn-us.com/cover"'),
+  "queue row keeps CDN covers off-src until hydration"
+);
 assert.equal(queuePresenter.cleanJobMessage("[download] 10% ETA 00:10", "download"), "받는 중…");
 
 assert.equal(PopupSeriesUI.isYouTubeVideoId("dQw4w9WgXcQ"), true);

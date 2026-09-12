@@ -43,6 +43,7 @@
             filename: filename || "",
             mediaMode: settings.mediaMode,
             quality: message.preferQuality || "best",
+            thumbnail: message.thumbnail || "",
             audioTrackId: message.audioTrackId || "",
             subtitleLanguages: Array.isArray(message.subtitleLanguages)
               ? message.subtitleLanguages

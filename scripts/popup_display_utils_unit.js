@@ -201,8 +201,13 @@ function main() {
   check(u.escapeAttr(`"'&<>`), "&quot;&#39;&amp;&lt;&gt;", "attribute escaping");
   check(
     u.thumbHtml({ thumbnail: `https://x.test/a'"&.jpg` }),
-    `<img class="thumb-img" src="https://x.test/a&#39;&quot;&amp;.jpg" alt="" loading="lazy" referrerpolicy="no-referrer" />`,
-    "thumbnail attribute escaping"
+    `<img class="thumb-img" data-thumb-url="https://x.test/a&#39;&quot;&amp;.jpg" alt="" />`,
+    "remote covers stay off-src until FETCH_THUMB hydrates them"
+  );
+  check(
+    u.thumbHtml({ thumbnail: "data:image/jpeg;base64,abc" }),
+    `<img class="thumb-img" src="data:image/jpeg;base64,abc" alt="" />`,
+    "data URL covers paint immediately"
   );
   check(
     u.thumbHtml({}),

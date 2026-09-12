@@ -63,6 +63,8 @@
         pageUrl: job.pageUrl,
         mediaUrl: job.mediaUrl || "",
         filename: job.filename,
+        thumbnail: job.thumbnail || "",
+        thumbnailPath: job.result?.thumbnailPath || job.thumbnailPath || "",
         status: job.status,
         percent: job.percent,
         progressVersion: job.progressVersion || UVDProgress.VERSION,

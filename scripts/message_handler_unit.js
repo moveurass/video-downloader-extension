@@ -774,6 +774,73 @@ async function main() {
     ]
   ]);
 
+  const pageFetches = [];
+  let helperFirstResponse = null;
+  const helperFirstHandler = createMediaMessageHandler({
+    chrome: {
+      tabs: {
+        get: async () => ({ url: "https://www.tiktok.com/explore" }),
+        sendMessage: async () => {
+          pageFetches.push("page");
+          await new Promise(() => {});
+        }
+      }
+    },
+    fetch: async () => {
+      throw new Error("sw should not run first");
+    },
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    YtDlp: {
+      fetchThumb: async (url, referer) => {
+        helperThumbs.push(["first", url, referer]);
+        return { ok: true, dataUrl: "data:image/jpeg;base64,Zmlyc3Q=" };
+      }
+    }
+  });
+  assert.deepEqual(
+    helperFirstHandler(
+      {
+        type: "FETCH_THUMB",
+        url: "https://p16-sign.tiktokcdn-eu.com/tos-cover",
+        referer: "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+      },
+      9,
+      {},
+      (value) => {
+        helperFirstResponse = value;
+      }
+    ),
+    { handled: true, keepChannel: true }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(helperFirstResponse.source, "helper");
+  assert.deepEqual(pageFetches, [], "TikTok CDN thumbs skip a hanging Explore page fetch");
+
+  let fileThumbResponse = null;
+  const fileThumbHandler = createMediaMessageHandler({
+    YtDlp: {
+      fetchThumb: async (url, referer, extra) => {
+        helperThumbs.push(["file", url, referer, extra]);
+        return { ok: true, dataUrl: "data:image/jpeg;base64,ZmlsZQ==" };
+      }
+    }
+  });
+  fileThumbHandler(
+    {
+      type: "FETCH_THUMB",
+      path: "/tmp/out/jumping.jpg",
+      referer: "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+    },
+    9,
+    {},
+    (value) => {
+      fileThumbResponse = value;
+    }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fileThumbResponse.source, "helper-file");
+  assert.equal(fileThumbResponse.dataUrl, "data:image/jpeg;base64,ZmlsZQ==");
+
   const oembedRequests = [];
   const youtubeMetaHandler = createMediaMessageHandler({
     fetch: async (url, options) => {

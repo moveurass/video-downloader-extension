@@ -91,19 +91,25 @@
         );
       }
 
+      function liveCard() {
+        return listEl?.querySelector?.(".card") || null;
+      }
+
       function applyThumbSrc(card, dataUrl) {
-        if (!card || !dataUrl) return;
-        const img = card.querySelector?.(".thumb-img");
+        const target = card || liveCard();
+        if (!target || !dataUrl) return;
+        const img = target.querySelector?.(".thumb-img");
         if (img) {
           if (img.getAttribute?.("src") !== dataUrl) {
             img.setAttribute("src", dataUrl);
           }
+          if (img.removeAttribute) img.removeAttribute("data-thumb-url");
           return;
         }
-        const thumb = card.querySelector?.(".thumb");
+        const thumb = target.querySelector?.(".thumb");
         if (thumb && typeof thumbHtml === "function") {
           thumb.innerHTML = thumbHtml({ thumbnail: dataUrl });
-          bindThumbFallback(card);
+          bindThumbFallback(target);
         }
       }
 
@@ -111,7 +117,8 @@
         const img = card?.querySelector?.(".thumb-img");
         if (!img?.addEventListener) return;
         img.addEventListener("error", async () => {
-          const src = img.getAttribute?.("src") || item?.thumbnail || "";
+          const src = img.getAttribute?.("src") || "";
+          if (!src) return;
           if (String(src).startsWith("data:")) {
             replaceThumbWithFallback(img);
             return;
@@ -141,10 +148,13 @@
       async function hydrateRemoteThumbnails(items) {
         const fetchThumb = deps.fetchThumbDataUrl;
         if (typeof fetchThumb !== "function") return;
-        const card = listEl?.querySelector?.(".card");
         await Promise.all(
           (items || []).map(async (item) => {
             const url = String(item?.thumbnail || "");
+            if (url.startsWith("data:image/")) {
+              applyThumbSrc(liveCard(), url);
+              return;
+            }
             if (!needsRemoteThumbHydration(url)) return;
             try {
               const dataUrl = await fetchThumb(
@@ -153,9 +163,9 @@
               );
               if (!dataUrl) return;
               item.thumbnail = dataUrl;
-              applyThumbSrc(card, dataUrl);
+              applyThumbSrc(liveCard(), dataUrl);
             } catch {
-              /* keep the HTTPS src; bindThumbFallback still runs */
+              /* pending img stays empty until a later hydrate */
             }
           })
         );

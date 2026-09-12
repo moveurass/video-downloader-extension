@@ -486,7 +486,10 @@
               patch.pageTitle = response.title;
               patch.displayName = response.title;
             }
-            if (response.thumbnail && !patch.thumbnail) {
+            if (
+              response.thumbnail &&
+              !String(patch.thumbnail || "").startsWith("data:image/")
+            ) {
               patch.thumbnail = response.thumbnail;
             }
             const bestQ =

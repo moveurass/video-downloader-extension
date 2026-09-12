@@ -700,6 +700,30 @@ async function main() {
   );
   check(hydratedSrc, "data:image/jpeg;base64,Y292ZXI=", "hydrate patches the visible img");
 
+  const fallbackThumb = { innerHTML: '<span class="thumb-fallback">🎬</span>' };
+  const fallbackCard = {
+    querySelector: (selector) =>
+      selector === ".thumb-img" ? null : selector === ".thumb" ? fallbackThumb : null
+  };
+  const fallbackItem = {
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    pageUrl: "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  };
+  const fallbackRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? fallbackCard : null)
+    },
+    document: {},
+    thumbHtml: (item) => `<img class="thumb-img" src="${item.thumbnail}" alt="" />`,
+    fetchThumbDataUrl: async () => "data:image/jpeg;base64,YQ=="
+  });
+  await fallbackRenderer.hydrateRemoteThumbnails([fallbackItem]);
+  check(
+    fallbackThumb.innerHTML.includes("data:image/jpeg;base64,YQ=="),
+    true,
+    "hydrate recreates the img after a 🎬 fallback"
+  );
+
   console.log(`popup media loader: ${assertions} assertions passed`);
 }
 

@@ -1379,6 +1379,20 @@ def verify_media_integrity(path: str | Path) -> dict:
     }
 
 
+def path_in_out_dir(path: str, out_root: Path | None = None) -> Path | None:
+    """Resolve a helper-owned file path, or None if it is outside OUT_DIR."""
+    root = (out_root or OUT_DIR).resolve()
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return None
+    if resolved != root and root not in resolved.parents:
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
+
+
 def reveal_in_file_manager(path: str, out_root: Path | None = None) -> bool:
     """
     Reveal a helper-saved file in the OS file manager. Chrome's downloads
@@ -3372,8 +3386,35 @@ class Handler(BaseHTTPRequestHandler):
             payload = read_json(self)
             image_url = str(payload.get("url") or "").strip()
             referer = str(payload.get("referer") or payload.get("pageUrl") or "").strip()
+            local_path = str(
+                payload.get("path") or payload.get("thumbnailPath") or ""
+            ).strip()
             if image_url.startswith("data:image/"):
                 send_json(self, 200, {"ok": True, "dataUrl": image_url})
+                return
+            if local_path:
+                resolved = path_in_out_dir(local_path)
+                if resolved is None:
+                    send_json(self, 403, {"ok": False, "error": "path outside output"})
+                    return
+                try:
+                    data = resolved.read_bytes()[:2_500_000]
+                except Exception:
+                    send_json(self, 502, {"ok": False, "error": "thumbnail read failed"})
+                    return
+                if len(data) < 400:
+                    send_json(self, 502, {"ok": False, "error": "thumbnail too small"})
+                    return
+                send_json(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "dataUrl": image_bytes_to_data_url(data),
+                        "bytes": len(data),
+                        "source": "file",
+                    },
+                )
                 return
             if not image_url.startswith(("http://", "https://")):
                 send_json(self, 400, {"ok": False, "error": "url required"})

@@ -219,6 +219,8 @@ def main() -> int:
             "data:image/jpeg;base64,"
         ),
     )
+    outside = helper_server.path_in_out_dir("/etc/passwd")
+    check("helper /thumb refuses paths outside the output tree", outside is None)
     check(
         "TikTok permalink normalize and explore rejection",
         helper_server.clean_tiktok_url(

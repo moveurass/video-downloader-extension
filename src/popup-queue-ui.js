@@ -5,6 +5,28 @@
 })(typeof globalThis !== "undefined" ? globalThis : self, function makeQueueUi() {
   "use strict";
 
+  function jobThumbHtml(job, escapeAttrFn) {
+    const escape =
+      typeof escapeAttrFn === "function"
+        ? escapeAttrFn
+        : (value) =>
+            String(value ?? "")
+              .replace(/&/g, "&amp;")
+              .replace(/"/g, "&quot;")
+              .replace(/</g, "&lt;");
+    const src = String(job?.thumbnail || "");
+    const path = String(
+      job?.result?.thumbnailPath || job?.thumbnailPath || ""
+    );
+    if (src.startsWith("data:image/")) {
+      return `<div class="dl-job-thumb"><img class="dl-job-thumb-img" src="${escape(src)}" alt="" /></div>`;
+    }
+    if (/^https?:/i.test(src) || path) {
+      return `<div class="dl-job-thumb"><img class="dl-job-thumb-img" data-thumb-url="${escape(src)}" data-thumb-path="${escape(path)}" alt="" /></div>`;
+    }
+    return `<div class="dl-job-thumb"><span class="dl-job-thumb-fallback" aria-hidden="true">🎬</span></div>`;
+  }
+
   function createPresenter(deps = {}) {
     const etaSmoothMap = new Map();
     const now = deps.now || Date.now;
@@ -169,8 +191,15 @@
       return text.length > 40 ? "받는 중…" : text;
     }
 
-    return { jobDisplayInfo, shortJobTitle, jobEtaLabel, jobPhaseLabel, cleanJobMessage };
+    return {
+      jobDisplayInfo,
+      jobThumbHtml,
+      shortJobTitle,
+      jobEtaLabel,
+      jobPhaseLabel,
+      cleanJobMessage
+    };
   }
 
-  return { createPresenter };
+  return { createPresenter, jobThumbHtml };
 });

@@ -260,6 +260,10 @@
         maxConcurrentStarts: MAX_CONCURRENT_STARTS,
         playCompletionSound: () => soundController.playCompletion(),
         sendMessage: (message) => chrome.runtime.sendMessage(message),
+        fetchThumbDataUrl: (url, referer, extra) =>
+          typeof fetchThumbDataUrl === "function"
+            ? fetchThumbDataUrl(url, referer, extra)
+            : Promise.resolve(""),
         recoveryActionsHtml: (...args) => recoveryActionsHtml(...args),
         bindRecoveryButtons: (...args) => bindRecoveryButtons(...args),
         getPlaylistDl: () => playlistDl,

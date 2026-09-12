@@ -439,17 +439,67 @@
           (async () => {
             try {
               const url = String(msg.url || "").trim();
-              if (!url) {
-                sendResponse({ ok: false, error: "url 없음" });
-                return;
-              }
+              const localPath = String(
+                msg.path || msg.thumbnailPath || ""
+              ).trim();
+              const referer = String(
+                msg.referer || msg.pageUrl || ""
+              ).trim();
+              const tryHelperThumb = async () => {
+                if (typeof deps.YtDlp?.fetchThumb !== "function") return null;
+                const helper = await deps.YtDlp.fetchThumb(url, referer, {
+                  path: localPath
+                });
+                if (
+                  helper?.ok &&
+                  String(helper.dataUrl || "").startsWith("data:image/")
+                ) {
+                  return helper.dataUrl;
+                }
+                return null;
+              };
               if (url.startsWith("data:image/")) {
                 sendResponse({ ok: true, dataUrl: url });
+                return;
+              }
+              if (localPath) {
+                const fromFile = await tryHelperThumb();
+                if (fromFile) {
+                  sendResponse({
+                    ok: true,
+                    dataUrl: fromFile,
+                    source: "helper-file"
+                  });
+                  return;
+                }
+              }
+              if (!url) {
+                sendResponse({ ok: false, error: "url 없음" });
                 return;
               }
               if (!/^https?:/i.test(url)) {
                 sendResponse({ ok: false, error: "bad url" });
                 return;
+              }
+              let thumbHost = "";
+              try {
+                thumbHost = new URL(url).hostname;
+              } catch {
+                thumbHost = "";
+              }
+              // TikTok CDN covers 403 from the extension origin and often
+              // from Explore page fetches. Helper /thumb (Referer) is the
+              // path that already writes the companion jpg.
+              if (sitesApi()?.isTikTokImageCdnHost?.(thumbHost)) {
+                const fromHelper = await tryHelperThumb();
+                if (fromHelper) {
+                  sendResponse({
+                    ok: true,
+                    dataUrl: fromHelper,
+                    source: "helper"
+                  });
+                  return;
+                }
               }
               const thumbTabId = tabId;
               if (thumbTabId != null && thumbTabId >= 0) {
@@ -533,22 +583,19 @@
                   }
                 }
               }
-              const referer = String(
-                msg.referer || msg.pageUrl || ""
-              ).trim();
+              const fromHelper = await tryHelperThumb();
+              if (fromHelper) {
+                sendResponse({
+                  ok: true,
+                  dataUrl: fromHelper,
+                  source: "helper"
+                });
+                return;
+              }
               if (typeof deps.YtDlp?.fetchThumb === "function") {
-                const helper = await deps.YtDlp.fetchThumb(url, referer);
-                if (helper?.ok && String(helper.dataUrl || "").startsWith("data:image/")) {
-                  sendResponse({
-                    ok: true,
-                    dataUrl: helper.dataUrl,
-                    source: "helper"
-                  });
-                  return;
-                }
                 sendResponse({
                   ok: false,
-                  error: helper?.error || (res ? `HTTP ${res.status}` : "fetch failed")
+                  error: res ? `HTTP ${res.status}` : "fetch failed"
                 });
                 return;
               }

@@ -89,6 +89,7 @@ function makeHarness(responses = [], options = {}) {
       if (options.sendMessage) return options.sendMessage(message);
       return responses[responseIndex++] || { jobs: [] };
     },
+    fetchThumbDataUrl: options.fetchThumbDataUrl,
     playCompletionSound: () => calls.push(["chime"]),
     recoveryActionsHtml: () => '<button data-act="retry">다시 받기</button>',
     bindRecoveryButtons: (root) => calls.push(["bindRecoveryButtons", root]),
@@ -418,6 +419,45 @@ function makeHarness(responses = [], options = {}) {
     persistFlake.uiJobs.has("fail-2"),
     false,
     "refresh after a flaky persist still cannot resurrect"
+  );
+
+  const cover = makeHarness([], {
+    fetchThumbDataUrl: async (url, referer, extra) => {
+      callsForCover.push([url, referer, extra]);
+      return "data:image/jpeg;base64,Y292ZXI=";
+    }
+  });
+  const callsForCover = [];
+  cover.controller.upsertUiJob(
+    {
+      id: "tt-1",
+      status: "done",
+      title: "jumping killing shoot",
+      percent: 100,
+      pageUrl: "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+      thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+      result: { filename: "jumping.mp4", thumbnailPath: "/tmp/jumping.jpg" }
+    },
+    { toast: false, forceStructure: true, local: true }
+  );
+  cover.controller.renderDownloadQueue(true);
+  check(
+    cover.elements.dlQueueList.innerHTML.includes("dl-job-thumb"),
+    true,
+    "completed queue rows render a preview slot"
+  );
+  check(
+    cover.elements.dlQueueList.innerHTML.includes(
+      'data-thumb-url="https://p19-common-sign.tiktokcdn-us.com/cover"'
+    ),
+    true,
+    "completed queue rows keep the formats cover for hydration"
+  );
+  await cover.controller.hydrateQueueThumbs([...cover.uiJobs.values()]);
+  check(
+    cover.uiJobs.get("tt-1").thumbnail,
+    "data:image/jpeg;base64,Y292ZXI=",
+    "queue hydrate stores a data URL on the job"
   );
 
   console.log(`popup progress UI: ${assertions} assertions passed`);
