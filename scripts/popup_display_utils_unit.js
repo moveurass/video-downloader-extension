@@ -718,6 +718,85 @@ function main() {
     "Explore without a pasted video still has no card"
   );
 
+  const onPageUtils = DisplayUtils.createUtils({
+    $: () => null,
+    document: {
+      body: { appendChild() {} },
+      createElement() {
+        return {};
+      }
+    },
+    UVDSites: Sites,
+    UVDPopupMedia: {
+      cleanTitleText: (raw) => raw,
+      displayName: () => "n",
+      downloadFilename: () => "f.mp4",
+      isUglyName: () => false
+    },
+    Naming: {
+      extractProductCode: () => "",
+      cleanPageTitle: (title) => title,
+      bindTitleToPage: (_url, title) => title,
+      buildFilename: () => "f.mp4",
+      isKnownCodeVideoPage: () => false
+    },
+    UVD: {
+      parseUrlsFromText: (text) => String(text).match(/https?:\/\/\S+/g) || [],
+      isGenericSaveName: () => false
+    },
+    isSitePage: (url) => Sites.isDownloadableSiteVideo(url),
+    isKnownDownloadablePage: (url) => Sites.isDownloadableSiteVideo(url),
+    getCurrentTabUrl: () => qaPermalink,
+    getAllItems: () => [],
+    getUvdSettings: () => ({}),
+    getSelectedQuality: () => "best",
+    pageHost: { textContent: "" }
+  });
+  const ttAvatar =
+    "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
+  const ttCover =
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-photomode-zoomcover.jpeg";
+  onPageUtils.ensureSiteItems(
+    [{
+      url: qaPermalink,
+      pageUrl: qaPermalink,
+      title: "TikTok",
+      thumbnail: ttAvatar,
+      isSiteDownload: true
+    }],
+    { url: qaPermalink, title: "TikTok" }
+  );
+  const afterFormats = onPageUtils.ensureSiteItems(
+    [{
+      url: qaPermalink,
+      pageUrl: qaPermalink,
+      title: "jumping killing shoot",
+      thumbnail: ttCover,
+      isSiteDownload: true
+    }],
+    { url: qaPermalink, title: "jumping killing shoot" }
+  );
+  check(
+    afterFormats[0].thumbnail,
+    ttCover,
+    "on-page ensureSiteItems prefers formats cover over a cached avatar"
+  );
+  const avatarOnly = onPageUtils.ensureSiteItems(
+    [{
+      url: qaPermalink,
+      pageUrl: qaPermalink,
+      title: "TikTok",
+      thumbnail: ttAvatar,
+      isSiteDownload: true
+    }],
+    { url: qaPermalink, title: "TikTok" }
+  );
+  check(
+    !Sites.isTiktokAvatarThumbUrl(avatarOnly[0].thumbnail || ""),
+    true,
+    "avatar never remains the on-page card thumbnail"
+  );
+
   console.log(`popup display utils unit: ${assertions} assertions passed`);
 }
 

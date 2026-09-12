@@ -523,11 +523,23 @@
               patch.pageTitle = response.title;
               patch.displayName = response.title;
             }
-            if (
-              response.thumbnail &&
-              !String(patch.thumbnail || "").startsWith("data:image/")
-            ) {
-              patch.thumbnail = response.thumbnail;
+            if (response.thumbnail) {
+              const pageHint = patch.pageUrl || pageUrl;
+              if (
+                sites?.isTiktokUrl?.(pageHint) &&
+                sites.preferTiktokPreviewThumbnail
+              ) {
+                const preferred = sites.preferTiktokPreviewThumbnail(
+                  patch.thumbnail,
+                  response.thumbnail,
+                  { fromFormats: true }
+                );
+                if (preferred) patch.thumbnail = preferred;
+              } else if (
+                !String(patch.thumbnail || "").startsWith("data:image/")
+              ) {
+                patch.thumbnail = response.thumbnail;
+              }
             }
             const bestQ =
               availableQualities.find((q) => q.id === "best") ||

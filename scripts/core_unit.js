@@ -586,6 +586,78 @@ assert.equal(Sites.isTrustedThumbUrl(
   "https://www.youtube.com/watch?v=abc",
   "https://p19-common-sign.tiktokcdn-us.com/cover"
 ), false, "non-TikTok pages must not page-fetch TikTok CDNs");
+
+const ttAvatar =
+  "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
+const ttOriginCover =
+  "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-tiktokx-origin.jpeg";
+const ttDynamicCover =
+  "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-tiktokx-dcover.jpeg";
+const ttVideoCover =
+  "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-photomode-zoomcover.jpeg";
+assert.equal(Sites.isTiktokAvatarThumbUrl(ttAvatar), true, "avt- CDN is an avatar");
+assert.equal(
+  Sites.isTiktokAvatarThumbUrl(
+    "https://p16-sign.tiktokcdn.com/obj/imprint/follow-btn.png"
+  ),
+  true,
+  "imprint / follow-button art is not a video cover"
+);
+assert.equal(Sites.isTiktokAvatarThumbUrl(ttOriginCover), false);
+assert.equal(Sites.isTiktokVideoCoverThumbUrl(ttOriginCover), true);
+assert.equal(
+  Sites.pickTiktokCoverFromCandidates([ttAvatar, ttVideoCover, ttOriginCover]),
+  ttOriginCover,
+  "originCover wins over avatar and generic cover URL"
+);
+assert.equal(
+  Sites.pickTiktokCoverFromPageData({
+    __DEFAULT_SCOPE__: {
+      "webapp.video-detail": {
+        itemInfo: {
+          itemStruct: {
+            author: {
+              avatarThumb: ttAvatar,
+              avatarLarger: ttAvatar,
+              uniqueId: "volleyballqueen86"
+            },
+            video: {
+              cover: ttVideoCover,
+              originCover: ttOriginCover,
+              dynamicCover: ttDynamicCover
+            }
+          }
+        }
+      }
+    }
+  }),
+  ttOriginCover,
+  "page JSON with avatar + covers picks originCover, never the profile photo"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(ttAvatar, ttOriginCover),
+  ttOriginCover,
+  "page-meta avatar loses to a real cover"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(
+    "data:image/jpeg;base64,AVATAR",
+    ttOriginCover,
+    { fromFormats: true }
+  ),
+  ttOriginCover,
+  "formats cover replaces a hydrated PAGE_META avatar"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(ttOriginCover, ttAvatar),
+  ttOriginCover,
+  "avatar candidate never overwrites a video cover"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(ttAvatar, ""),
+  "",
+  "avatar-only current thumb is discarded"
+);
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),

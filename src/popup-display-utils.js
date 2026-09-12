@@ -398,6 +398,22 @@
             previous.isPagePlaceholder ||
             titlesMatchVideo(previous.title, incoming.title));
         const sameMedia = !!(previous.url && incoming.url && previous.url === incoming.url);
+        const pageHint =
+          incoming.pageUrl ||
+          previous.pageUrl ||
+          incoming.url ||
+          previous.url ||
+          "";
+        const sites = deps.UVDSites || {};
+        const mergedThumb =
+          sites.isTiktokUrl?.(pageHint) && sites.preferTiktokPreviewThumbnail
+            ? sites.preferTiktokPreviewThumbnail(
+                sameVideo ? previous.thumbnail : "",
+                incoming.thumbnail,
+                { fromFormats: !!incoming.thumbnail }
+              ) || undefined
+            : incoming.thumbnail ||
+              (sameVideo ? previous.thumbnail : undefined);
         return {
           ...previous,
           ...incoming,
@@ -412,9 +428,7 @@
             incoming.displayName
           ),
           filename: preferStableText(previous.filename, incoming.filename),
-          thumbnail:
-            incoming.thumbnail ||
-            (sameVideo ? previous.thumbnail : undefined),
+          thumbnail: mergedThumb,
           quality:
             incoming.quality ||
             (sameMedia ? previous.quality : incoming.quality),
@@ -521,8 +535,20 @@
           rememberStableItems(curKey, result);
           return result;
         }
+        const sites = deps.UVDSites || {};
         const thumb = samePage
-          ? top.thumbnail || local.thumbnail
+          ? sites.isTiktokUrl?.(url) && sites.preferTiktokPreviewThumbnail
+            ? sites.preferTiktokPreviewThumbnail(
+                local.thumbnail,
+                top.thumbnail,
+                { fromFormats: !!top.thumbnail }
+              ) ||
+              sites.preferTiktokPreviewThumbnail(
+                top.thumbnail,
+                local.thumbnail
+              ) ||
+              undefined
+            : top.thumbnail || local.thumbnail
           : local.thumbnail;
         const title = samePage
           ? top.title || local.title

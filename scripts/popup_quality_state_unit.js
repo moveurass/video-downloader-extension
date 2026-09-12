@@ -470,6 +470,52 @@ async function main() {
     "on-page EXTRACT play-CDN url is left in place"
   );
 
+  const avatarOnPage = makeHarness();
+  const ttAvatar =
+    "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
+  avatarOnPage.setCurrentTabUrl(qaPermalink);
+  avatarOnPage.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true,
+    thumbnail: "data:image/jpeg;base64,AVATARFACE"
+  }]);
+  avatarOnPage.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover",
+    title: "jumping killing shoot"
+  });
+  await avatarOnPage.controller.loadAvailableQualities(
+    avatarOnPage.getAllItems()[0]
+  );
+  check(
+    avatarOnPage.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover",
+    "formats cover replaces an already-hydrated PAGE_META profile photo"
+  );
+  avatarOnPage.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true,
+    thumbnail: ttAvatar
+  }]);
+  avatarOnPage.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover"
+  });
+  await avatarOnPage.controller.loadAvailableQualities(
+    avatarOnPage.getAllItems()[0]
+  );
+  check(
+    avatarOnPage.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover",
+    "formats cover replaces a raw avatar CDN thumbnail"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

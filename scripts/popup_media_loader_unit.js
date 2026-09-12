@@ -943,6 +943,142 @@ async function main() {
     "on-page EXTRACT play-CDN is still the media url"
   );
 
+  const Sites = require("../src/site-detection.js");
+  const ttAvatar =
+    "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
+  check(
+    MediaLoader.usablePageThumbnail(ttAvatar, onPagePermalink),
+    "",
+    "PAGE_META profile photo is not a usable on-page thumb"
+  );
+  check(
+    MediaLoader.usablePageThumbnail(onPageCover, onPagePermalink),
+    onPageCover,
+    "formats / og video cover stays usable"
+  );
+  check(
+    MediaLoader.preferPageThumbnail(ttAvatar, onPageCover, onPagePermalink),
+    onPageCover,
+    "on-page merge prefers the video cover over the avatar"
+  );
+  check(
+    MediaLoader.preferPageThumbnail(onPageCover, ttAvatar, onPagePermalink),
+    onPageCover,
+    "avatar PAGE_META cannot replace a video cover"
+  );
+  check(
+    Sites.pickTiktokCoverFromCandidates([ttAvatar, onPageCover]),
+    onPageCover,
+    "candidate list with avatar + cover never picks the profile photo"
+  );
+
+  let avatarMetaItems = [];
+  let avatarMetaUrl = null;
+  let avatarMetaId = null;
+  const avatarMetaTab = {
+    id: 12,
+    url: onPagePermalink,
+    title: "jumping killing shoot | TikTok"
+  };
+  const avatarMetaLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [avatarMetaTab],
+        get: async () => avatarMetaTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type === "GET_PAGE_META") {
+            return {
+              title: "TikTok",
+              thumbnail: ttAvatar,
+              pageUrl: onPagePermalink,
+              lastUrl: onPagePermalink
+            };
+          }
+          return { ok: true };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: onPageCdn,
+                pageUrl: onPagePermalink,
+                title: "TikTok",
+                thumbnail: ttAvatar,
+                source: "tiktok-page",
+                site: "tiktok",
+                type: "video"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => onPageElements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items) => (items || []).map((item) => ({ ...item })),
+    pageKey: (url) => {
+      const match = String(url || "").match(/\/video\/(\d+)/);
+      return match ? `tt:${match[1]}` : String(url || "").replace(/[?#].*$/, "");
+    },
+    isInstagramUrl: () => false,
+    isTiktokUrl: (url) => /tiktok\.com/i.test(url || ""),
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: (url) => /\/@[\w.-]+\/video\/\d+/.test(url || ""),
+    isHlsItem: () => false,
+    cleanTitleText: (value) => value,
+    isUglyName: PopupMedia.isUglyName,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    patchMedia: () => false,
+    hydrateRemoteThumbnails: async () => {},
+    loadAvailableQualities: async (item) => {
+      avatarMetaItems = [{
+        ...item,
+        thumbnail: onPageCover
+      }];
+    },
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => avatarMetaItems,
+    setAllItems: (items) => {
+      avatarMetaItems = items;
+    },
+    getCurrentTabId: () => avatarMetaId,
+    setCurrentTabId: (value) => {
+      avatarMetaId = value;
+    },
+    getCurrentTabUrl: () => avatarMetaUrl,
+    setCurrentTabUrl: (value) => {
+      avatarMetaUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {}
+  });
+  await avatarMetaLoader.loadMedia();
+  check(
+    avatarMetaItems[0].thumbnail,
+    onPageCover,
+    "on-page loader drops GET_MEDIA/PAGE_META avatar and keeps the formats cover"
+  );
+  check(
+    avatarMetaItems[0].thumbnail !== ttAvatar,
+    true,
+    "profile photo never remains item.thumbnail after on-page load"
+  );
+
   console.log(`popup media loader: ${assertions} assertions passed`);
 }
 

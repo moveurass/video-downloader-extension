@@ -365,7 +365,7 @@
     );
     for (const el of nodes) {
       const url = cssBackgroundImageUrl(el);
-      if (url && !/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(url)) {
+      if (url && !/sprite|icon|logo|avatar|avt-|imprint|badge|1x1|pixel/i.test(url)) {
         return url;
       }
     }
@@ -385,7 +385,9 @@
       document.querySelector("video[poster]")?.getAttribute("poster"),
       isTikTokVideoPage() ? extractTikTokCoverUrl() : "",
       playerWrapCover(),
-      ...(knownCode
+      // TikTok video pages: skip generic large-img scrape. Profile
+      // headshots are often the biggest <img> on /@user/video/id.
+      ...(knownCode || isTikTokVideoPage()
         ? []
         : [
             document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")
@@ -410,7 +412,15 @@
       const u = absUrl(c);
       if (!u || u.startsWith("data:")) continue;
       if (/\.svg(\?|$)/i.test(u)) continue;
-      if (/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(u)) continue;
+      if (/sprite|icon|logo|avatar|badge|1x1|pixel|imprint|user-avatar/i.test(u)) {
+        continue;
+      }
+      if (
+        typeof UVDSites !== "undefined" &&
+        UVDSites.isTiktokAvatarThumbUrl?.(u)
+      ) {
+        continue;
+      }
       if (youtubeId && youtubeImageVideoId(u) !== youtubeId) continue;
       return u;
     }
@@ -969,89 +979,8 @@
    */
   function extractTikTokCoverUrl() {
     if (!isTikTokVideoPage()) return "";
-    const covers = [];
-    const coverKeys = new Set([
-      "cover",
-      "origincover",
-      "origin_cover",
-      "origincov",
-      "dynamiccover",
-      "dynamic_cover",
-      "zoomcover",
-      "zoom_cover",
-      "sharecover",
-      "share_cover",
-      "thumbnail",
-      "thumbnailurl",
-      "thumbnail_url",
-      "poster",
-      "coverurl",
-      "cover_url"
-    ]);
-
-    function normalizeCover(raw) {
-      if (!raw || typeof raw !== "string") return "";
-      let u = raw
-        .replace(/\\u002F/g, "/")
-        .replace(/\\\//g, "/")
-        .replace(/\\u0026/g, "&")
-        .replace(/&amp;/g, "&");
-      try {
-        u = decodeURIComponent(u);
-      } catch {
-        /* keep */
-      }
-      if (!/^https?:\/\//i.test(u)) return "";
-      if (/\.(js|css|json|map|woff2?|mp4|m3u8)(\?|$)/i.test(u)) return "";
-      if (!/tiktokcdn|byteicdn|tiktokv|byteoversea|musical\.ly/i.test(u)) {
-        return "";
-      }
-      if (/\/webmssdk|\/webapp-desktop|runtime|chunk|webpack/i.test(u)) {
-        return "";
-      }
-      if (/avatar|sprite|icon|logo|badge|1x1|pixel/i.test(u)) return "";
-      return u.split("#")[0];
-    }
-
-    function addCover(raw) {
-      const u = normalizeCover(raw);
-      if (u) covers.push(u);
-    }
-
-    function walk(obj, depth) {
-      if (!obj || depth > 35) return;
-      if (typeof obj === "string") {
-        if (/cover|thumb|poster|tplv/i.test(obj)) addCover(obj);
-        return;
-      }
-      if (Array.isArray(obj)) {
-        for (const x of obj.slice(0, 200)) walk(x, depth + 1);
-        return;
-      }
-      if (typeof obj !== "object") return;
-      for (const [k, v] of Object.entries(obj)) {
-        const kl = String(k).toLowerCase();
-        if (coverKeys.has(kl) && typeof v === "string") {
-          addCover(v);
-        } else if (
-          coverKeys.has(kl) &&
-          v &&
-          typeof v === "object" &&
-          !Array.isArray(v)
-        ) {
-          if (typeof v.url === "string") addCover(v.url);
-          if (Array.isArray(v.url_list)) v.url_list.forEach(addCover);
-          if (Array.isArray(v.urlList)) v.urlList.forEach(addCover);
-        } else if (
-          (kl === "url_list" || kl === "urllist") &&
-          Array.isArray(v)
-        ) {
-          for (const x of v) addCover(x);
-        } else {
-          walk(v, depth + 1);
-        }
-      }
-    }
+    const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+    const found = [];
 
     document
       .querySelectorAll(
@@ -1061,16 +990,19 @@
         const t = (s.textContent || "").trim();
         if (t.length < 80) return;
         try {
-          walk(JSON.parse(t), 0);
+          const picked = sites?.pickTiktokCoverFromPageData?.(JSON.parse(t));
+          if (picked) found.push(picked);
         } catch {
-          const re =
-            /https?:\\\/\\\/[^"'\\\s]+(?:cover|thumb|poster|tplv)[^"'\\\s]*|https?:\/\/[^"'\s]{30,}(?:cover|thumb|poster|tplv)[^"'\s]*/gi;
-          let m;
-          while ((m = re.exec(t)) !== null) addCover(m[0]);
+          /* keyed JSON walk only — do not harvest every tplv URL */
         }
       });
 
-    return covers[0] || "";
+    const og = document.querySelector('meta[property="og:image"]')?.content;
+    if (og) found.push(og);
+    if (sites?.pickTiktokCoverFromCandidates) {
+      return sites.pickTiktokCoverFromCandidates(found);
+    }
+    return found.find((url) => !/avatar|avt-|imprint/i.test(url || "")) || "";
   }
 
   /**

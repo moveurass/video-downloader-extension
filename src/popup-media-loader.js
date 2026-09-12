@@ -55,6 +55,33 @@
       return youtubeThumbnailVideoId(thumbnail) === expected;
     }
 
+    function usablePageThumbnail(thumbnail, pageUrl) {
+      const value = String(thumbnail || "").trim();
+      if (!value) return "";
+      const sites = sitesApi();
+      if (
+        sites?.isTiktokUrl?.(pageUrl) &&
+        sites.isTiktokAvatarThumbUrl?.(value)
+      ) {
+        return "";
+      }
+      return value;
+    }
+
+    function preferPageThumbnail(current, incoming, pageUrl) {
+      const sites = sitesApi();
+      if (
+        sites?.preferTiktokPreviewThumbnail &&
+        sites.isTiktokUrl?.(pageUrl)
+      ) {
+        return (
+          sites.preferTiktokPreviewThumbnail(current, incoming) ||
+          undefined
+        );
+      }
+      return incoming || current || undefined;
+    }
+
     function createLoader(deps) {
       const {
         chrome,
@@ -407,7 +434,13 @@
           })
           .map((item) => {
             if (!youtubeId && !(knownCodePage && suppressProvisionalTitle)) {
-              return item;
+              const thumb = usablePageThumbnail(
+                item.thumbnail,
+                item.pageUrl || currentTabUrl
+              );
+              return thumb === item.thumbnail
+                ? item
+                : { ...item, thumbnail: thumb || undefined };
             }
             return {
               ...item,
@@ -470,7 +503,7 @@
               ? meta.thumbnail
               : youtubeThumbnailForPage(currentTabUrl)
             : metaSamePage
-              ? meta?.thumbnail || ""
+              ? usablePageThumbnail(meta?.thumbnail, currentTabUrl)
               : "";
 
           setAllItems(
@@ -483,10 +516,11 @@
                 samePage && !youtubeId && !knownCodePage;
               return {
                 ...item,
-                thumbnail:
-                  freshThumbnail ||
-                  (keepExisting ? item.thumbnail : undefined) ||
-                  undefined,
+                thumbnail: preferPageThumbnail(
+                  keepExisting ? item.thumbnail : undefined,
+                  freshThumbnail,
+                  currentTabUrl
+                ),
                 title:
                   freshTitle ||
                   (keepExisting ? item.title : undefined) ||
@@ -631,6 +665,8 @@
     return {
       createLoader,
       thumbnailMatchesPage,
+      usablePageThumbnail,
+      preferPageThumbnail,
       youtubeThumbnailForPage,
       youtubeThumbnailVideoId,
       youtubeVideoId
