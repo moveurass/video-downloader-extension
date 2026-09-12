@@ -200,6 +200,26 @@ assert.equal(
   true
 );
 assert.equal(Sites.isDownloadableSiteVideo("https://www.instagram.com/"), false);
+const qaTikTok =
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150?is_from_webapp=1&sender_device=pc";
+assert.equal(Sites.isTiktokVideoUrl(qaTikTok), true);
+assert.equal(Sites.tiktokVideoId(qaTikTok), "7674902153491664150");
+assert.equal(
+  Sites.normalizeTiktokUrl(qaTikTok),
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+);
+assert.equal(
+  Sites.preferDownloadTargetUrl(qaTikTok, "https://www.tiktok.com/explore"),
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+);
+assert.equal(
+  Sites.sameTiktokVideo(qaTikTok, "https://www.tiktok.com/video/7674902153491664150"),
+  true
+);
+assert.equal(
+  Sites.sameTiktokVideo(qaTikTok, "https://www.tiktok.com/@other/video/1"),
+  false
+);
 assert.equal(
   Sites.isTiktokVideoUrl("https://www.tiktok.com/@name/video/1234567890?is_from_webapp=1"),
   true
@@ -671,6 +691,17 @@ assert.equal(
     "https://www.tiktok.com/explore"
   ),
   "https://www.tiktok.com/@name/video/123456789"
+);
+assert.equal(
+  downloadRequests.preferDownloadTargetUrl(
+    qaTikTok,
+    "https://www.tiktok.com/explore"
+  ),
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+);
+assert.equal(
+  downloadRequests.fnameBaseFromLink(qaTikTok),
+  "TikTok_7674902153491664150"
 );
 assert.equal(downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
 assert.equal(

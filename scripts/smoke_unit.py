@@ -186,6 +186,20 @@ def main() -> int:
             "Should not publish",
         ),
     )
+    qa_tiktok = (
+        "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+        "?is_from_webapp=1&sender_device=pc"
+    )
+    check(
+        "Mac QA volleyballqueen86 permalink is the download target",
+        helper_server.clean_tiktok_url(qa_tiktok)
+        == "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+        and helper_server.tiktok_video_id(qa_tiktok) == "7674902153491664150"
+        and helper_server.is_tiktok_video_url(qa_tiktok)
+        and helper_server.reject_tiktok_non_video_target(qa_tiktok) is None
+        and helper_server.expand_tiktok_share_url(qa_tiktok)
+        == "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+    )
     check(
         "TikTok permalink normalize and explore rejection",
         helper_server.clean_tiktok_url(

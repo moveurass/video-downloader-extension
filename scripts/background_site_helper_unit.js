@@ -316,6 +316,44 @@ async function main() {
     [],
     "pasted TikTok permalink does not inherit Explore tab CDN"
   );
+  const qaPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150?is_from_webapp=1&sender_device=pc";
+  deepEqual(
+    await exploreRunner.collectTikTokMediaUrls(8, qaPermalink),
+    [],
+    "Mac QA volleyballqueen86 permalink ignores Explore tab CDN"
+  );
+  let capturedPayload = null;
+  const qaRunner = createRunner(
+    baseDeps({
+      chrome: {
+        cookies: { getAll: async () => [] },
+        tabs: {
+          get: async () => ({ url: "https://www.tiktok.com/explore", title: "탐색" }),
+          sendMessage: async () => ({
+            urls: ["https://v16m.tiktokcdn.com/explore-fyp.mp4"]
+          })
+        }
+      },
+      isTiktokVideoUrl: Sites.isTiktokVideoUrl,
+      sameTiktokVideo: Sites.sameTiktokVideo,
+      normalizeTiktokUrl: Sites.normalizeTiktokUrl,
+      tiktokPermalinkError: Sites.tiktokPermalinkError,
+      getTabItems: () => [{ url: "https://v16m.tiktokcdn.com/explore-fyp.mp4" }],
+      YtDlp: {
+        available: async () => true,
+        downloadAndWait: async (payload) => {
+          capturedPayload = payload;
+          return { path: "/tmp/qa.mp4", filename: "qa.mp4", thumbnailPath: "/tmp/qa.jpg" };
+        }
+      }
+    })
+  );
+  const qaResult = await qaRunner.downloadTikTok(8, qaPermalink, "TikTok_7674902153491664150", "best");
+  equal(capturedPayload.url, Sites.normalizeTiktokUrl(qaPermalink));
+  equal(capturedPayload.pageUrl, Sites.normalizeTiktokUrl(qaPermalink));
+  equal(capturedPayload.mediaUrl, undefined, "Explore CDN is not sent for the QA permalink");
+  equal(qaResult.writeThumbnail, true);
   await rejects(
     () =>
       createRunner(
