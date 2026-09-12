@@ -2,6 +2,7 @@
 """Lightweight smoke checks for UVD release (no browser)."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import time
@@ -131,12 +132,59 @@ def main() -> int:
         ),
     )
     ig_attempts = helper_server.instagram_ytdlp_attempts("best")
+    class _AuthHandler:
+        def __init__(self, origin="", token=""):
+            self.headers = {"Origin": origin, "X-UVD-Token": token}
+
+    check(
+        "helper auth names missing token separately from a bad origin",
+        helper_server.authorization_error(_AuthHandler("https://evil.example", "x"))
+        == "forbidden origin"
+        and helper_server.authorization_error(
+            _AuthHandler("chrome-extension://" + ("a" * 32), "")
+        )
+        in ("missing token", "helper not paired", "forbidden origin"),
+    )
     check(
         "Instagram helper impersonates Chrome before cookies-from-browser",
         any(attempt[2][:2] == ["--impersonate", "chrome"] for attempt in ig_attempts)
         and ig_attempts[0][2] == ["--impersonate", "chrome"]
         and any("--cookies-from-browser" in attempt[2] for attempt in ig_attempts)
         and ig_attempts[0][2] != ["--cookies-from-browser", "chrome"],
+    )
+    dash_efg = base64.b64encode(b'{"encode_tag":"dash_baseline_1"}').decode("ascii")
+    prog_efg = base64.b64encode(b'{"encode_tag":"progressive_recap"}').decode("ascii")
+    check(
+        "Instagram DASH init / byte-range URLs are not playable CDNs",
+        helper_server.is_instagram_dash_fragment_url(
+            "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4"
+        )
+        and not helper_server.is_instagram_cdn_url(
+            f"https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?efg={dash_efg}"
+        )
+        and not helper_server.is_instagram_cdn_url(
+            "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?bytestart=0&byteend=833"
+        )
+        and helper_server.is_instagram_cdn_url(
+            f"https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4?efg={prog_efg}"
+        ),
+    )
+    dash_ftyp = (32).to_bytes(4, "big") + b"ftyp" + b"dash" + b"\x00\x00\x00\x00" + b"cmfc" + b"iso6"
+    prog_ftyp = (32).to_bytes(4, "big") + b"ftyp" + b"isom" + b"\x00\x00\x00\x00" + b"mp42" + b"iso2"
+    check(
+        "DASH init ftyp is not treated as a playable video",
+        helper_server._is_dash_init_segment(dash_ftyp)
+        and not helper_server._sniff_is_video(dash_ftyp)
+        and helper_server._sniff_is_video(prog_ftyp)
+        and not helper_server.try_instagram_direct_download(
+            "ig-dash-skip",
+            {
+                "mediaUrl": "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4",
+                "pageUrl": "https://www.instagram.com/reel/ABC123/",
+                "title": "Should not publish",
+            },
+            "Should not publish",
+        ),
     )
     check(
         "Instagram share links normalize to /reel/ or /p/",
@@ -290,7 +338,7 @@ def main() -> int:
     check(
         "/update is auth-gated and clears the version cache after an update",
         (lambda src: src.index('self.path == "/update"')
-         > src.index("if not request_authorized(self):")
+         > src.index("reason = authorization_error(self)")
          and "_version_cache.pop(bin_path, None)" in src)(
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),
@@ -609,7 +657,7 @@ def main() -> int:
     check(
         "/files endpoints registered behind the auth gate",
         (lambda src: src.index('self.path == "/files/list"')
-         > src.index("if not request_authorized(self):")
+         > src.index("reason = authorization_error(self)")
          and 'self.path == "/files/trash"' in src)(
             (ROOT / "helper/yt_dlp_server.py").read_text(encoding="utf-8")
         ),

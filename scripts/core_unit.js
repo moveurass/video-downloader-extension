@@ -152,6 +152,38 @@ assert.equal(
   ),
   true
 );
+assert.equal(
+  Sites.isInstagramDashFragmentUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4"
+  ),
+  true
+);
+assert.equal(
+  Sites.isInstagramCdnUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?bytestart=0&byteend=833"
+  ),
+  false
+);
+assert.equal(
+  Sites.isInstagramCdnUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/clip.mp4?efg=" +
+      Buffer.from('{"encode_tag":"dash_baseline_1"}').toString("base64")
+  ),
+  false
+);
+assert.deepEqual(
+  Sites.rankInstagramMediaUrls([
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4",
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4?efg=" +
+      Buffer.from('{"encode_tag":"progressive_recap"}').toString("base64")
+  ]),
+  [
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4?efg=" +
+      Buffer.from('{"encode_tag":"progressive_recap"}').toString("base64"),
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4"
+  ]
+);
 assert.deepEqual(
   Sites.collectInstagramMediaUrlsFromText(
     'static https://static.cdninstagram.com/rsrc.php/foo.webp ' +
@@ -169,6 +201,12 @@ assert.equal(
 );
 assert.equal(Sites.isDownloadableSiteVideo("https://www.instagram.com/"), false);
 assert.equal(Sites.isTiktokCdnUrl("https://cdn.example/image.jpg"), false);
+assert.equal(
+  Sites.looksLikeVideoFileUrl(
+    "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4"
+  ),
+  false
+);
 
 const current = {
   id: "job",

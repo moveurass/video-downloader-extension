@@ -972,8 +972,7 @@
       "contenturl",
       "src",
       "browser_native_hd_url",
-      "browser_native_sd_url",
-      "video_dash_manifest"
+      "browser_native_sd_url"
     ]);
 
     function add(raw) {
@@ -1077,7 +1076,11 @@
         }
       });
 
-    return [...found].slice(0, 10);
+    const list = [...found];
+    if (typeof UVDSites !== "undefined" && UVDSites.rankInstagramMediaUrls) {
+      return UVDSites.rankInstagramMediaUrls(list).slice(0, 10);
+    }
+    return list.slice(0, 10);
   }
 
   function extractInstagramPermalink() {

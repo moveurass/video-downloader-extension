@@ -585,6 +585,7 @@
       const seenCdn = new Set();
       const pushCdn = (raw) => {
         if (!raw || typeof raw !== "string") return;
+        if (deps.isInstagramDashFragmentUrl?.(raw)) return;
         if (!deps.isInstagramCdnUrl(raw) && !deps.looksLikeVideoFileUrl(raw)) return;
         const key = raw.split("#")[0];
         if (seenCdn.has(key)) return;
@@ -595,8 +596,16 @@
       if (tabId != null) {
         for (const item of deps.getTabItems(tabId) || []) pushCdn(item?.url);
       }
+      const rankedCdns =
+        typeof deps.rankInstagramMediaUrls === "function"
+          ? deps.rankInstagramMediaUrls(cdnCandidates)
+          : cdnCandidates.filter(
+              (url) =>
+                !deps.isInstagramDashFragmentUrl ||
+                !deps.isInstagramDashFragmentUrl(url)
+            );
       let helperMediaUrl = "";
-      for (const mediaUrl of cdnCandidates.slice(0, 5)) {
+      for (const mediaUrl of rankedCdns.slice(0, 5)) {
         try {
           deps.emitDownloadProgress(
             tabId,
@@ -629,7 +638,7 @@
           if (!helperMediaUrl) helperMediaUrl = mediaUrl;
         }
       }
-      if (!helperMediaUrl && cdnCandidates.length) helperMediaUrl = cdnCandidates[0];
+      if (!helperMediaUrl && rankedCdns.length) helperMediaUrl = rankedCdns[0];
 
       if (!targetPage || !deps.isInstagramUrl(targetPage)) {
         throw new Error(

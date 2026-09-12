@@ -52,6 +52,8 @@ function baseDeps(overrides = {}) {
     isTiktokUrl: Sites.isTiktokUrl,
     isInstagramUrl: Sites.isInstagramUrl,
     isInstagramCdnUrl: Sites.isInstagramCdnUrl,
+    isInstagramDashFragmentUrl: Sites.isInstagramDashFragmentUrl,
+    rankInstagramMediaUrls: Sites.rankInstagramMediaUrls,
     looksLikeVideoFileUrl: (url) => /\.mp4(?:[?#]|$)/i.test(url),
     siteKind: Sites.siteKind,
     sniffIsVideo: () => true,
@@ -636,6 +638,53 @@ async function main() {
     igMediaPayload.mediaUrl,
     "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/clip.mp4",
     "failed page CDN fetch is handed to the helper"
+  );
+
+  let igDashPayload;
+  const igDashRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        sendMessage: async (_id, msg) => {
+          if (msg?.type === "EXTRACT_INSTAGRAM") {
+            return {
+              urls: [
+                "https://scontent.cdninstagram.com/o1/v/t2/f2/m86/init.mp4",
+                "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4"
+              ],
+              permalink: ""
+            };
+          }
+          return { urls: [] };
+        }
+      }
+    },
+    fetch: async () => {
+      throw new Error("HTTP 403");
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igDashPayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    },
+    looksLikeVideoFileUrl: Sites.looksLikeVideoFileUrl,
+    isInstagramCdnUrl: Sites.isInstagramCdnUrl,
+    isInstagramDashFragmentUrl: Sites.isInstagramDashFragmentUrl,
+    rankInstagramMediaUrls: Sites.rankInstagramMediaUrls
+  }));
+  await igDashRunner.downloadInstagram(
+    11,
+    "https://www.instagram.com/reel/ABC123/",
+    "Dash.mp4",
+    "best",
+    "ig-dash"
+  );
+  equal(
+    igDashPayload.mediaUrl,
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    "DASH init URLs are skipped; progressive play URL is handed to the helper"
   );
 
   let igPermalinkPayload;

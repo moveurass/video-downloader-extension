@@ -15,6 +15,7 @@ Default: http://127.0.0.1:8787
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -765,6 +766,19 @@ def resolve_tiktok_via_public_apis(page_url: str) -> dict | None:
     return None
 
 
+DASH_INIT_BRANDS = {b"dash", b"cmfc", b"cmfs"}
+
+
+def _is_dash_init_segment(head: bytes) -> bool:
+    """True for CMAF/DASH init boxes (ftyp dash/cmfc), not a playable progressive mp4."""
+    if not head or len(head) < 16 or head[4:8] != b"ftyp":
+        return False
+    brands = {head[8:12]}
+    for offset in range(16, min(len(head), 64) - 3, 4):
+        brands.add(head[offset : offset + 4])
+    return bool(brands & DASH_INIT_BRANDS)
+
+
 def _sniff_is_video(head: bytes) -> bool:
     if not head or len(head) < 12:
         return False
@@ -781,7 +795,7 @@ def _sniff_is_video(head: bytes) -> bool:
         return False
     # Video containers
     if len(head) >= 8 and head[4:8] == b"ftyp":  # MP4/MOV
-        return True
+        return not _is_dash_init_segment(head)
     if head[:4] == b"\x1aE\xdf\xa3":  # WebM/MKV
         return True
     if head[:1] == b"G":  # MPEG-TS sync
@@ -862,13 +876,20 @@ def download_url_to_file(
             if not chunk:
                 break
             if written == 0:
-                first = chunk[:16]
+                first = chunk[:64]
+                if _is_dash_init_segment(first):
+                    raise ValueError("dash init segment, not a playable mp4")
                 if not _sniff_is_video(first) and not ctype.startswith("video/"):
                     raise ValueError("response is not a video file")
             f.write(chunk)
             written += len(chunk)
     if written < 100_000:
         raise ValueError(f"file too small ({written})")
+    if dest.is_file() and dest.stat().st_size < 100_000:
+        raise ValueError(f"file too small ({dest.stat().st_size})")
+    with dest.open("rb") as probe:
+        if _is_dash_init_segment(probe.read(64)):
+            raise ValueError("dash init segment, not a playable mp4")
     return written
 
 
@@ -999,7 +1020,9 @@ def try_instagram_direct_download(job_id: str, payload: dict, outtmpl_base: str)
     if not title:
         title = f"instagram_{shortcode}" if shortcode else "instagram_video"
     safe = clean_name(title) or "instagram_video"
-    dest = unique_output_path(OUT_DIR, f"{safe}.mp4")
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    work = TMP_ROOT / f"ig-{job_id}.part"
+    dest: Path | None = None
     with jobs_lock:
         jobs[job_id]["message"] = "Instagram 재생 주소로 받는 중…"
         jobs[job_id]["percent"] = 15
@@ -1007,7 +1030,7 @@ def try_instagram_direct_download(job_id: str, payload: dict, outtmpl_base: str)
     try:
         size = download_url_to_file(
             media_hint,
-            dest,
+            work,
             referer=page_url or "https://www.instagram.com/",
             cookie_header="",
             origin="https://www.instagram.com",
@@ -1016,12 +1039,11 @@ def try_instagram_direct_download(job_id: str, payload: dict, outtmpl_base: str)
                 or jobs.get(job_id, {}).get("pause")
             ),
         )
-        if size < 50_000:
-            try:
-                dest.unlink(missing_ok=True)
-            except Exception:
-                pass
+        if size < 100_000:
+            work.unlink(missing_ok=True)
             return False
+        dest = unique_output_path(OUT_DIR, f"{safe}.mp4")
+        shutil.move(str(work), str(dest))
         with jobs_lock:
             jobs[job_id].update(
                 {
@@ -1043,9 +1065,11 @@ def try_instagram_direct_download(job_id: str, payload: dict, outtmpl_base: str)
             stopped = cancelled or paused
             if not stopped:
                 jobs[job_id]["message"] = f"Instagram 직접 저장 실패: {e}"
-        if should_unlink_stopped_download(cancel=cancelled, pause=paused):
+        for path in (work, dest):
+            if path is None:
+                continue
             try:
-                dest.unlink(missing_ok=True)
+                path.unlink(missing_ok=True)
             except Exception:
                 pass
         return stopped
@@ -1477,11 +1501,45 @@ def instagram_shortcode(url: str) -> str:
     return match.group(1) if match else ""
 
 
+def _decode_instagram_efg(efg: str) -> str:
+    raw = (efg or "").replace("-", "+").replace("_", "/")
+    raw += "=" * (-len(raw) % 4)
+    try:
+        return base64.b64decode(raw).decode("utf-8", "ignore")
+    except Exception:
+        return ""
+
+
+def is_instagram_dash_fragment_url(url: str) -> bool:
+    value = url or ""
+    if not re.match(r"^https?://", value, re.I):
+        return False
+    if re.search(r"\.(?:m4s|mpd)(?:\?|$)", value, re.I):
+        return True
+    if re.search(r"(?:^|[/_-])(?:init|init-stream|dashinit|dash_init)(?:[._-]|\.mp4)", value, re.I):
+        return True
+    if re.search(r"[?&](?:bytestart|byteend|start_byte|end_byte)=", value, re.I):
+        return True
+    if re.search(r"/dash(?:/|_)", value, re.I):
+        return True
+    if re.search(r"[?&](?:cmfaz|fragment_type|dash_manifest)=", value, re.I):
+        return True
+    try:
+        efg = (parse_qs(urlparse(value).query).get("efg") or [""])[0]
+    except Exception:
+        efg = ""
+    if efg and ("dash" in efg.lower() or "dash" in _decode_instagram_efg(efg).lower()):
+        return True
+    return bool(re.search(r"[?&]efg=[^&]*(?:dash|Rhc2h|ZGFza)", value, re.I))
+
+
 def is_instagram_cdn_url(url: str) -> bool:
     value = url or ""
     if not re.match(r"^https?://", value, re.I):
         return False
-    if re.search(r"\.(jpe?g|png|gif|webp|bmp|svg|js|css)(\?|$)", value, re.I):
+    if is_instagram_dash_fragment_url(value):
+        return False
+    if re.search(r"\.(jpe?g|png|gif|webp|bmp|svg|js|css|mpd|m4s)(\?|$)", value, re.I):
         return False
     if re.search(r"cdninstagram\.com|fbcdn\.net", value, re.I) and (
         re.search(r"\.mp4(\?|$)", value, re.I) or re.search(r"video|/v/t", value, re.I)
@@ -1705,20 +1763,34 @@ def origin_allowed(origin: str) -> bool:
     return origin.startswith("chrome-extension://")
 
 
-def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
+def authorization_error(handler: BaseHTTPRequestHandler) -> str:
+    """Empty string when authorized; otherwise a short 403 reason.
+
+    The previous single 'forbidden origin' label hid missing/stale tokens,
+    which made /formats (token attached) succeed while /download 403'd.
+    """
     origin = (handler.headers.get("Origin") or "").strip()
     token = (handler.headers.get("X-UVD-Token") or "").strip()
     expected_token = AUTH_TOKEN or auto_pairing.get("token") or ""
     # Local tools (curl, smoke) may omit Origin only when they present the
     # paired or configured token. Browsers cannot omit Origin on CORS fetches.
     if not origin:
-        return bool(expected_token) and token == expected_token
+        if expected_token and token == expected_token:
+            return ""
+        return "missing origin"
     if not origin_allowed(origin):
-        return False
+        return "forbidden origin"
     if not expected_token:
-        # Unpaired: /pair is the only unauthenticated write path.
-        return False
-    return token == expected_token
+        return "helper not paired"
+    if not token:
+        return "missing token"
+    if token != expected_token:
+        return "invalid token"
+    return ""
+
+
+def request_authorized(handler: BaseHTTPRequestHandler) -> bool:
+    return not authorization_error(handler)
 
 
 def cors(handler: BaseHTTPRequestHandler) -> None:
@@ -2861,8 +2933,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if self.path.startswith("/job/"):
-            if not request_authorized(self):
-                send_json(self, 403, {"ok": False, "error": "forbidden origin"})
+            reason = authorization_error(self)
+            if reason:
+                send_json(self, 403, {"ok": False, "error": reason})
                 return
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
             if rest.endswith("/cancel"):
@@ -2898,8 +2971,9 @@ class Handler(BaseHTTPRequestHandler):
                 {"ok": ok, "error": error or None, "pairingMode": "paired" if ok else "manual" if AUTH_TOKEN else "unavailable"},
             )
             return
-        if not request_authorized(self):
-            send_json(self, 403, {"ok": False, "error": "forbidden origin"})
+        reason = authorization_error(self)
+        if reason:
+            send_json(self, 403, {"ok": False, "error": reason})
             return
 
         # Cancel running yt-dlp job

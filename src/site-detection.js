@@ -215,15 +215,86 @@
 
   const isInstagramUrl = isInstagramPostUrl;
 
+  function decodeInstagramEfg(efg) {
+    const raw = String(efg || "");
+    if (!raw) return "";
+    const padded = raw.replace(/-/g, "+").replace(/_/g, "/");
+    const withPad = padded + "=".repeat((4 - (padded.length % 4)) % 4);
+    try {
+      if (typeof atob === "function") return atob(withPad);
+      if (typeof Buffer !== "undefined") {
+        return Buffer.from(withPad, "base64").toString("binary");
+      }
+    } catch {
+      /* ignore */
+    }
+    return "";
+  }
+
+  function instagramEfgLooksLikeDash(url) {
+    try {
+      const efg = new URL(url).searchParams.get("efg");
+      if (!efg) return false;
+      if (/dash/i.test(efg)) return true;
+      return /dash/i.test(decodeInstagramEfg(efg));
+    } catch {
+      return /[?&]efg=[^&]*(?:dash|Rhc2h|ZGFza)/i.test(url || "");
+    }
+  }
+
+  function isInstagramDashFragmentUrl(url) {
+    const value = url || "";
+    if (!/^https?:/i.test(value)) return false;
+    if (/\.(?:m4s|mpd)(?:\?|$)/i.test(value)) return true;
+    if (/(?:^|[/_-])(?:init|init-stream|dashinit|dash_init)(?:[._-]|\.mp4)/i.test(value)) {
+      return true;
+    }
+    if (/[?&](?:bytestart|byteend|start_byte|end_byte)=/i.test(value)) return true;
+    if (/\/dash(?:\/|_)/i.test(value)) return true;
+    if (/[?&](?:cmfaz|fragment_type|dash_manifest)=/i.test(value)) return true;
+    return instagramEfgLooksLikeDash(value);
+  }
+
   function isInstagramCdnUrl(url) {
     const value = url || "";
     if (!/^https?:/i.test(value)) return false;
-    if (/\.(jpe?g|png|gif|webp|bmp|svg|js|css)(\?|$)/i.test(value)) return false;
+    if (isInstagramDashFragmentUrl(value)) return false;
+    if (/\.(jpe?g|png|gif|webp|bmp|svg|js|css|mpd|m4s)(\?|$)/i.test(value)) return false;
     return (
       (/cdninstagram\.com|fbcdn\.net/i.test(value) &&
         (/\.mp4(\?|$)/i.test(value) || /video|\/v\/t/i.test(value))) ||
       (/\.mp4(\?|$)/i.test(value) && /instagram/i.test(value))
     );
+  }
+
+  function instagramMediaUrlScore(url) {
+    const value = String(url || "");
+    if (!isInstagramCdnUrl(value)) return -1;
+    let score = 10;
+    if (/browser_native_hd/i.test(value)) score += 50;
+    if (/browser_native_sd/i.test(value)) score += 35;
+    try {
+      const efg = new URL(value).searchParams.get("efg") || "";
+      const decoded = decodeInstagramEfg(efg);
+      if (/progressive/i.test(efg) || /progressive/i.test(decoded)) score += 30;
+    } catch {
+      if (/[?&]efg=[^&]*progressive/i.test(value)) score += 30;
+    }
+    if (/\.mp4(\?|$)/i.test(value)) score += 20;
+    if (/\/o1\/v\/t16\//i.test(value)) score += 8;
+    return score;
+  }
+
+  function rankInstagramMediaUrls(urls) {
+    const seen = new Set();
+    return (urls || [])
+      .map((url) => String(url || "").split("#")[0])
+      .filter((url) => {
+        if (!url || seen.has(url) || instagramMediaUrlScore(url) < 0) return false;
+        seen.add(url);
+        return true;
+      })
+      .sort((a, b) => instagramMediaUrlScore(b) - instagramMediaUrlScore(a));
   }
 
   function collectInstagramMediaUrlsFromText(text) {
@@ -272,6 +343,7 @@
 
   function looksLikeVideoFileUrl(url) {
     if (!url || !/^https?:/i.test(url)) return false;
+    if (isInstagramDashFragmentUrl(url)) return false;
     if (/\.(js|css|json|map|html?|woff2?|jpe?g|png|gif|webp|bmp|svg)(\?|$)/i.test(url)) {
       return false;
     }
@@ -481,6 +553,8 @@
     isInstagramPostUrl,
     isInstagramUrl,
     isInstagramCdnUrl,
+    isInstagramDashFragmentUrl,
+    rankInstagramMediaUrls,
     collectInstagramMediaUrlsFromText,
     isTiktokCdnUrl,
     looksLikeVideoFileUrl,
