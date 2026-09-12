@@ -523,6 +523,17 @@
           );
           return;
         }
+        if (
+          isTiktokUrl(url) &&
+          typeof isDownloadableSiteVideo === "function" &&
+          !isDownloadableSiteVideo(url)
+        ) {
+          toast(
+            "TikTok은 /@사용자/video/숫자 또는 공유 링크만 추가할 수 있습니다",
+            "error"
+          );
+          return;
+        }
 
         const item = getAllItems()[0];
         const currentTabUrl = getCurrentTabUrl();

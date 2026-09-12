@@ -7,7 +7,28 @@
   function makePopupDownloadRequests() {
     "use strict";
 
+    function sitesApi() {
+      if (typeof UVDSites !== "undefined") return UVDSites;
+      try {
+        return require("./site-detection.js");
+      } catch {
+        return null;
+      }
+    }
+
     function createController(deps) {
+      const sites = sitesApi();
+      const isTiktokVideoUrl =
+        deps.isTiktokVideoUrl || ((url) => !!sites?.isTiktokVideoUrl?.(url));
+      const preferDownloadTargetUrl =
+        deps.preferDownloadTargetUrl ||
+        ((target, tab) =>
+          sites?.preferDownloadTargetUrl?.(target, tab) || target || tab);
+      const tiktokPermalinkError =
+        deps.tiktokPermalinkError ||
+        (() =>
+          sites?.tiktokPermalinkError?.() ||
+          "TikTok 탐색·팔로잉·라이브·검색 페이지는 받을 수 없습니다. /@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요");
       const {
         $,
         sendMessage,
@@ -63,7 +84,15 @@
 
         const currentTabUrl = getCurrentTabUrl();
         const selectedQuality = getSelectedQuality();
-        const pageUrl = currentTabUrl || item.pageUrl || item.url;
+        const itemTarget = item.pageUrl || item.url || "";
+        const pageUrl =
+          item.site === "tiktok" ||
+          isTiktokUrl(itemTarget) ||
+          isTiktokUrl(currentTabUrl)
+            ? preferDownloadTargetUrl(itemTarget, currentTabUrl) ||
+              itemTarget ||
+              currentTabUrl
+            : currentTabUrl || itemTarget;
         if (!opts.skipDupCheck) {
           const ok = await confirmNotDuplicate(pageUrl);
           if (!ok) return;
@@ -359,6 +388,11 @@
           input?.focus();
           return;
         }
+        if (isTiktokUrl(link) && !isTiktokVideoUrl(link)) {
+          toast(tiktokPermalinkError(), "error");
+          input?.focus();
+          return;
+        }
 
         if (!skipDup) {
           const ok = await confirmNotDuplicate(link);
@@ -550,6 +584,10 @@
 
       async function downloadThisPage() {
         const currentTabUrl = getCurrentTabUrl();
+        if (isTiktokUrl(currentTabUrl) && !isTiktokVideoUrl(currentTabUrl)) {
+          toast(tiktokPermalinkError(), "error");
+          return;
+        }
         if (!currentTabUrl || !isSitePage(currentTabUrl)) {
           toast("지원 사이트 페이지에서 열어 주세요", "error");
           return;
@@ -564,7 +602,9 @@
         fnameBaseFromLink,
         downloadByPastedLink,
         downloadThisPage,
-        looksLikeDirectMedia
+        looksLikeDirectMedia,
+        preferDownloadTargetUrl,
+        isTiktokVideoUrl
       };
     }
 

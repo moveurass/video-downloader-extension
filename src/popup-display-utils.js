@@ -296,8 +296,10 @@
             return `yt:${path}`;
           }
           if (host.includes("tiktok")) {
-            const m = path.match(/\/@[^/]+\/video\/(\d+)/i);
+            const m = path.match(/\/(?:@[^/]+\/)?video\/(\d+)/i);
             if (m) return `tt:${m[1]}`;
+            const t = path.match(/\/t\/([^/?#]+)/i);
+            if (t) return `tt:t:${t[1]}`;
             return `tt:${path}`;
           }
           if (host.includes("instagram") || host.includes("instagr.am")) {

@@ -187,6 +187,39 @@ def main() -> int:
         ),
     )
     check(
+        "TikTok permalink normalize and explore rejection",
+        helper_server.clean_tiktok_url(
+            "https://m.tiktok.com/@name/video/1234567890?is_from_webapp=1"
+        )
+        == "https://www.tiktok.com/@name/video/1234567890"
+        and helper_server.is_tiktok_video_url(
+            "https://www.tiktok.com/@name/video/1234567890"
+        )
+        and helper_server.is_tiktok_video_url("https://vm.tiktok.com/ZMabcd123/")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/explore")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/following")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/live")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/search?q=x")
+        and helper_server.reject_tiktok_non_video_target(
+            "https://www.tiktok.com/explore"
+        )
+        == helper_server.tiktok_need_permalink_message()
+        and "/@사용자/video/" in helper_server.tiktok_need_permalink_message()
+        and helper_server.expand_tiktok_share_url(
+            "https://www.tiktok.com/@name/video/1234567890"
+        )
+        == "https://www.tiktok.com/@name/video/1234567890"
+        and not helper_server.try_tiktok_direct_download(
+            "tt-explore",
+            {
+                "pageUrl": "https://www.tiktok.com/explore",
+                "mediaUrl": "https://v16-webapp.tiktokcdn.com/explore.mp4",
+                "title": "탐색",
+            },
+            "탐색",
+        ),
+    )
+    check(
         "Instagram share links normalize to /reel/ or /p/",
         helper_server.normalize_instagram_target(
             "https://www.instagram.com/share/reel/CODE/?igsh=1"

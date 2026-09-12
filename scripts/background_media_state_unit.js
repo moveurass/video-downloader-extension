@@ -163,6 +163,10 @@ async function main() {
     "tt:123456"
   );
   equal(
+    store.pageIdentityKey("https://www.tiktok.com/video/123456"),
+    "tt:123456"
+  );
+  equal(
     store.pageIdentityKey("https://instagram.com/reel/Clip_One/"),
     "ig:reel:Clip_One"
   );
@@ -181,6 +185,24 @@ async function main() {
     "123av.com:code:SNOS-309"
   );
   equal(store.pageIdentityKey("file:///tmp/video.mp4"), "");
+
+  tabs.set(41, {
+    id: 41,
+    url: "https://www.tiktok.com/explore",
+    title: "탐색"
+  });
+  store.addMedia(41, {
+    url: "https://v16m.tiktokcdn.com/explore-fyp.mp4",
+    title: "탐색",
+    site: "tiktok"
+  });
+  deepEqual(
+    await store.getMediaForTabAsync(41, {
+      pageUrl: "https://www.tiktok.com/explore"
+    }),
+    [],
+    "Explore/FYP landing media is not offered as a downloadable TikTok video"
+  );
 
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";

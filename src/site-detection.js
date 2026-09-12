@@ -177,6 +177,126 @@
     );
   }
 
+  const TIKTOK_NEED_PERMALINK =
+    "TikTok 탐색·팔로잉·라이브·검색 페이지는 받을 수 없습니다. /@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요";
+
+  const TIKTOK_NON_VIDEO_SEGMENTS = new Set([
+    "explore",
+    "foryou",
+    "following",
+    "live",
+    "search",
+    "discover",
+    "feedback",
+    "messages",
+    "activity"
+  ]);
+
+  function tiktokPermalinkError() {
+    return TIKTOK_NEED_PERMALINK;
+  }
+
+  function tiktokPathname(url) {
+    try {
+      return new URL(url).pathname || "/";
+    } catch {
+      return "";
+    }
+  }
+
+  function isTiktokShareUrl(url) {
+    if (!isTiktokUrl(url)) return false;
+    const host = hostOf(url);
+    const path = tiktokPathname(url);
+    if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+      return /\/[A-Za-z0-9]+\/?$/.test(path) && path !== "/";
+    }
+    return /\/t\/[A-Za-z0-9]+/i.test(path);
+  }
+
+  function isTiktokCanonicalVideoUrl(url) {
+    if (!isTiktokUrl(url) || isTiktokShareUrl(url)) return false;
+    return /\/@[\w.-]+\/video\/\d+|\/video\/\d+/i.test(tiktokPathname(url) || url);
+  }
+
+  function isTiktokVideoUrl(url) {
+    if (!isTiktokUrl(url)) return false;
+    return isTiktokCanonicalVideoUrl(url) || isTiktokShareUrl(url);
+  }
+
+  function isTiktokNonVideoSurface(url) {
+    if (!isTiktokUrl(url) || isTiktokVideoUrl(url)) return false;
+    const path = (tiktokPathname(url) || "/").replace(/\/+$/, "") || "/";
+    if (path === "/") return true;
+    const first = path.split("/").filter(Boolean)[0] || "";
+    return TIKTOK_NON_VIDEO_SEGMENTS.has(first.toLowerCase());
+  }
+
+  function tiktokVideoId(url) {
+    const match = String(url || "").match(/\/(?:@[^/?#]+\/)?video\/(\d+)/i);
+    return match ? match[1] : "";
+  }
+
+  function tiktokShareCode(url) {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+      const path = parsed.pathname || "";
+      if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+        return path.replace(/^\/|\/$/g, "");
+      }
+      return path.match(/\/t\/([A-Za-z0-9]+)/i)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function sameTiktokVideo(left, right) {
+    const idA = tiktokVideoId(left);
+    const idB = tiktokVideoId(right);
+    if (idA && idB) return idA === idB;
+    const codeA = tiktokShareCode(left);
+    const codeB = tiktokShareCode(right);
+    return !!(codeA && codeB && codeA.toLowerCase() === codeB.toLowerCase());
+  }
+
+  function normalizeTiktokUrl(url) {
+    const raw = String(url || "").trim();
+    if (!raw) return raw;
+    try {
+      const parsed = new URL(raw);
+      const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+      parsed.search = "";
+      parsed.hash = "";
+      if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+        if (!parsed.pathname.endsWith("/")) parsed.pathname += "/";
+        return parsed.href;
+      }
+      const path = parsed.pathname || "/";
+      const video = path.match(/(\/@[\w.-]+\/video\/\d+)/i);
+      const share = path.match(/(\/t\/[A-Za-z0-9]+)/i);
+      const bare = path.match(/(\/video\/\d+)/i);
+      if (video) parsed.pathname = video[1];
+      else if (share) parsed.pathname = share[1];
+      else if (bare) parsed.pathname = bare[1];
+      if (/tiktok\.com$/i.test(host) && host !== "vm.tiktok.com" && host !== "vt.tiktok.com") {
+        parsed.hostname = "www.tiktok.com";
+      }
+      return parsed.href;
+    } catch {
+      return raw;
+    }
+  }
+
+  function preferDownloadTargetUrl(targetUrl, tabUrl) {
+    const target = String(targetUrl || "").trim();
+    const tab = String(tabUrl || "").trim();
+    if (isTiktokVideoUrl(target)) return normalizeTiktokUrl(target);
+    if (isTiktokUrl(target)) return normalizeTiktokUrl(target);
+    if (isTiktokVideoUrl(tab) && !target) return normalizeTiktokUrl(tab);
+    return target || tab;
+  }
+
   function isInstagramHostUrl(url) {
     const host = hostOf(url);
     if (!host || /cdninstagram|fbcdn\.net|instagram\.fs/i.test(host)) return false;
@@ -465,10 +585,7 @@
         return /[?&]v=|\/shorts\/[\w-]+|youtu\.be\/[\w-]+/i.test(url);
       }
     }
-    if (isTiktokUrl(url)) {
-      if (/vm\.tiktok\.com|vt\.tiktok\.com/i.test(url)) return true;
-      return /\/@[\w.-]+\/video\/\d+|\/video\/\d+|\/t\//i.test(url);
-    }
+    if (isTiktokUrl(url)) return isTiktokVideoUrl(url);
     if (isInstagramHostUrl(url)) return isInstagramPostUrl(url);
     if (isXUrl(url)) return true;
     if (isFacebookUrl(url)) {
@@ -549,6 +666,16 @@
     youtubeVideoId,
     youtubeThumbnailForUrl,
     isTiktokUrl,
+    isTiktokShareUrl,
+    isTiktokCanonicalVideoUrl,
+    isTiktokVideoUrl,
+    isTiktokNonVideoSurface,
+    tiktokVideoId,
+    tiktokShareCode,
+    sameTiktokVideo,
+    normalizeTiktokUrl,
+    preferDownloadTargetUrl,
+    tiktokPermalinkError,
     isInstagramHostUrl,
     isInstagramPostUrl,
     isInstagramUrl,

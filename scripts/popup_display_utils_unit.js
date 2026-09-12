@@ -268,6 +268,11 @@ function main() {
     "TikTok identity"
   );
   check(
+    u.pageKey("https://www.tiktok.com/video/123456?lang=ko"),
+    "tt:123456",
+    "TikTok bare video identity"
+  );
+  check(
     u.pageKey("https://www.instagram.com/reel/IGCODE/?utm_source=x"),
     "ig:reel:IGCODE",
     "Instagram identity"

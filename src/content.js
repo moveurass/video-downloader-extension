@@ -771,8 +771,10 @@
       }
     }
 
-    // TikTok: pull play URLs from embedded page JSON (works while watching)
-    if (/tiktok\.com$/i.test(host.replace(/^www\./, "")) || host.includes("tiktok")) {
+    // TikTok: pull play URLs from embedded page JSON (works while watching).
+    // Explore / Following / Live / Search embed FYP filler — do not surface it.
+    if (isTikTokVideoPage()) {
+      const permalink = extractTikTokPermalink() || location.href;
       for (const u of extractTikTokPlayUrls()) {
         items.push({
           url: u,
@@ -785,7 +787,8 @@
           isHls: false,
           isSiteDownload: false,
           site: "tiktok",
-          thumbnail: thumb || undefined
+          thumbnail: thumb || undefined,
+          pageUrl: permalink
         });
       }
     }
@@ -1247,6 +1250,29 @@
     return h.includes("tiktok.com") || h.includes("tiktokv.com");
   }
 
+  function isTikTokVideoPage(url) {
+    const value = url || location.href;
+    if (typeof UVDSites !== "undefined" && UVDSites.isTiktokVideoUrl) {
+      return UVDSites.isTiktokVideoUrl(value);
+    }
+    return /\/@[\w.-]+\/video\/\d+|\/video\/\d+|\/t\/[A-Za-z0-9]+|vm\.tiktok\.com|vt\.tiktok\.com/i.test(
+      value
+    );
+  }
+
+  function extractTikTokPermalink() {
+    const consider = (raw) => {
+      if (!raw || typeof raw !== "string") return "";
+      const value = raw.split("#")[0];
+      return isTikTokVideoPage(value) ? value.split("?")[0] : "";
+    };
+    return (
+      consider(document.querySelector('link[rel="canonical"]')?.href) ||
+      consider(document.querySelector('meta[property="og:url"]')?.content) ||
+      consider(location.href)
+    );
+  }
+
   function isYouTubeHost() {
     return UVDSites.isYoutubeUrl(location.href);
   }
@@ -1601,6 +1627,17 @@
     }
 
     if (msg.type === "EXTRACT_TIKTOK") {
+      const permalink = extractTikTokPermalink();
+      if (!isTikTokVideoPage()) {
+        sendResponse({
+          ok: false,
+          urls: [],
+          title: pageTitle(),
+          pageUrl: location.href,
+          permalink: ""
+        });
+        return false;
+      }
       const urls = extractTikTokPlayUrls();
       // Also re-scan so background store gets them
       if (urls.length) {
@@ -1614,7 +1651,9 @@
             filename: buildFilename(title, null, "mp4"),
             type: "video",
             source: "tiktok-page",
-            site: "tiktok"
+            site: "tiktok",
+            thumbnail: pageThumbnail() || undefined,
+            pageUrl: permalink || location.href
           }))
         );
       }
@@ -1622,7 +1661,9 @@
         ok: urls.length > 0,
         urls,
         title: pageTitle(),
-        pageUrl: location.href
+        pageUrl: permalink || location.href,
+        permalink: permalink || location.href,
+        thumbnail: pageThumbnail() || ""
       });
       return false;
     }

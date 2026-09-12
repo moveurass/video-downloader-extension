@@ -162,7 +162,7 @@
         }
 
         if (host.includes("tiktok")) {
-          const m = path.match(/\/@[^/]+\/video\/(\d+)/i);
+          const m = path.match(/\/(?:@[^/]+\/)?video\/(\d+)/i);
           if (m) return `tt:${m[1]}`;
           const t = path.match(/\/t\/([^/?#]+)/i);
           if (t) return `tt:t:${t[1]}`;
@@ -1068,6 +1068,7 @@
         if (placeholder) return [placeholder];
       }
       if (pageUrl && /^https?:/i.test(pageUrl) && isTiktokUrl(pageUrl)) {
+        if (!isDownloadableHelperPage(pageUrl)) return [];
         const cdn = (items || []).find(
           (item) =>
             item?.url &&
@@ -1102,6 +1103,7 @@
           return placeholder ? [placeholder] : items;
         }
         if (isTiktokUrl(url)) {
+          if (!isDownloadableHelperPage(url)) return [];
           const cdn = (items || []).find(
             (item) =>
               item?.url &&

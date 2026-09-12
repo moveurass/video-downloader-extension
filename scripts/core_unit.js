@@ -200,6 +200,45 @@ assert.equal(
   true
 );
 assert.equal(Sites.isDownloadableSiteVideo("https://www.instagram.com/"), false);
+assert.equal(
+  Sites.isTiktokVideoUrl("https://www.tiktok.com/@name/video/1234567890?is_from_webapp=1"),
+  true
+);
+assert.equal(Sites.isTiktokVideoUrl("https://vm.tiktok.com/ZMabcd123/"), true);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/t/ZTabcd123/"), true);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/following"), false);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/live"), false);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/search?q=dance"), false);
+assert.equal(Sites.isTiktokNonVideoSurface("https://www.tiktok.com/explore"), true);
+assert.equal(Sites.isTiktokNonVideoSurface("https://www.tiktok.com/foryou"), true);
+assert.equal(
+  Sites.normalizeTiktokUrl(
+    "https://m.tiktok.com/@name/video/1234567890?is_from_webapp=1&sender_device=pc"
+  ),
+  "https://www.tiktok.com/@name/video/1234567890"
+);
+assert.equal(
+  Sites.preferDownloadTargetUrl(
+    "https://www.tiktok.com/@name/video/1234567890",
+    "https://www.tiktok.com/explore"
+  ),
+  "https://www.tiktok.com/@name/video/1234567890"
+);
+assert.equal(
+  Sites.preferDownloadTargetUrl(
+    "https://www.tiktok.com/explore",
+    "https://www.tiktok.com/@name/video/999"
+  ),
+  "https://www.tiktok.com/explore"
+);
+assert.equal(
+  Sites.isDownloadableSiteVideo("https://www.tiktok.com/@name/video/1234567890"),
+  true
+);
+assert.equal(Sites.isDownloadableSiteVideo("https://www.tiktok.com/explore"), false);
+assert.equal(Sites.isDownloadableSiteVideo("https://www.tiktok.com/following"), false);
+assert.match(Sites.tiktokPermalinkError(), /\/@.+\/video\//);
 assert.equal(Sites.isTiktokCdnUrl("https://cdn.example/image.jpg"), false);
 assert.equal(
   Sites.looksLikeVideoFileUrl(
@@ -627,6 +666,18 @@ assert.equal(
   "TikTok_123456789"
 );
 assert.equal(
+  downloadRequests.preferDownloadTargetUrl(
+    "https://www.tiktok.com/@name/video/123456789",
+    "https://www.tiktok.com/explore"
+  ),
+  "https://www.tiktok.com/@name/video/123456789"
+);
+assert.equal(downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
+assert.equal(
+  downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/@name/video/123456789"),
+  true
+);
+assert.equal(
   downloadRequests.fnameBaseFromLink("https://instagram.com/reel/ABC_123/"),
   "Instagram_ABC_123"
 );
@@ -635,4 +686,4 @@ assert.equal(
   "X_987654321"
 );
 
-console.log("core modules: 102 assertions passed");
+console.log("core modules: assertions passed");

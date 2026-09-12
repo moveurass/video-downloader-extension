@@ -122,7 +122,8 @@
             !isDownloadableSiteVideo(currentTabUrl)
           ) {
             title = "TikTok 영상 페이지를 열어 주세요";
-            hint = "개별 영상 주소에서 다시 열어 주세요";
+            hint =
+              "/@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요 (탐색·팔로잉·라이브·검색은 받을 수 없습니다)";
           } else if (
             /(?:^|\.)x\.com|(?:^|\.)twitter\.com/i.test(
               (() => {

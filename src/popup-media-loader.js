@@ -360,8 +360,12 @@
         );
         const latestTabPromise = chrome.tabs.get(tab.id).catch(() => null);
 
-        // TikTok: SnapTik-style page JSON extract (playAddr / downloadAddr)
-        if (isTiktokUrl(currentTabUrl)) {
+        // TikTok: SnapTik-style page JSON extract (playAddr / downloadAddr).
+        // Skip Explore / Following / Live / Search — those pages are not videos.
+        if (
+          isTiktokUrl(currentTabUrl) &&
+          (typeof isSitePage !== "function" || isSitePage(currentTabUrl))
+        ) {
           try {
             const ext = await chrome.tabs.sendMessage(tab.id, {
               type: "EXTRACT_TIKTOK"

@@ -264,6 +264,7 @@ async function main() {
     chrome: {
       cookies: { getAll: async () => [] },
       tabs: {
+        get: async () => ({ url: "https://www.tiktok.com/@user/video/1" }),
         sendMessage: async () => ({
           urls: [
             "https://v16m.tiktokcdn.com/video.mp4?one=1",
@@ -279,6 +280,8 @@ async function main() {
       ensureCalls += 1;
     },
     isTiktokCdnUrl: (url) => /tiktokcdn\.com/.test(url),
+    isTiktokVideoUrl: Sites.isTiktokVideoUrl,
+    sameTiktokVideo: Sites.sameTiktokVideo,
     getTabItems: () => [
       { url: "https://other.example/file.jpg" },
       { url: "https://other.example/path?mime_type=video" }
@@ -290,6 +293,40 @@ async function main() {
     "https://other.example/path?mime_type=video"
   ]);
   equal(ensureCalls, 1);
+  const exploreRunner = createRunner(baseDeps({
+    chrome: {
+      cookies: { getAll: async () => [] },
+      tabs: {
+        get: async () => ({ url: "https://www.tiktok.com/explore" }),
+        sendMessage: async () => ({
+          urls: ["https://v16m.tiktokcdn.com/explore-fyp.mp4"]
+        })
+      }
+    },
+    isTiktokCdnUrl: (url) => /tiktokcdn\.com/.test(url),
+    isTiktokVideoUrl: Sites.isTiktokVideoUrl,
+    sameTiktokVideo: Sites.sameTiktokVideo,
+    getTabItems: () => [{ url: "https://v16m.tiktokcdn.com/explore-fyp.mp4" }]
+  }));
+  deepEqual(
+    await exploreRunner.collectTikTokMediaUrls(
+      8,
+      "https://www.tiktok.com/@user/video/999"
+    ),
+    [],
+    "pasted TikTok permalink does not inherit Explore tab CDN"
+  );
+  await rejects(
+    () =>
+      createRunner(
+        baseDeps({
+          isTiktokVideoUrl: Sites.isTiktokVideoUrl,
+          normalizeTiktokUrl: Sites.normalizeTiktokUrl,
+          tiktokPermalinkError: Sites.tiktokPermalinkError
+        })
+      ).downloadTikTok(8, "https://www.tiktok.com/explore", "탐색.mp4", "best"),
+    /\/@.+\/video\//
+  );
   await rejects(
     () => mediaRunner.downloadDirectMediaUrl(7, "https://example.test/image.jpg"),
     /영상 파일이 아닌 주소입니다/
