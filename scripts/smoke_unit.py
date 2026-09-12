@@ -1136,6 +1136,13 @@ def main() -> int:
 
     background_source = (ROOT / "src/background.js").read_text(encoding="utf-8")
     check(
+        "site helper does not pass unbound Date.now / fetch / setTimeout",
+        "now: Date.now" not in background_source
+        and "now: () => Date.now()" in background_source
+        and "fetch: (...args) => fetch(...args)" in background_source
+        and "setTimeout: (...args) => setTimeout(...args)" in background_source,
+    )
+    check(
         "background filename importScripts",
         '"background-filename.js"' in background_source.split(");", 1)[0],
     )

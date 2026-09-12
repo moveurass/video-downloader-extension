@@ -112,7 +112,7 @@ const { saveCompanionThumbnail } =
     UVD,
     Uint8Array,
     btoa,
-    fetch,
+    fetch: (...args) => fetch(...args),
     safeDownloadName: filenameSafeDownloadName,
     relDownloadPath: filenameRelDownloadPath,
     getTabMeta: (...args) => mediaStore.getTabMeta(...args),
@@ -240,9 +240,9 @@ const siteHelperRunner = UVDBackgroundSiteHelper.createRunner({
   URL,
   Blob,
   Uint8Array,
-  fetch,
-  setTimeout,
-  now: Date.now,
+  fetch: (...args) => fetch(...args),
+  setTimeout: (...args) => setTimeout(...args),
+  now: () => Date.now(),
   console,
   isTiktokCdnUrl,
   isTiktokUrl,
@@ -382,7 +382,7 @@ const {
   resolvePageUrl
 } = UVDBackgroundDirectMedia.createTransport({
   chrome,
-  fetch,
+  fetch: (...args) => fetch(...args),
   UVD,
   YtDlp,
   activeDownloads,
@@ -530,7 +530,7 @@ const handleBackgroundSeriesMessage =
   });
 const handleMediaMessage = UVDBackgroundMediaMessages.createHandler({
   chrome,
-  fetch,
+  fetch: (...args) => fetch(...args),
   btoa,
   activeDownloads,
   jobIsStopping,

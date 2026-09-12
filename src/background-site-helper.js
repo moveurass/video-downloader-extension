@@ -6,6 +6,37 @@
   "use strict";
 
   function createRunner(deps) {
+    function nowMs() {
+      try {
+        if (typeof deps.now === "function") {
+          const value = Number(deps.now());
+          if (Number.isFinite(value)) return value;
+        }
+      } catch {
+        // Chrome SW: unbound Date.now throws TypeError: Illegal invocation.
+      }
+      return Date.now();
+    }
+
+    function delay(ms) {
+      return new Promise((resolve) => {
+        try {
+          deps.setTimeout(resolve, ms);
+        } catch {
+          setTimeout(resolve, ms);
+        }
+      });
+    }
+
+    function fetchMedia(url, options) {
+      try {
+        return deps.fetch(url, options);
+      } catch (error) {
+        if (!/Illegal invocation/i.test(String(error?.message || error))) throw error;
+        return fetch(url, options);
+      }
+    }
+
     async function ytdlpExtraFromSettings(pageUrl, force = {}) {
       const s = await deps.UVD.getSettings();
       const mediaMode = force.mediaMode || s.mediaMode || "video";
@@ -249,11 +280,11 @@
         throw new Error("영상 파일이 아닌 주소입니다");
       }
       const name = deps.safeDownloadName(
-        filename || `tiktok_${deps.now()}.mp4`,
+        filename || `tiktok_${nowMs()}.mp4`,
         "video/mp4"
       );
       const blob = await deps.withTabReferer(tabId, async () => {
-        const res = await deps.fetch(mediaUrl, {
+        const res = await fetchMedia(mediaUrl, {
           credentials: "include",
           cache: "no-store",
           headers: {
@@ -571,7 +602,7 @@
         } catch {
           // Use captured items.
         }
-        await new Promise((resolve) => deps.setTimeout(resolve, 400));
+        await delay(400);
       }
 
       if (extractedPermalink) {
@@ -734,6 +765,11 @@
         };
       } catch (e) {
         const msg = String(e?.message || e);
+        if (/Illegal invocation/i.test(msg)) {
+          throw new Error(
+            "다운로드를 시작하지 못했습니다. 확장 프로그램을 새로고침한 뒤 다시 시도해 주세요"
+          );
+        }
         if (/로컬 도우미가 필요합니다|게시물 링크가 아닙니다/.test(msg)) {
           throw e;
         }

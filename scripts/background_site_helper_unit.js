@@ -803,6 +803,56 @@ async function main() {
     /홈\/릴스 피드/
   );
 
+  function chromeUnboundNow() {
+    if (this !== Date) throw new TypeError("Illegal invocation");
+    return 99;
+  }
+  function chromeUnboundSetTimeout() {
+    throw new TypeError("Illegal invocation");
+  }
+  let igHostSafePayload;
+  const igHostSafeRunner = createRunner(baseDeps({
+    now: chromeUnboundNow,
+    setTimeout: chromeUnboundSetTimeout,
+    fetch() {
+      throw new TypeError("Illegal invocation");
+    },
+    YtDlp: {
+      available: async () => true,
+      downloadAndWait: async (payload) => {
+        igHostSafePayload = payload;
+        return { path: "/tmp/ig.mp4", filename: "ig.mp4", size: 11 };
+      }
+    }
+  }));
+  const igHostSafe = await igHostSafeRunner.downloadInstagram(
+    12,
+    "https://www.instagram.com/reel/ABC123/",
+    "Reel.mp4",
+    "best",
+    "ig-host"
+  );
+  equal(igHostSafe.ok, true, "unbound Date.now / setTimeout / fetch must not abort Instagram");
+  equal(igHostSafePayload.site, "instagram");
+
+  const igDirect = await createRunner(baseDeps({
+    now: chromeUnboundNow,
+    fetch: async () => ({
+      ok: true,
+      headers: { get: () => "video/mp4" },
+      arrayBuffer: async () => new ArrayBuffer(100_001)
+    }),
+    sniffIsVideo: () => true,
+    downloadBlob: async (_blob, filename) => ({ filename, size: 100_001, downloadId: 9 })
+  })).downloadDirectMediaUrl(
+    1,
+    "https://cdn.example/clip.mp4",
+    "https://www.instagram.com/reel/ABC123/",
+    ""
+  );
+  equal(igDirect.ok, true);
+  equal(/^tiktok_\d+\.mp4$/.test(igDirect.filename), true);
+
   console.log(`background_site_helper_unit: ${assertions} assertions passed`);
 }
 
