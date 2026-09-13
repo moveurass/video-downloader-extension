@@ -260,6 +260,7 @@
         maxConcurrentStarts: MAX_CONCURRENT_STARTS,
         playCompletionSound: () => soundController.playCompletion(),
         sendMessage: (message) => chrome.runtime.sendMessage(message),
+        pageKey,
         fetchThumbDataUrl: (url, referer, extra) =>
           typeof fetchThumbDataUrl === "function"
             ? fetchThumbDataUrl(url, referer, extra)

@@ -159,6 +159,32 @@ async function main() {
     true
   );
   equal(
+    store.thumbnailMatchesPageKey(
+      "https://p19-common-sign.tiktokcdn-us.com/cover-a.jpeg",
+      "tt:2222222222222222222"
+    ),
+    false,
+    "unscoped TikTok cover does not match another video id"
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "https://p19-common-sign.tiktokcdn-us.com/cover-a.jpeg",
+      "tt:1111111111111111111",
+      "tt:1111111111111111111"
+    ),
+    true,
+    "stamped TikTok cover matches its video id"
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "https://p19-common-sign.tiktokcdn-us.com/cover-a.jpeg",
+      "tt:2222222222222222222",
+      "tt:1111111111111111111"
+    ),
+    false,
+    "video A stamp does not match video B pageKey"
+  );
+  equal(
     store.pageIdentityKey("https://www.tiktok.com/@name/video/123456"),
     "tt:123456"
   );

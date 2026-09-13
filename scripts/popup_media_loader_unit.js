@@ -808,6 +808,66 @@ async function main() {
     "hydrate recreates the img after a 🎬 fallback"
   );
 
+  let raceTabUrl =
+    "https://www.tiktok.com/@one/video/1111111111111111111";
+  let racePainted = "";
+  const raceImg = {
+    getAttribute: (name) => (name === "src" ? racePainted : ""),
+    setAttribute: (name, value) => {
+      if (name === "src") racePainted = value;
+    },
+    removeAttribute: () => {}
+  };
+  const raceCard = {
+    dataset: {
+      mediaIdentity: "tt:1111111111111111111\nmedia\nhttps://cdn.a/a.mp4"
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img" ? raceImg : null
+  };
+  let finishHydrateA;
+  const hydrateA = new Promise((resolve) => {
+    finishHydrateA = resolve;
+  });
+  const raceRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? raceCard : null)
+    },
+    document: {},
+    pageKey: (url) => {
+      const match = String(url || "").match(/\/video\/(\d+)/);
+      return match ? `tt:${match[1]}` : "";
+    },
+    getCurrentTabUrl: () => raceTabUrl,
+    getAllItems: () => [
+      {
+        url: raceTabUrl,
+        pageUrl: raceTabUrl,
+        thumbnail: "https://cdn.example/a.jpg"
+      }
+    ],
+    fetchThumbDataUrl: async () => {
+      await hydrateA;
+      return "data:image/jpeg;base64,VIDEOA";
+    }
+  });
+  const staleHydrate = raceRenderer.hydrateRemoteThumbnails([
+    {
+      thumbnail: "https://cdn.example/a.jpg",
+      pageUrl: "https://www.tiktok.com/@one/video/1111111111111111111"
+    }
+  ]);
+  raceTabUrl = "https://www.tiktok.com/@two/video/2222222222222222222";
+  raceCard.dataset.mediaIdentity =
+    "tt:2222222222222222222\nmedia\nhttps://cdn.b/b.mp4";
+  finishHydrateA();
+  await staleHydrate;
+  check(
+    racePainted !== "data:image/jpeg;base64,VIDEOA",
+    true,
+    "in-flight hydrate for video A must not paint video B's card"
+  );
+
   const onPagePermalink =
     "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
   const onPageCdn =
@@ -951,20 +1011,38 @@ async function main() {
     "",
     "PAGE_META profile photo is not a usable on-page thumb"
   );
+  const onPageKey = "tt:7674902153491664150";
   check(
     MediaLoader.usablePageThumbnail(onPageCover, onPagePermalink),
-    onPageCover,
-    "formats / og video cover stays usable"
+    "",
+    "unscoped HTTPS cover is not trusted until stamped with the video id"
   );
   check(
-    MediaLoader.preferPageThumbnail(ttAvatar, onPageCover, onPagePermalink),
+    MediaLoader.usablePageThumbnail(onPageCover, onPagePermalink, onPageKey),
     onPageCover,
-    "on-page merge prefers the video cover over the avatar"
+    "formats cover stamped with tt:videoId stays usable"
   );
   check(
-    MediaLoader.preferPageThumbnail(onPageCover, ttAvatar, onPagePermalink),
+    MediaLoader.preferPageThumbnail(
+      ttAvatar,
+      onPageCover,
+      onPagePermalink,
+      undefined,
+      onPageKey
+    ),
     onPageCover,
-    "avatar PAGE_META cannot replace a video cover"
+    "on-page merge prefers the stamped video cover over the avatar"
+  );
+  check(
+    MediaLoader.preferPageThumbnail(
+      onPageCover,
+      ttAvatar,
+      onPagePermalink,
+      onPageKey,
+      undefined
+    ),
+    onPageCover,
+    "avatar PAGE_META cannot replace a stamped video cover"
   );
   check(
     Sites.pickTiktokCoverFromCandidates([ttAvatar, onPageCover]),
@@ -1077,6 +1155,133 @@ async function main() {
     avatarMetaItems[0].thumbnail !== ttAvatar,
     true,
     "profile photo never remains item.thumbnail after on-page load"
+  );
+
+  const videoA =
+    "https://www.tiktok.com/@one/video/1111111111111111111";
+  const videoB =
+    "https://www.tiktok.com/@two/video/2222222222222222222";
+  const coverA =
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover-a.jpeg";
+  const coverB =
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover-b.jpeg";
+  let navTab = { id: 13, url: videoA, title: "Video A | TikTok" };
+  let navItems = [];
+  let navUrl = null;
+  let navId = null;
+  const navLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [navTab],
+        get: async () => navTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type === "GET_PAGE_META") {
+            return {
+              title: navTab.title,
+              thumbnail: navTab.url === videoA ? coverA : coverB,
+              pageUrl: navTab.url,
+              lastUrl: navTab.url
+            };
+          }
+          return { ok: true };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: navTab.url,
+                pageUrl: navTab.url,
+                title: "TikTok",
+                thumbnail: navTab.url === videoA ? coverA : coverB,
+                source: "tiktok-page"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => onPageElements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items, tabLike) => {
+      const url = tabLike?.url || navUrl;
+      if (!items?.length) {
+        return [{
+          url,
+          pageUrl: url,
+          title: "TikTok",
+          isSiteDownload: true,
+          isPagePlaceholder: true
+        }];
+      }
+      return items.map((item) => ({ ...item, pageUrl: url, url: item.url || url }));
+    },
+    pageKey: (url) => {
+      const match = String(url || "").match(/\/video\/(\d+)/);
+      return match ? `tt:${match[1]}` : String(url || "").replace(/[?#].*$/, "");
+    },
+    isInstagramUrl: () => false,
+    isTiktokUrl: (url) => /tiktok\.com/i.test(url || ""),
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: (url) => /\/@[\w.-]+\/video\/\d+/.test(url || ""),
+    isHlsItem: () => false,
+    cleanTitleText: (value) => value,
+    isUglyName: PopupMedia.isUglyName,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    patchMedia: () => false,
+    hydrateRemoteThumbnails: async () => {},
+    loadAvailableQualities: async (item) => {
+      const key = String(item.pageUrl || item.url || "").match(/\/video\/(\d+)/);
+      navItems = [{
+        ...item,
+        thumbnail: key?.[1] === "1111111111111111111" ? coverA : coverB,
+        thumbnailPageKey: key ? `tt:${key[1]}` : undefined,
+        thumbnailSource: "formats"
+      }];
+    },
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => navItems,
+    setAllItems: (items) => {
+      navItems = items;
+    },
+    getCurrentTabId: () => navId,
+    setCurrentTabId: (value) => {
+      navId = value;
+    },
+    getCurrentTabUrl: () => navUrl,
+    setCurrentTabUrl: (value) => {
+      navUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {}
+  });
+  await navLoader.loadMedia();
+  check(navItems[0].thumbnail, coverA, "first permalink shows video A's formats cover");
+  navTab = { id: 13, url: videoB, title: "Video B | TikTok" };
+  await navLoader.loadMedia({ navigation: true });
+  check(
+    navItems[0].thumbnail !== coverA,
+    true,
+    "after A → B navigation the card does not keep video A's cover"
+  );
+  check(
+    navItems[0].thumbnail,
+    coverB,
+    "after A → B navigation the card uses video B's formats cover"
   );
 
   console.log(`popup media loader: ${assertions} assertions passed`);

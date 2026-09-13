@@ -469,6 +469,16 @@ async function main() {
     playCdn,
     "on-page EXTRACT play-CDN url is left in place"
   );
+  check(
+    onPageHarness.getAllItems()[0].thumbnailPageKey,
+    "tt:7674902153491664150",
+    "formats cover is stamped with the current TikTok video id"
+  );
+  check(
+    onPageHarness.getAllItems()[0].thumbnailSource,
+    "formats",
+    "formats cover is marked as a trusted source"
+  );
 
   const avatarOnPage = makeHarness();
   const ttAvatar =

@@ -11,9 +11,16 @@
     async function fetchThumbDataUrl(url, referer, extra = {}) {
       const key = String(url || "").trim();
       const path = String(extra.path || extra.thumbnailPath || "").trim();
+      const pageKey = String(extra.pageKey || extra.videoId || "").trim();
+      const scopedKey = pageKey && key ? `${pageKey}\n${key}` : "";
+      const scopedPath = pageKey && path ? `${pageKey}\npath:${path}` : "";
       if (key.startsWith("data:image/")) return key;
-      if (key && thumbCache.has(key)) return thumbCache.get(key);
-      if (path && thumbCache.has(`path:${path}`)) return thumbCache.get(`path:${path}`);
+      if (scopedKey && thumbCache.has(scopedKey)) return thumbCache.get(scopedKey);
+      if (scopedPath && thumbCache.has(scopedPath)) return thumbCache.get(scopedPath);
+      if (!pageKey && key && thumbCache.has(key)) return thumbCache.get(key);
+      if (!pageKey && path && thumbCache.has(`path:${path}`)) {
+        return thumbCache.get(`path:${path}`);
+      }
       if (!key && !path) return "";
       try {
         const response = await deps.sendMessage({
@@ -28,8 +35,10 @@
           ? response.dataUrl
           : "";
         if (dataUrl) {
-          if (key) thumbCache.set(key, dataUrl);
-          if (path) thumbCache.set(`path:${path}`, dataUrl);
+          if (scopedKey) thumbCache.set(scopedKey, dataUrl);
+          else if (key) thumbCache.set(key, dataUrl);
+          if (scopedPath) thumbCache.set(scopedPath, dataUrl);
+          else if (path) thumbCache.set(`path:${path}`, dataUrl);
           if (thumbCache.size > 80) thumbCache.delete(thumbCache.keys().next().value);
         }
         return dataUrl;

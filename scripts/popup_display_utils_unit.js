@@ -772,6 +772,8 @@ function main() {
       pageUrl: qaPermalink,
       title: "jumping killing shoot",
       thumbnail: ttCover,
+      thumbnailPageKey: "tt:7674902153491664150",
+      thumbnailSource: "formats",
       isSiteDownload: true
     }],
     { url: qaPermalink, title: "jumping killing shoot" }
@@ -795,6 +797,97 @@ function main() {
     !Sites.isTiktokAvatarThumbUrl(avatarOnly[0].thumbnail || ""),
     true,
     "avatar never remains the on-page card thumbnail"
+  );
+
+  const videoA =
+    "https://www.tiktok.com/@one/video/1111111111111111111";
+  const videoB =
+    "https://www.tiktok.com/@two/video/2222222222222222222";
+  const coverA =
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover-a.jpeg";
+  const navUtils = DisplayUtils.createUtils({
+    $: () => null,
+    document: {
+      body: { appendChild() {} },
+      createElement() {
+        return {};
+      }
+    },
+    UVDSites: Sites,
+    UVDPopupMedia: {
+      cleanTitleText: (raw) => raw,
+      displayName: () => "n",
+      downloadFilename: () => "f.mp4",
+      isUglyName: () => false
+    },
+    Naming: {
+      extractProductCode: () => "",
+      cleanPageTitle: (title) => title,
+      bindTitleToPage: (_url, title) => title,
+      buildFilename: () => "f.mp4",
+      isKnownCodeVideoPage: () => false
+    },
+    UVD: {
+      parseUrlsFromText: () => [],
+      isGenericSaveName: () => false
+    },
+    isSitePage: (url) => Sites.isDownloadableSiteVideo(url),
+    isKnownDownloadablePage: (url) => Sites.isDownloadableSiteVideo(url),
+    getCurrentTabUrl: () => navTabUrl,
+    getAllItems: () => [],
+    getUvdSettings: () => ({}),
+    getSelectedQuality: () => "best",
+    pageHost: { textContent: "" }
+  });
+  let navTabUrl = videoA;
+  navUtils.ensureSiteItems(
+    [{
+      url: videoA,
+      pageUrl: videoA,
+      thumbnail: coverA,
+      thumbnailPageKey: "tt:1111111111111111111",
+      thumbnailSource: "formats",
+      isSiteDownload: true
+    }],
+    { url: videoA, title: "Video A" }
+  );
+  navTabUrl = videoB;
+  const afterNav = navUtils.ensureSiteItems(
+    [{
+      url: videoA,
+      pageUrl: videoA,
+      thumbnail: coverA,
+      thumbnailPageKey: "tt:1111111111111111111",
+      thumbnailSource: "formats",
+      isSiteDownload: true
+    }],
+    { url: videoB, title: "Video B" }
+  );
+  check(
+    afterNav[0].thumbnail !== coverA,
+    true,
+    "navigating A → B without closing the popup drops video A's cover"
+  );
+  check(
+    afterNav[0].pageUrl,
+    videoB,
+    "A → B card is rebound to the new permalink"
+  );
+
+  navTabUrl = qaPermalink;
+  const exploreResidue = navUtils.ensureSiteItems(
+    [{
+      url: "https://v16-webapp-prime.us.tiktok.com/video/tos/fyp.mp4",
+      pageUrl: "https://www.tiktok.com/explore",
+      thumbnail: coverA,
+      isSiteDownload: true
+    }],
+    { url: qaPermalink, title: "TikTok" }
+  );
+  check(
+    exploreResidue[0].thumbnail !== coverA,
+    true,
+    "Explore/FYP residue cover does not stick onto a permalink card"
   );
 
   console.log(`popup display utils unit: ${assertions} assertions passed`);

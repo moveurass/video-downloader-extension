@@ -342,14 +342,27 @@
         filename: job.filename || prev.filename || resultName || "",
         quality: job.quality || prev.quality || "",
         pageUrl: job.pageUrl || prev.pageUrl || "",
-        thumbnail:
-          (String(job.thumbnail || "").startsWith("data:image/") &&
-            job.thumbnail) ||
-          (String(prev.thumbnail || "").startsWith("data:image/") &&
-            prev.thumbnail) ||
-          job.thumbnail ||
-          prev.thumbnail ||
-          "",
+        thumbnail: (() => {
+          const pageKeyFn =
+            typeof deps.pageKey === "function" ? deps.pageKey : null;
+          const jobKey = pageKeyFn
+            ? pageKeyFn(job.pageUrl || "")
+            : String(job.pageUrl || "");
+          const prevKey = pageKeyFn
+            ? pageKeyFn(prev.pageUrl || "")
+            : String(prev.pageUrl || "");
+          const sameVideo = !jobKey || !prevKey || jobKey === prevKey;
+          if (!sameVideo) return job.thumbnail || "";
+          return (
+            (String(job.thumbnail || "").startsWith("data:image/") &&
+              job.thumbnail) ||
+            (String(prev.thumbnail || "").startsWith("data:image/") &&
+              prev.thumbnail) ||
+            job.thumbnail ||
+            prev.thumbnail ||
+            ""
+          );
+        })(),
         thumbnailPath:
           job.thumbnailPath ||
           job.result?.thumbnailPath ||
@@ -562,14 +575,28 @@
           }
           try {
             let dataUrl = "";
+            const pageKeyFn =
+              typeof deps.pageKey === "function" ? deps.pageKey : null;
+            const jobKey = pageKeyFn
+              ? pageKeyFn(job.pageUrl || "")
+              : String(job.pageUrl || "");
             if (/^https?:/i.test(job.thumbnail || "")) {
-              dataUrl = await fetchThumb(job.thumbnail, job.pageUrl || "");
+              dataUrl = await fetchThumb(job.thumbnail, job.pageUrl || "", {
+                pageKey: jobKey
+              });
             }
             const path = job.result?.thumbnailPath || job.thumbnailPath || "";
             if (!dataUrl && path) {
-              dataUrl = await fetchThumb("", job.pageUrl || "", { path });
+              dataUrl = await fetchThumb("", job.pageUrl || "", {
+                path,
+                pageKey: jobKey
+              });
             }
-            if (!dataUrl) return;
+            const live = uiJobs.get(job.id);
+            const liveKey = pageKeyFn
+              ? pageKeyFn(live?.pageUrl || "")
+              : String(live?.pageUrl || "");
+            if (!dataUrl || (jobKey && liveKey && jobKey !== liveKey)) return;
             job.thumbnail = dataUrl;
             applyQueueThumbSrc(job.id, dataUrl);
           } catch {

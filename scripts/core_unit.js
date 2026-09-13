@@ -658,6 +658,47 @@ assert.equal(
   "",
   "avatar-only current thumb is discarded"
 );
+assert.equal(
+  Sites.tiktokPreviewPageKey(
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  "tt:7674902153491664150"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+    "tt:7674902153491664150"
+  ),
+  true,
+  "stamped cover belongs to that video id"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/@other/video/111",
+    "tt:7674902153491664150"
+  ),
+  false,
+  "video A cover does not belong to video B"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  false,
+  "unscoped cover is not trusted on a permalink"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/explore",
+    "tt:7674902153491664150"
+  ),
+  false,
+  "Explore/FYP is not a video page for covers"
+);
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),

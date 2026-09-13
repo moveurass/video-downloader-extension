@@ -405,12 +405,30 @@
           previous.url ||
           "";
         const sites = deps.UVDSites || {};
+        const incomingTrusted =
+          !sites.isTiktokUrl?.(pageHint) ||
+          sites.tiktokThumbBelongsToPage?.(
+            incoming.thumbnail,
+            pageHint,
+            incoming.thumbnailPageKey
+          );
+        const previousTrusted =
+          sameVideo &&
+          (!sites.isTiktokUrl?.(pageHint) ||
+            sites.tiktokThumbBelongsToPage?.(
+              previous.thumbnail,
+              pageHint,
+              previous.thumbnailPageKey
+            ));
         const mergedThumb =
           sites.isTiktokUrl?.(pageHint) && sites.preferTiktokPreviewThumbnail
             ? sites.preferTiktokPreviewThumbnail(
-                sameVideo ? previous.thumbnail : "",
-                incoming.thumbnail,
-                { fromFormats: !!incoming.thumbnail }
+                previousTrusted ? previous.thumbnail : "",
+                incomingTrusted ? incoming.thumbnail : "",
+                {
+                  fromFormats:
+                    incoming.thumbnailSource === "formats" && incomingTrusted
+                }
               ) || undefined
             : incoming.thumbnail ||
               (sameVideo ? previous.thumbnail : undefined);
@@ -429,6 +447,14 @@
           ),
           filename: preferStableText(previous.filename, incoming.filename),
           thumbnail: mergedThumb,
+          thumbnailPageKey: mergedThumb
+            ? incoming.thumbnailPageKey ||
+              previous.thumbnailPageKey ||
+              (sites.tiktokPreviewPageKey?.(pageHint) || undefined)
+            : undefined,
+          thumbnailSource: mergedThumb
+            ? incoming.thumbnailSource || previous.thumbnailSource
+            : undefined,
           quality:
             incoming.quality ||
             (sameMedia ? previous.quality : incoming.quality),
@@ -515,7 +541,10 @@
 
         let top = list[0];
         const topKey = pageKey(top.pageUrl || top.url || "");
-        const samePage = !topKey || !curKey || topKey === curKey;
+        const tiktokPage = !!(deps.UVDSites || {}).isTiktokUrl?.(url);
+        const samePage = tiktokPage
+          ? !!(topKey && curKey && topKey === curKey)
+          : !topKey || !curKey || topKey === curKey;
         if (samePage && cached[0]) {
           top = mergeStableItem(cached[0], top);
         }
@@ -536,20 +565,34 @@
           return result;
         }
         const sites = deps.UVDSites || {};
+        const topTrusted =
+          sites.tiktokThumbBelongsToPage?.(
+            top.thumbnail,
+            url,
+            top.thumbnailPageKey
+          ) ||
+          (!tiktokPage && !!top.thumbnail);
+        const localTrusted =
+          sites.tiktokThumbBelongsToPage?.(
+            local.thumbnail,
+            url,
+            local.thumbnailPageKey
+          ) ||
+          (!tiktokPage && !!local.thumbnail);
         const thumb = samePage
-          ? sites.isTiktokUrl?.(url) && sites.preferTiktokPreviewThumbnail
+          ? tiktokPage && sites.preferTiktokPreviewThumbnail
             ? sites.preferTiktokPreviewThumbnail(
-                local.thumbnail,
-                top.thumbnail,
-                { fromFormats: !!top.thumbnail }
-              ) ||
-              sites.preferTiktokPreviewThumbnail(
-                top.thumbnail,
-                local.thumbnail
-              ) ||
-              undefined
+                localTrusted ? local.thumbnail : "",
+                topTrusted ? top.thumbnail : "",
+                {
+                  fromFormats:
+                    top.thumbnailSource === "formats" && topTrusted
+                }
+              ) || undefined
             : top.thumbnail || local.thumbnail
-          : local.thumbnail;
+          : localTrusted
+            ? local.thumbnail
+            : undefined;
         const title = samePage
           ? top.title || local.title
           : local.title || top.title;
@@ -573,7 +616,16 @@
             filename: samePage
               ? top.filename || local.filename
               : local.filename,
-            thumbnail: thumb || undefined
+            thumbnail: thumb || undefined,
+            thumbnailPageKey: thumb
+              ? top.thumbnailPageKey ||
+                local.thumbnailPageKey ||
+                sites.tiktokPreviewPageKey?.(url) ||
+                undefined
+              : undefined,
+            thumbnailSource: thumb
+              ? top.thumbnailSource || local.thumbnailSource
+              : undefined
           }
         ];
         rememberStableItems(curKey, result);

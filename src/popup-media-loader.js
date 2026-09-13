@@ -49,37 +49,51 @@
       }
     }
 
-    function thumbnailMatchesPage(thumbnail, pageUrl) {
+    function thumbnailMatchesPage(thumbnail, pageUrl, boundKey) {
       const expected = youtubeVideoId(pageUrl);
-      if (!expected) return true;
-      return youtubeThumbnailVideoId(thumbnail) === expected;
+      if (expected) {
+        const actual = youtubeThumbnailVideoId(thumbnail);
+        return !actual || actual === expected;
+      }
+      const sites = sitesApi();
+      if (sites?.isTiktokUrl?.(pageUrl) || sites?.isTiktokVideoUrl?.(pageUrl)) {
+        return !!sites.tiktokThumbBelongsToPage?.(
+          thumbnail,
+          pageUrl,
+          boundKey
+        );
+      }
+      return true;
     }
 
-    function usablePageThumbnail(thumbnail, pageUrl) {
+    function usablePageThumbnail(thumbnail, pageUrl, boundKey) {
       const value = String(thumbnail || "").trim();
       if (!value) return "";
       const sites = sitesApi();
-      if (
-        sites?.isTiktokUrl?.(pageUrl) &&
-        sites.isTiktokAvatarThumbUrl?.(value)
-      ) {
-        return "";
+      if (sites?.isTiktokUrl?.(pageUrl) || sites?.isTiktokVideoUrl?.(pageUrl)) {
+        return sites.tiktokThumbBelongsToPage?.(value, pageUrl, boundKey)
+          ? value
+          : "";
       }
+      if (sites?.isTiktokAvatarThumbUrl?.(value)) return "";
       return value;
     }
 
-    function preferPageThumbnail(current, incoming, pageUrl) {
+    function preferPageThumbnail(current, incoming, pageUrl, currentBound, incomingBound) {
       const sites = sitesApi();
+      const safeCurrent = usablePageThumbnail(current, pageUrl, currentBound);
+      const safeIncoming = usablePageThumbnail(incoming, pageUrl, incomingBound);
       if (
         sites?.preferTiktokPreviewThumbnail &&
-        sites.isTiktokUrl?.(pageUrl)
+        (sites.isTiktokUrl?.(pageUrl) || sites.isTiktokVideoUrl?.(pageUrl))
       ) {
         return (
-          sites.preferTiktokPreviewThumbnail(current, incoming) ||
-          undefined
+          sites.preferTiktokPreviewThumbnail(safeCurrent, safeIncoming, {
+            fromFormats: !!safeIncoming
+          }) || undefined
         );
       }
-      return incoming || current || undefined;
+      return safeIncoming || safeCurrent || undefined;
     }
 
     function createLoader(deps) {
@@ -344,7 +358,16 @@
             isSitePage(nextTabUrl)
               ? { ...tab, url: nextTabUrl, title: "" }
               : { ...tab, url: nextTabUrl };
-          setAllItems(ensureSiteItems([], navigationTab));
+          let nextItems = ensureSiteItems([], navigationTab);
+          if (isTiktokUrl(nextTabUrl)) {
+            nextItems = nextItems.map((item) => ({
+              ...item,
+              thumbnail: undefined,
+              thumbnailPageKey: undefined,
+              thumbnailSource: undefined
+            }));
+          }
+          setAllItems(nextItems);
           setAvailableQualities([{ id: "best", label: "최고" }]);
           setQualitiesLoading(false);
           render();
@@ -436,11 +459,18 @@
             if (!youtubeId && !(knownCodePage && suppressProvisionalTitle)) {
               const thumb = usablePageThumbnail(
                 item.thumbnail,
-                item.pageUrl || currentTabUrl
+                currentTabUrl,
+                item.thumbnailPageKey
               );
-              return thumb === item.thumbnail
-                ? item
-                : { ...item, thumbnail: thumb || undefined };
+              if (thumb === item.thumbnail) return item;
+              return {
+                ...item,
+                thumbnail: thumb || undefined,
+                thumbnailPageKey: thumb
+                  ? item.thumbnailPageKey
+                  : undefined,
+                thumbnailSource: thumb ? item.thumbnailSource : undefined
+              };
             }
             return {
               ...item,
@@ -511,16 +541,28 @@
               const itemKey = pageKey(
                 item.pageUrl || item.url || currentTabUrl
               );
-              const samePage = !itemKey || !curKey || itemKey === curKey;
+              const tiktokPage = isTiktokUrl(currentTabUrl);
+              const samePage = tiktokPage
+                ? !!(itemKey && curKey && itemKey === curKey)
+                : !itemKey || !curKey || itemKey === curKey;
               const keepExisting =
                 samePage && !youtubeId && !knownCodePage;
+              const nextThumb = preferPageThumbnail(
+                keepExisting ? item.thumbnail : undefined,
+                freshThumbnail,
+                currentTabUrl,
+                keepExisting ? item.thumbnailPageKey : undefined,
+                undefined
+              );
               return {
                 ...item,
-                thumbnail: preferPageThumbnail(
-                  keepExisting ? item.thumbnail : undefined,
-                  freshThumbnail,
-                  currentTabUrl
-                ),
+                thumbnail: nextThumb,
+                thumbnailPageKey: nextThumb
+                  ? item.thumbnailPageKey ||
+                    sitesApi()?.tiktokPreviewPageKey?.(currentTabUrl) ||
+                    undefined
+                  : undefined,
+                thumbnailSource: nextThumb ? item.thumbnailSource : undefined,
                 title:
                   freshTitle ||
                   (keepExisting ? item.title : undefined) ||

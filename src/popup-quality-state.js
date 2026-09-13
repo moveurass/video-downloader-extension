@@ -534,7 +534,13 @@
                   response.thumbnail,
                   { fromFormats: true }
                 );
-                if (preferred) patch.thumbnail = preferred;
+                if (preferred) {
+                  patch.thumbnail = preferred;
+                  patch.thumbnailPageKey =
+                    sites.tiktokPreviewPageKey?.(pageHint) ||
+                    patch.thumbnailPageKey;
+                  patch.thumbnailSource = "formats";
+                }
               } else if (
                 !String(patch.thumbnail || "").startsWith("data:image/")
               ) {

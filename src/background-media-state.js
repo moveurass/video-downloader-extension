@@ -194,14 +194,23 @@
       }
     }
 
-    function thumbnailMatchesPageKey(thumbnail, pageKey) {
-      const expected = String(pageKey || "").match(
+    function thumbnailMatchesPageKey(thumbnail, pageKey, boundKey) {
+      const key = String(pageKey || "");
+      const expected = key.match(
         /^yt:(?:(?:shorts|embed|live):)?([^:/?#]+)$/i
       )?.[1];
       const actual = String(thumbnail || "").match(
         /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
       )?.[1];
-      return !expected || !actual || expected === actual;
+      if (expected) return !actual || expected === actual;
+      if (/^tt:(?:\d+|t:.+)$/i.test(key)) {
+        const bound = String(boundKey || "").trim();
+        if (bound) return bound === key;
+        // TikTok CDNs do not embed the video id. An unscoped cover must not
+        // follow SPA navigation / FYP residue onto another permalink.
+        return false;
+      }
+      return true;
     }
 
     function youtubeVideoId(rawUrl) {
@@ -543,7 +552,8 @@
       const host = meta?.host || item.host || "";
       const itemThumbnail = thumbnailMatchesPageKey(
         item.thumbnail,
-        meta?.pageKey
+        meta?.pageKey,
+        item.thumbnailPageKey
       )
         ? item.thumbnail
         : undefined;
@@ -743,7 +753,8 @@
 
       const incomingThumbnail = thumbnailMatchesPageKey(
         meta.thumbnail,
-        nextKey
+        nextKey,
+        meta.thumbnailPageKey
       )
         ? meta.thumbnail
         : undefined;
@@ -751,9 +762,11 @@
       if (pageChanged) {
         // Known-code last-good is same-pageKey only. Never keep a cover
         // from the previous title, including a stale PAGE_META payload.
-        thumbnail = Naming.isKnownCodeSite?.(nextHost)
-          ? undefined
-          : incomingThumbnail || undefined;
+        // TikTok SPA og:image lags behind /@user/video/id — wipe on id change.
+        thumbnail =
+          Naming.isKnownCodeSite?.(nextHost) || /^tt:(?:\d+|t:.+)$/i.test(nextKey)
+            ? undefined
+            : incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
         thumbnail = incomingThumbnail || prev.thumbnail;
       } else {

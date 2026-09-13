@@ -500,6 +500,29 @@
     return pickTiktokCoverFromCandidates(found);
   }
 
+  function tiktokPreviewPageKey(url) {
+    const id = tiktokVideoId(url);
+    if (id) return `tt:${id}`;
+    const code = tiktokShareCode(url);
+    if (code) return `tt:t:${code}`;
+    return "";
+  }
+
+  /**
+   * TikTok CDN covers do not embed the aweme id. A preview belongs to a
+   * permalink only when it is stamped with that video's page key (formats /
+   * helper). Explore/FYP and leftover avatars never match.
+   */
+  function tiktokThumbBelongsToPage(thumbnail, pageUrl, boundKey) {
+    const value = String(thumbnail || "").trim();
+    if (!value) return false;
+    if (isTiktokAvatarThumbUrl(value)) return false;
+    const expected = tiktokPreviewPageKey(pageUrl);
+    if (!expected) return false;
+    const bound = String(boundKey || "").trim();
+    return !!bound && bound === expected;
+  }
+
   function preferTiktokPreviewThumbnail(current, candidate, opts = {}) {
     const cur = String(current || "").trim();
     const next = String(candidate || "").trim();
@@ -903,6 +926,8 @@
     pickTiktokCoverFromCandidates,
     pickTiktokCoverFromPageData,
     preferTiktokPreviewThumbnail,
+    tiktokPreviewPageKey,
+    tiktokThumbBelongsToPage,
     tiktokPermalinkError,
     isInstagramHostUrl,
     isInstagramPostUrl,

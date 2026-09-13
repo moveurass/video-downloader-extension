@@ -145,24 +145,55 @@
         });
       }
 
-      async function hydrateRemoteThumbnails(items) {
+      let hydrateGeneration = 0;
+
+      function pageKeyOf(url) {
+        return (
+          (typeof deps.pageKey === "function" && deps.pageKey(url)) ||
+          String(url || "")
+        );
+      }
+
+      function thumbStillCurrent(item, generation) {
+        if (generation !== hydrateGeneration) return false;
+        const liveUrl =
+          typeof getCurrentTabUrl === "function" ? getCurrentTabUrl() : "";
+        const liveKey = pageKeyOf(liveUrl);
+        const itemKey = pageKeyOf(item?.pageUrl || item?.url || "");
+        if (liveKey && itemKey && liveKey !== itemKey) return false;
+        const card = liveCard();
+        const liveItem =
+          typeof getAllItems === "function" ? getAllItems()[0] : null;
+        if (card?.dataset?.mediaIdentity && liveItem) {
+          const identity = mediaIdentity(liveItem, liveUrl);
+          if (card.dataset.mediaIdentity !== identity) return false;
+        }
+        return true;
+      }
+
+      async function hydrateRemoteThumbnails(items, generation) {
         const fetchThumb = deps.fetchThumbDataUrl;
         if (typeof fetchThumb !== "function") return;
+        const gen =
+          generation == null ? hydrateGeneration : generation;
         await Promise.all(
           (items || []).map(async (item) => {
             const url = String(item?.thumbnail || "");
+            const pageUrl = item.pageUrl || item.url || "";
+            const pageKey = pageKeyOf(pageUrl);
             if (url.startsWith("data:image/")) {
-              applyThumbSrc(liveCard(), url);
+              if (thumbStillCurrent(item, gen)) applyThumbSrc(liveCard(), url);
               return;
             }
             if (!needsRemoteThumbHydration(url)) return;
             try {
-              const dataUrl = await fetchThumb(
-                url,
-                item.pageUrl || item.url || ""
-              );
-              if (!dataUrl) return;
+              const dataUrl = await fetchThumb(url, pageUrl, {
+                pageKey,
+                videoId: pageKey
+              });
+              if (!dataUrl || !thumbStillCurrent(item, gen)) return;
               item.thumbnail = dataUrl;
+              if (pageKey) item.thumbnailPageKey = pageKey;
               applyThumbSrc(liveCard(), dataUrl);
             } catch {
               /* pending img stays empty until a later hydrate */
@@ -173,8 +204,9 @@
 
       function scheduleThumbHydration(items) {
         if (typeof deps.fetchThumbDataUrl !== "function") return;
+        const generation = ++hydrateGeneration;
         Promise.resolve()
-          .then(() => hydrateRemoteThumbnails(items))
+          .then(() => hydrateRemoteThumbnails(items, generation))
           .catch(() => {});
       }
 

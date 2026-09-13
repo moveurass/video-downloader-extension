@@ -460,6 +460,35 @@ function makeHarness(responses = [], options = {}) {
     "queue hydrate stores a data URL on the job"
   );
 
+  const bleed = makeHarness();
+  bleed.controller.upsertUiJob(
+    {
+      id: "shared-row",
+      status: "running",
+      title: "Video A",
+      percent: 10,
+      pageUrl: "https://www.tiktok.com/@one/video/1111111111111111111",
+      thumbnail: "data:image/jpeg;base64,VIDEOA"
+    },
+    { toast: false, forceStructure: true, local: true }
+  );
+  bleed.controller.upsertUiJob(
+    {
+      id: "shared-row",
+      status: "running",
+      title: "Video B",
+      percent: 12,
+      pageUrl: "https://www.tiktok.com/@two/video/2222222222222222222",
+      thumbnail: ""
+    },
+    { toast: false, forceStructure: true, local: true }
+  );
+  check(
+    bleed.uiJobs.get("shared-row").thumbnail,
+    "",
+    "queue row does not keep video A's cover after the job pageUrl changes"
+  );
+
   console.log(`popup progress UI: ${assertions} assertions passed`);
 })().catch((error) => {
   console.error(error);
