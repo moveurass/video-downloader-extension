@@ -143,16 +143,39 @@
         return escapeHtml(s).replace(/'/g, "&#39;");
       }
 
+      function sitesApi() {
+        if (
+          typeof deps.UVDSites?.needsRemoteThumbHydration === "function"
+        ) {
+          return deps.UVDSites;
+        }
+        if (typeof UVDSites !== "undefined" && UVDSites) return UVDSites;
+        try {
+          return require("./site-detection.js");
+        } catch {
+          return deps.UVDSites || {};
+        }
+      }
+
       function thumbHtml(item) {
         const src = String(item?.thumbnail || "");
         if (src.startsWith("data:image/")) {
           return `<img class="thumb-img" src="${escapeAttr(src)}" alt="" />`;
         }
-        // TikTok / Instagram CDN covers 403 from the extension origin.
-        // Keep the URL for FETCH_THUMB hydration instead of painting a
-        // broken <img> that bindThumbFallback replaces with 🎬.
         if (/^https?:/i.test(src)) {
-          return `<img class="thumb-img" data-thumb-url="${escapeAttr(src)}" alt="" />`;
+          // Only TikTok / Instagram CDNs 403 from the extension origin.
+          // YouTube i.ytimg.com / img.youtube.com (and other direct-safe
+          // remotes) must paint src immediately — parking every https URL
+          // for FETCH_THUMB left YouTube cards blank.
+          const sites = sitesApi();
+          const parkForHydrate =
+            typeof sites.needsRemoteThumbHydration === "function"
+              ? sites.needsRemoteThumbHydration(src)
+              : false;
+          if (parkForHydrate) {
+            return `<img class="thumb-img" data-thumb-url="${escapeAttr(src)}" alt="" />`;
+          }
+          return `<img class="thumb-img" src="${escapeAttr(src)}" alt="" />`;
         }
         return `<span class="thumb-fallback">🎬</span>`;
       }

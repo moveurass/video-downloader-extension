@@ -751,6 +751,20 @@ async function main() {
     false,
     "data URLs are already displayable"
   );
+  check(
+    MediaRenderer.needsRemoteThumbHydration(
+      "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    ),
+    false,
+    "YouTube ytimg paints directly and must not wait on FETCH_THUMB"
+  );
+  check(
+    MediaRenderer.needsRemoteThumbHydration(
+      "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    ),
+    false,
+    "img.youtube.com is also a direct-safe YouTube thumb host"
+  );
 
   const hydrateItem = {
     thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
@@ -1666,6 +1680,146 @@ async function main() {
     stayItems[0].thumbnail,
     igHydrated,
     "CDN PAGE_META must not replace a hydrated Instagram data URL"
+  );
+
+  const ytWatch = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  const ytThumbUrl = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg";
+  let ytPatchSrc = "";
+  let ytPatchSrcWrites = 0;
+  let ytDataThumb = "stale-park";
+  let ytFetchCalls = 0;
+  const ytPatchImg = {
+    getAttribute: (name) => {
+      if (name === "src") return ytPatchSrc;
+      if (name === "data-thumb-url") return ytDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") {
+        ytPatchSrc = value;
+        ytPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") ytDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") {
+        ytPatchSrc = "";
+        ytPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") ytDataThumb = "";
+    }
+  };
+  const ytPatchThumb = { innerHTML: "" };
+  const ytPatchCard = {
+    dataset: {
+      mediaIdentity: `yt:dQw4w9WgXcQ\nmedia\n${ytWatch}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? ytPatchImg
+        : selector === ".thumb"
+          ? ytPatchThumb
+          : selector === ".name"
+            ? { textContent: "", title: "" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let ytPatchItems = [{
+    url: ytWatch,
+    pageUrl: ytWatch,
+    title: "YouTube title",
+    thumbnail: ytThumbUrl
+  }];
+  const ytPatchRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? ytPatchCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "yt:dQw4w9WgXcQ",
+    displayName: (item) => item.title,
+    downloadFilename: () => "youtube.mp4",
+    siteLabel: () => "YouTube",
+    thumbHtml: (item) =>
+      item?.thumbnail
+        ? `<img class="thumb-img" src="${item.thumbnail}" alt="" />`
+        : `<span class="thumb-fallback">🎬</span>`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => ytPatchItems,
+    setAllItems: (items) => {
+      ytPatchItems = items;
+    },
+    getCurrentTabUrl: () => ytWatch,
+    fetchThumbDataUrl: async () => {
+      ytFetchCalls += 1;
+      throw new Error("YouTube must not wait on FETCH_THUMB");
+    }
+  });
+  check(ytPatchRenderer.patch(), true, "YouTube card patches in place");
+  check(ytPatchSrc, ytThumbUrl, "YouTube ytimg paints as img.src immediately");
+  check(
+    ytDataThumb,
+    "",
+    "YouTube patch clears a leftover data-thumb-url park"
+  );
+  check(ytFetchCalls, 0, "YouTube patch must not call FETCH_THUMB to paint");
+
+  const writesAfterFirstPaint = ytPatchSrcWrites;
+  check(ytPatchRenderer.patch(), true, "same YouTube thumb patches again");
+  check(ytPatchSrc, ytThumbUrl, "a working YouTube src is not wiped on patch");
+  check(
+    ytPatchSrcWrites,
+    writesAfterFirstPaint,
+    "repeat YouTube patch does not rewrite a good ytimg src"
+  );
+  check(ytFetchCalls, 0, "repeat YouTube patch still skips FETCH_THUMB");
+
+  const ytHydrateItem = {
+    thumbnail: ytThumbUrl,
+    pageUrl: ytWatch
+  };
+  let ytHydratedSrc = ytThumbUrl;
+  const ytHydrateImg = {
+    getAttribute: (name) => (name === "src" ? ytHydratedSrc : ""),
+    setAttribute: (name, value) => {
+      if (name === "src") ytHydratedSrc = value;
+    },
+    removeAttribute: () => {}
+  };
+  const ytHydrateCard = {
+    querySelector: (selector) =>
+      selector === ".thumb-img" ? ytHydrateImg : null
+  };
+  const ytHydrateRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? ytHydrateCard : null)
+    },
+    document: {},
+    fetchThumbDataUrl: async () => {
+      ytFetchCalls += 1;
+      return "data:image/jpeg;base64,SHOULDNOTUSE";
+    }
+  });
+  await ytHydrateRenderer.hydrateRemoteThumbnails([ytHydrateItem]);
+  check(
+    ytFetchCalls,
+    0,
+    "hydrateRemoteThumbnails skips YouTube ytimg FETCH_THUMB"
+  );
+  check(
+    ytHydratedSrc,
+    ytThumbUrl,
+    "YouTube hydrate path leaves the ytimg src in place"
+  );
+  check(
+    ytHydrateItem.thumbnail,
+    ytThumbUrl,
+    "YouTube item thumbnail stays the ytimg URL after hydrate skip"
   );
 
   check(

@@ -590,6 +590,60 @@ assert.equal(Sites.isInstagramImageCdnHost("scontent.cdninstagram.com"), true);
 assert.equal(Sites.isInstagramImageCdnHost("scontent-gmp1-1.cdninstagram.com"), true);
 assert.equal(Sites.isInstagramImageCdnHost("instagram.fsic1-1.fna.fbcdn.net"), true);
 assert.equal(Sites.isInstagramImageCdnHost("evil-cdninstagram.com.example"), false);
+assert.equal(Sites.isYoutubeThumbHost("i.ytimg.com"), true);
+assert.equal(Sites.isYoutubeThumbHost("i9.ytimg.com"), true);
+assert.equal(Sites.isYoutubeThumbHost("img.youtube.com"), true);
+assert.equal(Sites.isYoutubeThumbHost("evil.ytimg.com.example"), false);
+assert.equal(
+  Sites.isYoutubeThumbUrl("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"),
+  true
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+  ),
+  false,
+  "YouTube ytimg must not wait on FETCH_THUMB"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+  ),
+  false,
+  "img.youtube.com is a direct-safe YouTube thumb host"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://p19-common-sign.tiktokcdn-us.com/cover"
+  ),
+  true,
+  "TikTok CDNs still need FETCH_THUMB hydration"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+  ),
+  true,
+  "Instagram CDNs still need FETCH_THUMB hydration"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration("data:image/jpeg;base64,abc"),
+  false
+);
+assert.equal(
+  Sites.isHotlinkBlockedThumbUrl(
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+  ),
+  false
+);
+assert.equal(
+  Sites.isHotlinkBlockedThumbHost("p19-common-sign.tiktokcdn-us.com"),
+  true
+);
+assert.equal(
+  Sites.isHotlinkBlockedThumbHost("scontent.cdninstagram.com"),
+  true
+);
 assert.equal(Sites.isTrustedThumbUrl(
   "https://www.instagram.com/reel/DABC123xyz/",
   "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"

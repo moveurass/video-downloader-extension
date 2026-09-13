@@ -199,10 +199,39 @@ function main() {
   check(u.escapeHtml(null), "", "null HTML escape");
   check(u.escapeHtml(`<a x="1">&`), "&lt;a x=&quot;1&quot;&gt;&amp;", "HTML escaping");
   check(u.escapeAttr(`"'&<>`), "&quot;&#39;&amp;&lt;&gt;", "attribute escaping");
+  const ytThumb = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg";
+  check(
+    u.thumbHtml({ thumbnail: ytThumb }),
+    `<img class="thumb-img" src="${ytThumb}" alt="" />`,
+    "YouTube ytimg paints as src immediately"
+  );
+  check(
+    u.thumbHtml({ thumbnail: ytThumb }).includes("data-thumb-url"),
+    false,
+    "YouTube is not parked as empty-src + data-thumb-url"
+  );
+  const ttCoverHtml = "https://p19-common-sign.tiktokcdn-us.com/cover";
+  check(
+    u.thumbHtml({ thumbnail: ttCoverHtml }),
+    `<img class="thumb-img" data-thumb-url="${ttCoverHtml}" alt="" />`,
+    "TikTok CDN stays off-src for FETCH_THUMB"
+  );
+  check(
+    /src=/.test(u.thumbHtml({ thumbnail: ttCoverHtml })),
+    false,
+    "TikTok CDN must not paint a broken src that becomes 🎬"
+  );
+  const igCoverHtml =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg";
+  check(
+    u.thumbHtml({ thumbnail: igCoverHtml }),
+    `<img class="thumb-img" data-thumb-url="${igCoverHtml}" alt="" />`,
+    "Instagram CDN stays off-src for FETCH_THUMB"
+  );
   check(
     u.thumbHtml({ thumbnail: `https://x.test/a'"&.jpg` }),
-    `<img class="thumb-img" data-thumb-url="https://x.test/a&#39;&quot;&amp;.jpg" alt="" />`,
-    "remote covers stay off-src until FETCH_THUMB hydrates them"
+    `<img class="thumb-img" src="https://x.test/a&#39;&quot;&amp;.jpg" alt="" />`,
+    "direct-safe remotes paint as src"
   );
   check(
     u.thumbHtml({ thumbnail: "data:image/jpeg;base64,abc" }),
