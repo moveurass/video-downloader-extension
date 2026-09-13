@@ -188,6 +188,24 @@
       : "";
   }
 
+  function isYoutubeThumbHost(host) {
+    const h = String(host || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    if (!h) return false;
+    return hostMatchesSuffix(h, "ytimg.com") || h === "img.youtube.com";
+  }
+
+  function isYoutubeThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || !/^https?:/i.test(value)) return false;
+    try {
+      return isYoutubeThumbHost(new URL(value).hostname);
+    } catch {
+      return false;
+    }
+  }
+
   function isTiktokUrl(url) {
     const host = hostOf(url);
     if (!host || /tiktokcdn|byteicdn|byteoversea|ibyteimg/i.test(host)) return false;
@@ -554,6 +572,31 @@
       .toLowerCase();
     if (!h) return false;
     return /(?:^|\.)cdninstagram\.com$/i.test(h) || /(?:^|\.)fbcdn\.net$/i.test(h);
+  }
+
+  /**
+   * TikTok / Instagram image CDNs 403 as <img src> from the extension
+   * origin. YouTube ytimg and other remotes that work as direct img src
+   * must not be parked for FETCH_THUMB — that leaves the card blank.
+   */
+  function isHotlinkBlockedThumbHost(host) {
+    return isTikTokImageCdnHost(host) || isInstagramImageCdnHost(host);
+  }
+
+  function isHotlinkBlockedThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || !/^https?:/i.test(value)) return false;
+    try {
+      return isHotlinkBlockedThumbHost(new URL(value).hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function needsRemoteThumbHydration(url) {
+    const value = String(url || "").trim();
+    if (!value || value.startsWith("data:")) return false;
+    return isHotlinkBlockedThumbUrl(value);
   }
 
   function isInstagramHostUrl(url) {
@@ -1044,10 +1087,15 @@
     isKnownVideoCdnHost,
     isTikTokImageCdnHost,
     isInstagramImageCdnHost,
+    isHotlinkBlockedThumbHost,
+    isHotlinkBlockedThumbUrl,
+    needsRemoteThumbHydration,
     isTrustedThumbUrl,
     isYoutubeUrl,
     youtubeVideoId,
     youtubeThumbnailForUrl,
+    isYoutubeThumbHost,
+    isYoutubeThumbUrl,
     isTiktokUrl,
     isTiktokShareUrl,
     isTiktokCanonicalVideoUrl,

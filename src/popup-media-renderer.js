@@ -19,9 +19,29 @@
       return siteName ? `${siteName} 영상 받기` : "영상 받기";
     }
 
+    function sitesApi() {
+      if (typeof UVDSites !== "undefined" && UVDSites) return UVDSites;
+      try {
+        return require("./site-detection.js");
+      } catch {
+        return null;
+      }
+    }
+
     function needsRemoteThumbHydration(url) {
+      const sites = sitesApi();
+      if (typeof sites?.needsRemoteThumbHydration === "function") {
+        return sites.needsRemoteThumbHydration(url);
+      }
       const value = String(url || "").trim();
-      return !!value && /^https?:/i.test(value);
+      if (!value || value.startsWith("data:") || !/^https?:/i.test(value)) {
+        return false;
+      }
+      return !!(
+        sites?.isHotlinkBlockedThumbUrl?.(value) ||
+        sites?.isTikTokImageCdnHost?.(sites.hostOf?.(value)) ||
+        sites?.isInstagramImageCdnHost?.(sites.hostOf?.(value))
+      );
     }
 
     function createRenderer(deps) {
@@ -293,6 +313,7 @@
           );
           return;
         }
+        if (!needsRemoteThumbHydration(url)) return;
         const generation = ++hydrateGeneration;
         Promise.resolve()
           .then(() => hydrateRemoteThumbnails(items, generation))
@@ -666,8 +687,15 @@
               } else if (!currentSrc && typeof image.setAttribute === "function") {
                 image.setAttribute("data-thumb-url", thumbUrl);
               }
-            } else if (currentSrc !== thumbUrl) {
-              image.setAttribute("src", thumbUrl);
+            } else {
+              // YouTube ytimg / other direct-safe remotes paint immediately.
+              // Do not wipe a working src to wait on FETCH_THUMB.
+              if (currentSrc !== thumbUrl) {
+                image.setAttribute("src", thumbUrl);
+              }
+              if (typeof image.removeAttribute === "function") {
+                image.removeAttribute("data-thumb-url");
+              }
             }
           } else if (thumb) {
             thumb.innerHTML = thumbHtml(item);
