@@ -262,6 +262,107 @@
     return match ? match[1] : "";
   }
 
+  function tiktokAuthorHandle(url) {
+    const match = String(url || "").match(/\/@([\w.-]+)\/(?:video|photo)\//i);
+    return match ? `@${match[1]}` : "";
+  }
+
+  function isTiktokSiteShellTitle(value) {
+    const s = String(value || "")
+      .replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+      .trim();
+    if (!s) return true;
+    if (/^(?:tiktok(?:\s*(?:영상|video))?|영상|동영상|video)$/i.test(s)) {
+      return true;
+    }
+    return /^.+\s+on\s+tiktok$/i.test(s);
+  }
+
+  function formatTiktokItemTitle(item = {}) {
+    const desc = String(item.desc || "").trim();
+    if (desc && !isTiktokSiteShellTitle(desc)) return desc;
+    const handle = String(item.uniqueId || "")
+      .replace(/^@/, "")
+      .trim();
+    if (handle) return `@${handle}`;
+    const nick = String(item.nickname || "").trim();
+    if (nick && !isTiktokSiteShellTitle(nick)) return nick;
+    return "";
+  }
+
+  function isTiktokItemLike(obj) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    const id = obj.id || obj.aweme_id || obj.awemeId;
+    if (id == null || id === "") return false;
+    if (typeof id !== "string" && typeof id !== "number") return false;
+    const hasVideo = obj.video && typeof obj.video === "object";
+    const hasDesc = typeof obj.desc === "string";
+    const hasAuthor = obj.author != null;
+    if (hasVideo && (hasDesc || hasAuthor)) return true;
+    return !!(
+      hasDesc &&
+      hasAuthor &&
+      (obj.stats || obj.music || obj.createTime || obj.authorId)
+    );
+  }
+
+  function collectTiktokItemIdentities(obj, out, depth) {
+    if (!obj || depth > 35) return;
+    if (Array.isArray(obj)) {
+      for (const entry of obj.slice(0, 200)) {
+        collectTiktokItemIdentities(entry, out, depth + 1);
+      }
+      return;
+    }
+    if (typeof obj !== "object") return;
+    if (isTiktokItemLike(obj)) {
+      const author = obj.author;
+      const uniqueId =
+        (author && typeof author === "object"
+          ? author.uniqueId || author.unique_id
+          : typeof author === "string"
+            ? author
+            : "") ||
+        obj.uniqueId ||
+        obj.unique_id ||
+        "";
+      const nickname =
+        (author && typeof author === "object"
+          ? author.nickname || author.nickName
+          : "") ||
+        obj.nickname ||
+        "";
+      out.push({
+        id: String(obj.id || obj.aweme_id || obj.awemeId || ""),
+        desc: typeof obj.desc === "string" ? obj.desc : "",
+        uniqueId: String(uniqueId || ""),
+        nickname: String(nickname || "")
+      });
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === "object") {
+        collectTiktokItemIdentities(value, out, depth + 1);
+      }
+    }
+  }
+
+  function pickTiktokItemIdentityFromPageData(data, pageUrl) {
+    const wantId = tiktokVideoId(pageUrl);
+    const found = [];
+    collectTiktokItemIdentities(data, found, 0);
+    if (!found.length) return null;
+    if (wantId) {
+      return found.find((item) => item.id === wantId) || null;
+    }
+    return found.length === 1 ? found[0] : null;
+  }
+
+  function pickTiktokTitleFromPageData(data, pageUrl) {
+    return formatTiktokItemTitle(
+      pickTiktokItemIdentityFromPageData(data, pageUrl) || {}
+    );
+  }
+
   function tiktokShareCode(url) {
     try {
       const parsed = new URL(url);
@@ -1006,8 +1107,14 @@
       .replace(/\s*[-–—|]\s*(YouTube|TikTok|Instagram|X|Twitter|Facebook|bilibili)\s*$/i, "")
       .replace(/\s*[-–—|].*$/, "")
       .trim();
-    if (!title || /^(youtube|tiktok|instagram|x|twitter|facebook|bilibili)$/i.test(title)) {
-      title = siteDefaultTitle(kind);
+    if (
+      !title ||
+      /^(youtube|tiktok|instagram|x|twitter|facebook|bilibili)$/i.test(title) ||
+      (kind === "tiktok" && isTiktokSiteShellTitle(title))
+    ) {
+      title =
+        (kind === "tiktok" && tiktokAuthorHandle(pageUrl)) ||
+        siteDefaultTitle(kind);
     }
     const youtubeId = kind === "youtube" ? youtubeVideoId(pageUrl) : "";
     const thumbnail = youtubeId ? youtubeThumbnailForUrl(pageUrl) : "";
@@ -1054,6 +1161,11 @@
     isTiktokVideoUrl,
     isTiktokNonVideoSurface,
     tiktokVideoId,
+    tiktokAuthorHandle,
+    isTiktokSiteShellTitle,
+    formatTiktokItemTitle,
+    pickTiktokItemIdentityFromPageData,
+    pickTiktokTitleFromPageData,
     tiktokShareCode,
     sameTiktokVideo,
     normalizeTiktokUrl,

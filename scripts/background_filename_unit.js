@@ -283,6 +283,35 @@ async function main() {
     "Top 10 goals of 2024_1080p.mp4"
   );
 
+  const tiktokPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  equal(
+    manager.lockSaveName({
+      title: "스파이크 연습 #volleyball #queen",
+      pageUrl: tiktokPermalink
+    }),
+    "스파이크 연습 #volleyball #queen.mp4",
+    "TikTok caption becomes the locked download name"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "TikTok",
+      pageUrl: tiktokPermalink
+    }),
+    "",
+    "TikTok site-shell titles are not locked over the extractor"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "TikTok 영상",
+      pageUrl: tiktokPermalink
+    }),
+    "",
+    "TikTok 영상 placeholders are not locked as filenames"
+  );
+  equal(Naming.isUglyBase("username on TikTok"), true);
+  equal(UVD.isGenericSaveName("TikTok 영상"), true);
+
   console.log(`background_filename_unit: ${assertions} assertions passed`);
 }
 

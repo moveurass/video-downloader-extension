@@ -26,8 +26,8 @@ def is_generic_name(raw: str) -> bool:
         or re.fullmatch(
             r"(?:video|media|download|file|untitled|영상|동영상|"
             r"(?:youtube|youtu(?:be)?|tiktok|instagram|facebook|bilibili|"
-            r"vimeo|dailymotion|twitch|naver|twitter|x)[_-]?"
-            r"[A-Za-z0-9_-]*)",
+            r"vimeo|dailymotion|twitch|naver|twitter|x)"
+            r"(?:[_-][A-Za-z0-9_-]+|\s*(?:영상|video))?)",
             stem,
             flags=re.I,
         )

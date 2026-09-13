@@ -56,6 +56,8 @@ def main() -> int:
     )
     check("clean_name normalizes explicit code", clean_name("[ssis-001] title.mp4") == "SSIS-001 title")
     check("generic helper hint rejected", is_generic_name("YouTube_dQw4w9WgXcQ.mp4"))
+    check("TikTok shell helper hint rejected", is_generic_name("TikTok 영상.mp4"))
+    check("TikTok caption helper hint accepted", not is_generic_name("스파이크 연습 #volleyball.mp4"))
     check("host id helper hint rejected", is_generic_name("host_829104.mp4"))
     check("hash helper hint rejected", is_generic_name("9f8e7d6c5b4a3210.webm"))
     check("human helper title accepted", not is_generic_name("A human video title.mp4"))

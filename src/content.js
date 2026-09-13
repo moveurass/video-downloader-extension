@@ -286,6 +286,10 @@
       return "";
     }
 
+    if (isTikTokVideoPage()) {
+      return tiktokPageTitle();
+    }
+
     const og =
       document.querySelector('meta[property="og:title"]')?.content ||
       document.querySelector('meta[name="twitter:title"]')?.content;
@@ -1005,6 +1009,110 @@
       return sites.pickTiktokCoverFromCandidates(found);
     }
     return found.find((url) => !/avatar|avt-|imprint/i.test(url || "")) || "";
+  }
+
+  function isTiktokShellTitle(value) {
+    if (typeof UVDSites !== "undefined" && UVDSites.isTiktokSiteShellTitle) {
+      return UVDSites.isTiktokSiteShellTitle(value);
+    }
+    const s = String(value || "").trim();
+    return (
+      /^(?:tiktok(?:\s*(?:영상|video))?|영상|동영상|video)$/i.test(s) ||
+      /^.+\s+on\s+tiktok$/i.test(s)
+    );
+  }
+
+  function extractTikTokItemIdentity() {
+    if (!isTikTokVideoPage()) return null;
+    const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+    if (!sites?.pickTiktokItemIdentityFromPageData) return null;
+    let found = null;
+    document
+      .querySelectorAll(
+        'script#__UNIVERSAL_DATA_FOR_REHYDRATION__, script#SIGI_STATE, script[id*="SIGI"], script[type="application/json"]'
+      )
+      .forEach((s) => {
+        const t = (s.textContent || "").trim();
+        if (t.length < 80) return;
+        try {
+          const ident = sites.pickTiktokItemIdentityFromPageData(
+            JSON.parse(t),
+            location.href
+          );
+          if (!ident) return;
+          if (!found || (ident.desc && !found.desc)) found = ident;
+        } catch {
+          /* keyed JSON walk only */
+        }
+      });
+    return found;
+  }
+
+  function extractTikTokDomCaption() {
+    const selectors = [
+      '[data-e2e="browse-video-desc"]',
+      '[data-e2e="video-desc"]',
+      '[data-e2e="new-desc-span"]'
+    ];
+    for (const selector of selectors) {
+      const text = document.querySelector(selector)?.textContent?.trim() || "";
+      const cleaned = cleanPageTitle(text);
+      if (cleaned && !isTiktokShellTitle(cleaned)) return cleaned;
+    }
+    return "";
+  }
+
+  function extractTikTokDomHandle() {
+    const selectors = [
+      '[data-e2e="browse-username"]',
+      '[data-e2e="video-author-uniqueid"]',
+      '[data-e2e="video-author-unique-id"]'
+    ];
+    for (const selector of selectors) {
+      const handle = String(
+        document.querySelector(selector)?.textContent || ""
+      )
+        .trim()
+        .replace(/^@/, "");
+      if (handle && /^[\w.-]{2,24}$/.test(handle)) return `@${handle}`;
+    }
+    return "";
+  }
+
+  /**
+   * Caption from page JSON matching this video id, then the live desc node,
+   * then @handle. og:title / document.title lag on TikTok SPA and can name
+   * the previous video, so they are last-resort only when not a site shell.
+   */
+  function tiktokPageTitle() {
+    const ident = extractTikTokItemIdentity();
+    const jsonCaption = cleanPageTitle(ident?.desc || "");
+    if (jsonCaption && !isTiktokShellTitle(jsonCaption)) return jsonCaption;
+
+    const domCaption = extractTikTokDomCaption();
+    if (domCaption) return domCaption;
+
+    const jsonHandle = String(ident?.uniqueId || "")
+      .replace(/^@/, "")
+      .trim();
+    if (jsonHandle) return `@${jsonHandle}`;
+
+    const domHandle = extractTikTokDomHandle();
+    if (domHandle) return domHandle;
+
+    if (typeof UVDSites !== "undefined" && UVDSites.tiktokAuthorHandle) {
+      const fromUrl = UVDSites.tiktokAuthorHandle(location.href);
+      if (fromUrl) return fromUrl;
+    }
+
+    const og =
+      document.querySelector('meta[property="og:title"]')?.content ||
+      document.querySelector('meta[name="twitter:title"]')?.content;
+    const fromOg = cleanPageTitle(og || "");
+    if (fromOg && !isTiktokShellTitle(fromOg)) return fromOg;
+    const fromDoc = cleanPageTitle(document.title || "");
+    if (fromDoc && !isTiktokShellTitle(fromDoc)) return fromDoc;
+    return "";
   }
 
   function isInstagramPostPage(url) {

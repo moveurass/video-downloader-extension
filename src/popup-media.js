@@ -150,6 +150,8 @@
       /\d+x\d+/i.test(value) ||
       /^\d+[_-]\d+/i.test(value) ||
       /^(?:영상|동영상|video|media|audio|file|download|다운로드|가능)(?:[\s_-]*(?:4k|\d{3,4}p|best|all|unknown|highest|default))?(?:[\s_-]*\d{1,3})?$/i.test(value) ||
+      /^(?:TikTok\s*(?:영상|video)?)$/i.test(value) ||
+      /^.+\s+on\s+tiktok$/i.test(value) ||
       /^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(value) ||
       /^[a-f0-9]{12,}$/i.test(value);
   }
@@ -190,6 +192,10 @@
       if (cleaned.length > best.length) best = cleaned;
     }
     if (!best && pageUrl) best = Naming?.bindTitleToPage?.(pageUrl, "") || "";
+    if (!best && pageUrl) {
+      const handle = String(pageUrl).match(/\/@([\w.-]+)\/(?:video|photo)\//i);
+      if (handle) best = `@${handle[1]}`;
+    }
     if (!best && item?.filename) {
       const fromFile = cleanTitleText(item.filename, Naming);
       if (fromFile && !isUglyName(fromFile) && fromFile.length >= 2) best = fromFile;
@@ -211,6 +217,10 @@
       if (cleaned.length > title.length) title = cleaned;
     }
     if (!title && pageUrl) title = Naming?.bindTitleToPage?.(pageUrl, "") || "";
+    if (!title && pageUrl) {
+      const handle = String(pageUrl).match(/\/@([\w.-]+)\/(?:video|photo)\//i);
+      if (handle) title = `@${handle[1]}`;
+    }
     if (!title && item?.filename) {
       const fromFile = cleanTitleText(item.filename, Naming);
       if (

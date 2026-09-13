@@ -254,8 +254,7 @@
       function fnameBaseFromLink(link) {
         try {
           if (isTiktokUrl(link)) {
-            const m = link.match(/video\/(\d+)/);
-            return m ? `TikTok_${m[1]}` : "TikTok";
+            return sites?.tiktokAuthorHandle?.(link) || "";
           }
           if (isYoutubeUrl(link)) {
             const u = new URL(link);
