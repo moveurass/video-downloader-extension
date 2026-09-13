@@ -148,9 +148,9 @@
         if (src.startsWith("data:image/")) {
           return `<img class="thumb-img" src="${escapeAttr(src)}" alt="" />`;
         }
-        // TikTok CDN covers 403 from the extension origin. Keep the URL
-        // for FETCH_THUMB hydration instead of painting a broken <img>
-        // that bindThumbFallback replaces with 🎬.
+        // TikTok / Instagram CDN covers 403 from the extension origin.
+        // Keep the URL for FETCH_THUMB hydration instead of painting a
+        // broken <img> that bindThumbFallback replaces with 🎬.
         if (/^https?:/i.test(src)) {
           return `<img class="thumb-img" data-thumb-url="${escapeAttr(src)}" alt="" />`;
         }

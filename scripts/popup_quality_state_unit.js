@@ -526,6 +526,75 @@ async function main() {
     "formats cover replaces a raw avatar CDN thumbnail"
   );
 
+  const igPermalink = "https://www.instagram.com/reel/DABC123xyz/";
+  const igPlayCdn =
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4";
+  const igCover =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover.jpg";
+  check(
+    QualityState.isSameProbedMedia(
+      { url: igPlayCdn, pageUrl: igPermalink },
+      igPermalink,
+      igPermalink,
+      igPermalink,
+      Sites
+    ),
+    true,
+    "EXTRACT play-CDN is the same probed Instagram reel as the permalink"
+  );
+
+  const igOnPage = makeHarness();
+  igOnPage.setCurrentTabUrl(igPermalink);
+  igOnPage.setAllItems([{
+    title: "Instagram",
+    url: igPermalink,
+    pageUrl: igPermalink,
+    isSiteDownload: true
+  }]);
+  let finishIg;
+  const igProbe = new Promise((resolve) => {
+    finishIg = resolve;
+  });
+  igOnPage.runtimeResponses.push(igProbe);
+  const igLoad = igOnPage.controller.loadAvailableQualities(
+    igOnPage.getAllItems()[0]
+  );
+  igOnPage.setAllItems([{
+    title: "송민구(@minkoosong)",
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    thumbnail: ""
+  }]);
+  finishIg({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }, { id: "1080p", label: "1080p" }],
+    thumbnail: igCover,
+    title: "송민구(@minkoosong)",
+    duration: 12,
+    estimatedSize: 4.2 * 1024 * 1024
+  });
+  await igLoad;
+  check(
+    igOnPage.getAllItems()[0].thumbnail,
+    igCover,
+    "on-page Instagram reel keeps the formats cover after EXTRACT swaps in a play-CDN"
+  );
+  check(
+    igOnPage.getAllItems()[0].url,
+    igPlayCdn,
+    "on-page EXTRACT Instagram play-CDN url is left in place"
+  );
+  check(
+    igOnPage.getAllItems()[0].thumbnailPageKey,
+    "ig:reel:DABC123xyz",
+    "formats cover is stamped with the current Instagram shortcode"
+  );
+  check(
+    igOnPage.getAllItems()[0].thumbnailSource,
+    "formats",
+    "Instagram formats cover is marked as a trusted source"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

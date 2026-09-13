@@ -76,6 +76,7 @@
           : "";
       }
       if (sites?.isTiktokAvatarThumbUrl?.(value)) return "";
+      if (sites?.isInstagramAvatarThumbUrl?.(value)) return "";
       return value;
     }
 
@@ -655,8 +656,9 @@
           /^https?:/i.test(paintedThumb) &&
           typeof hydrateRemoteThumbnails === "function"
         ) {
-          // On-page TikTok: formats/og covers are CDN URLs. Paste cards
-          // hydrate via render(); the PAGE_META patch path needs this too.
+          // On-page TikTok / Instagram: formats/og covers are CDN URLs.
+          // Paste cards hydrate via render(); the PAGE_META patch path
+          // needs this too.
           void hydrateRemoteThumbnails([painted]);
         }
 

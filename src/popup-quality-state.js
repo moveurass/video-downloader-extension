@@ -57,12 +57,25 @@
     // Paste-on-Explore keeps item.url === permalink. Opening /@user/video/id
     // often swaps that for an EXTRACT play-CDN mid-probe. Treat the same
     // TikTok video as the same media so formats cover still lands on the card.
+    // Instagram /reel|/p pages do the same permalink → cdninstagram play-CDN
+    // swap; keep LIST_QUALITIES thumbnail/duration on that card.
     function isSameProbedMedia(liveItem, probedUrl, probedPageUrl, tabUrl, sites) {
       const liveUrl = mediaUrlOf(liveItem);
       if (!probedUrl || !liveUrl || liveUrl === probedUrl) return true;
-      if (!sites?.sameTiktokVideo) return false;
       const livePage = liveItem?.pageUrl || liveUrl;
       const probedPage = probedPageUrl || probedUrl;
+      if (sites?.sameInstagramPost) {
+        if (sites.sameInstagramPost(livePage, probedPage)) return true;
+        if (tabUrl && sites.sameInstagramPost(livePage, tabUrl)) {
+          if (
+            sites.sameInstagramPost(probedPage, tabUrl) ||
+            sites.isInstagramPostUrl?.(tabUrl)
+          ) {
+            return true;
+          }
+        }
+      }
+      if (!sites?.sameTiktokVideo) return false;
       if (sites.sameTiktokVideo(livePage, probedPage)) return true;
       if (tabUrl && sites.sameTiktokVideo(livePage, tabUrl)) {
         if (
@@ -542,9 +555,16 @@
                   patch.thumbnailSource = "formats";
                 }
               } else if (
-                !String(patch.thumbnail || "").startsWith("data:image/")
+                !String(patch.thumbnail || "").startsWith("data:image/") ||
+                sites?.isInstagramAvatarThumbUrl?.(patch.thumbnail)
               ) {
                 patch.thumbnail = response.thumbnail;
+                if (sites?.isInstagramPostUrl?.(pageHint)) {
+                  patch.thumbnailPageKey =
+                    sites.instagramPreviewPageKey?.(pageHint) ||
+                    patch.thumbnailPageKey;
+                  patch.thumbnailSource = "formats";
+                }
               }
             }
             const bestQ =

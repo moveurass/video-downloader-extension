@@ -841,6 +841,57 @@ async function main() {
   assert.equal(fileThumbResponse.source, "helper-file");
   assert.equal(fileThumbResponse.dataUrl, "data:image/jpeg;base64,ZmlsZQ==");
 
+  const igHelperThumbs = [];
+  const igPageFetches = [];
+  let igThumbResponse = null;
+  const igThumbHandler = createMediaMessageHandler({
+    chrome: {
+      tabs: {
+        get: async () => ({ url: "https://www.instagram.com/reel/DABC123xyz/" }),
+        sendMessage: async () => {
+          igPageFetches.push("page");
+          await new Promise(() => {});
+        }
+      }
+    },
+    fetch: async () => {
+      throw new Error("sw should not run first for Instagram CDN");
+    },
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    YtDlp: {
+      fetchThumb: async (url, referer) => {
+        igHelperThumbs.push([url, referer]);
+        return { ok: true, dataUrl: "data:image/jpeg;base64,aWdpZw==" };
+      }
+    }
+  });
+  assert.deepEqual(
+    igThumbHandler(
+      {
+        type: "FETCH_THUMB",
+        url: "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg",
+        referer: "https://www.instagram.com/reel/DABC123xyz/"
+      },
+      9,
+      {},
+      (value) => {
+        igThumbResponse = value;
+      }
+    ),
+    { handled: true, keepChannel: true }
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(igThumbResponse.ok, true);
+  assert.equal(igThumbResponse.source, "helper");
+  assert.equal(igThumbResponse.dataUrl, "data:image/jpeg;base64,aWdpZw==");
+  assert.deepEqual(igHelperThumbs, [
+    [
+      "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg",
+      "https://www.instagram.com/reel/DABC123xyz/"
+    ]
+  ]);
+  assert.deepEqual(igPageFetches, [], "Instagram CDN thumbs skip a hanging page fetch");
+
   const oembedRequests = [];
   const youtubeMetaHandler = createMediaMessageHandler({
     fetch: async (url, options) => {
