@@ -827,7 +827,7 @@ const UVD = (() => {
     }
     // Site_id junk: YouTube_xxxx, TikTok_123, X_123, Bilibili_BVxx …
     if (
-      /^(YouTube|TikTok|Instagram|Facebook|Bilibili|Vimeo|Dailymotion|Twitch|Naver|X|Twitter|YT|TT|IG|FB)([_-][A-Za-z0-9_-]+)?$/i.test(
+      /^(YouTube|TikTok|Instagram|Facebook|Bilibili|Vimeo|Dailymotion|Twitch|Naver|X|Twitter|YT|TT|IG|FB)(?:[_-][A-Za-z0-9_-]+)?(?:\s*(?:영상|video))?$/i.test(
         s
       )
     ) {

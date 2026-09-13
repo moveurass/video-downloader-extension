@@ -77,6 +77,22 @@
       }
       if (sites?.isTiktokAvatarThumbUrl?.(value)) return "";
       if (sites?.isInstagramAvatarThumbUrl?.(value)) return "";
+      if (
+        sites?.instagramThumbBelongsToPage &&
+        (sites.isInstagramPostUrl?.(pageUrl) ||
+          sites.isInstagramHostUrl?.(pageUrl))
+      ) {
+        if (value.startsWith("data:image/")) {
+          return sites.instagramThumbBelongsToPage(value, pageUrl, boundKey)
+            ? value
+            : "";
+        }
+        if (boundKey) {
+          return sites.instagramThumbBelongsToPage(value, pageUrl, boundKey)
+            ? value
+            : "";
+        }
+      }
       return value;
     }
 
@@ -369,7 +385,7 @@
               ? { ...tab, url: nextTabUrl, title: "" }
               : { ...tab, url: nextTabUrl };
           let nextItems = ensureSiteItems([], navigationTab);
-          if (isTiktokUrl(nextTabUrl)) {
+          if (isTiktokUrl(nextTabUrl) || isInstagramUrl(nextTabUrl)) {
             nextItems = nextItems.map((item) => ({
               ...item,
               thumbnail: undefined,
@@ -552,9 +568,17 @@
                 item.pageUrl || item.url || currentTabUrl
               );
               const tiktokPage = isTiktokUrl(currentTabUrl);
+              const instagramPage = isInstagramUrl(currentTabUrl);
               const samePage = tiktokPage
                 ? !!(itemKey && curKey && itemKey === curKey)
-                : !itemKey || !curKey || itemKey === curKey;
+                : instagramPage
+                  ? !!(
+                      itemKey &&
+                      curKey &&
+                      (itemKey === curKey ||
+                        sitesApi()?.sameInstagramIdentity?.(itemKey, curKey))
+                    )
+                  : !itemKey || !curKey || itemKey === curKey;
               const keepExisting =
                 samePage && !youtubeId && !knownCodePage;
               const nextThumb = preferPageThumbnail(
@@ -570,6 +594,7 @@
                 thumbnailPageKey: nextThumb
                   ? item.thumbnailPageKey ||
                     sitesApi()?.tiktokPreviewPageKey?.(currentTabUrl) ||
+                    sitesApi()?.instagramPreviewPageKey?.(currentTabUrl) ||
                     undefined
                   : undefined,
                 thumbnailSource: nextThumb ? item.thumbnailSource : undefined,

@@ -125,6 +125,8 @@
       youtubeVideoId: youtubeVideoIdFromSites,
       youtubeThumbnailForUrl,
       isTiktokUrl,
+      tiktokAuthorHandle: tiktokAuthorHandleFromDeps,
+      instagramAuthorHandle: instagramAuthorHandleFromDeps,
       isInstagramPostUrl,
       isXUrl,
       isFacebookUrl,
@@ -210,6 +212,33 @@
         // follow SPA navigation / FYP residue onto another permalink.
         return false;
       }
+      if (/^ig:/i.test(key)) {
+        const bound = String(boundKey || "").trim();
+        const identityId = (value) => {
+          if (typeof deps.instagramIdentityId === "function") {
+            const id = deps.instagramIdentityId(value);
+            if (id) return id;
+          }
+          const raw = String(value || "");
+          return (
+            raw.match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i)?.[1] ||
+            raw.match(
+              /\/(?:share\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i
+            )?.[1] ||
+            ""
+          );
+        };
+        if (bound) {
+          if (typeof deps.sameInstagramIdentity === "function") {
+            return !!deps.sameInstagramIdentity(bound, key);
+          }
+          const expected = identityId(key);
+          const actual = identityId(bound);
+          return !!(expected && actual && expected === actual);
+        }
+        // data-URL covers must be stamped. Unscoped https is first-paint only.
+        return !String(thumbnail || "").startsWith("data:");
+      }
       return true;
     }
 
@@ -231,6 +260,30 @@
         : "";
     }
 
+    function tiktokAuthorHandle(url) {
+      if (typeof tiktokAuthorHandleFromDeps === "function") {
+        return tiktokAuthorHandleFromDeps(url) || "";
+      }
+      const match = String(url || "").match(/\/@([\w.-]+)\/(?:video|photo)\//i);
+      return match ? `@${match[1]}` : "";
+    }
+
+    function instagramAuthorHandle(url) {
+      if (typeof instagramAuthorHandleFromDeps === "function") {
+        return instagramAuthorHandleFromDeps(url) || "";
+      }
+      const match = String(url || "").match(
+        /(?:instagram\.com|instagr\.am)\/([A-Za-z0-9._]{1,30})\/(?:reel|reels|p|tv)\//i
+      );
+      if (
+        match &&
+        !/^(share|p|reel|reels|tv|stories|explore|accounts)$/i.test(match[1])
+      ) {
+        return `@${match[1]}`;
+      }
+      return "";
+    }
+
     function usableProvisionalTitle(rawTitle) {
       const title =
         Naming.cleanPageTitle(rawTitle || "") ||
@@ -238,7 +291,9 @@
       if (
         !title ||
         Naming.isUglyBase?.(title) ||
-        /^(?:youtube|youtube 영상|영상|동영상|video)$/i.test(title)
+        /^(?:youtube|tiktok|instagram|facebook|bilibili|x|twitter)(?:\s*(?:영상|video))?$|^(?:영상|동영상|video)$/i.test(
+          title
+        )
       ) {
         return "";
       }
@@ -334,6 +389,8 @@
         trustedMetaTitle ||
         provisionalTabTitle ||
         code ||
+        (kind === "tiktok" ? tiktokAuthorHandle(pageUrl) : "") ||
+        (kind === "instagram" ? instagramAuthorHandle(pageUrl) : "") ||
         siteDefaultTitle(kind);
       const thumbnail =
         (meta?.thumbnail &&
@@ -548,6 +605,12 @@
       if (!title && pageRef) {
         title = Naming.bindTitleToPage?.(pageRef, "") || "";
       }
+      if (!title && pageRef) {
+        title =
+          tiktokAuthorHandle(pageRef) ||
+          instagramAuthorHandle(pageRef) ||
+          "";
+      }
 
       const host = meta?.host || item.host || "";
       const itemThumbnail = thumbnailMatchesPageKey(
@@ -654,7 +717,19 @@
       if (item.pageUrl) {
         const itemKey = pageIdentityKey(item.pageUrl);
         const currentKey = tabMeta.get(tabId)?.pageKey || "";
-        if (itemKey && currentKey && itemKey !== currentKey) return;
+        const identityId = (value) =>
+          String(value || "").match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i)?.[1] ||
+          "";
+        const sameInstagram =
+          typeof deps.sameInstagramIdentity === "function"
+            ? !!deps.sameInstagramIdentity(itemKey, currentKey)
+            : !!(
+                identityId(itemKey) &&
+                identityId(itemKey) === identityId(currentKey)
+              );
+        if (itemKey && currentKey && itemKey !== currentKey && !sameInstagram) {
+          return;
+        }
       }
       if (Naming.isJunkMedia(item)) return;
 
@@ -764,7 +839,9 @@
         // from the previous title, including a stale PAGE_META payload.
         // TikTok SPA og:image lags behind /@user/video/id — wipe on id change.
         thumbnail =
-          Naming.isKnownCodeSite?.(nextHost) || /^tt:(?:\d+|t:.+)$/i.test(nextKey)
+          Naming.isKnownCodeSite?.(nextHost) ||
+          /^tt:(?:\d+|t:.+)$/i.test(nextKey) ||
+          /^ig:/i.test(nextKey)
             ? undefined
             : incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {
@@ -1063,6 +1140,44 @@
       return map ? filterDisplayable(map) : [];
     }
 
+    function titleFromMediaItems(items) {
+      let handle = "";
+      let caption = "";
+      for (const item of items || []) {
+        for (const raw of [item?.title, item?.pageTitle]) {
+          const title = usableProvisionalTitle(raw);
+          if (!title) continue;
+          if (/^@[\w.]+$/.test(title)) {
+            if (!handle) handle = title;
+            continue;
+          }
+          if (title.length > caption.length) caption = title;
+        }
+      }
+      return caption || handle;
+    }
+
+    function instagramPlaceholderWithTitle(tabId, placeholder, items) {
+      if (!placeholder) return null;
+      const fromItems = titleFromMediaItems(items);
+      if (!fromItems) return placeholder;
+      const current = usableProvisionalTitle(placeholder.title) || "";
+      const currentIsHandle = /^@[\w.]+$/.test(current);
+      const incomingIsHandle = /^@[\w.]+$/.test(fromItems);
+      if (
+        !current ||
+        currentIsHandle ||
+        (!incomingIsHandle && fromItems.length >= current.length)
+      ) {
+        return enrichItem(tabId, {
+          ...placeholder,
+          title: fromItems,
+          pageTitle: fromItems
+        });
+      }
+      return placeholder;
+    }
+
     async function getMediaForTabAsync(tabId, hint = {}) {
       let items = getMediaForTab(tabId);
       const pageUrl = hint.pageUrl || "";
@@ -1078,7 +1193,13 @@
           url: pageUrl,
           title: titleHint
         });
-        if (placeholder) return [placeholder];
+        if (placeholder) {
+          return [
+            isInstagramPostUrl(pageUrl)
+              ? instagramPlaceholderWithTitle(tabId, placeholder, items)
+              : placeholder
+          ];
+        }
       }
       if (pageUrl && /^https?:/i.test(pageUrl) && isTiktokUrl(pageUrl)) {
         if (!isDownloadableHelperPage(pageUrl)) return [];
@@ -1113,7 +1234,12 @@
             url,
             title: tab.title || titleHint
           });
-          return placeholder ? [placeholder] : items;
+          if (!placeholder) return items;
+          return [
+            isInstagramPostUrl(url)
+              ? instagramPlaceholderWithTitle(tab.id, placeholder, items)
+              : placeholder
+          ];
         }
         if (isTiktokUrl(url)) {
           if (!isDownloadableHelperPage(url)) return [];

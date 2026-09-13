@@ -590,6 +590,60 @@ assert.equal(Sites.isInstagramImageCdnHost("scontent.cdninstagram.com"), true);
 assert.equal(Sites.isInstagramImageCdnHost("scontent-gmp1-1.cdninstagram.com"), true);
 assert.equal(Sites.isInstagramImageCdnHost("instagram.fsic1-1.fna.fbcdn.net"), true);
 assert.equal(Sites.isInstagramImageCdnHost("evil-cdninstagram.com.example"), false);
+assert.equal(Sites.isYoutubeThumbHost("i.ytimg.com"), true);
+assert.equal(Sites.isYoutubeThumbHost("i9.ytimg.com"), true);
+assert.equal(Sites.isYoutubeThumbHost("img.youtube.com"), true);
+assert.equal(Sites.isYoutubeThumbHost("evil.ytimg.com.example"), false);
+assert.equal(
+  Sites.isYoutubeThumbUrl("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"),
+  true
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+  ),
+  false,
+  "YouTube ytimg must not wait on FETCH_THUMB"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+  ),
+  false,
+  "img.youtube.com is a direct-safe YouTube thumb host"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://p19-common-sign.tiktokcdn-us.com/cover"
+  ),
+  true,
+  "TikTok CDNs still need FETCH_THUMB hydration"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration(
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+  ),
+  true,
+  "Instagram CDNs still need FETCH_THUMB hydration"
+);
+assert.equal(
+  Sites.needsRemoteThumbHydration("data:image/jpeg;base64,abc"),
+  false
+);
+assert.equal(
+  Sites.isHotlinkBlockedThumbUrl(
+    "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+  ),
+  false
+);
+assert.equal(
+  Sites.isHotlinkBlockedThumbHost("p19-common-sign.tiktokcdn-us.com"),
+  true
+);
+assert.equal(
+  Sites.isHotlinkBlockedThumbHost("scontent.cdninstagram.com"),
+  true
+);
 assert.equal(Sites.isTrustedThumbUrl(
   "https://www.instagram.com/reel/DABC123xyz/",
   "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
@@ -642,6 +696,63 @@ assert.equal(
   "ig:reel:DABC123xyz"
 );
 assert.equal(
+  Sites.instagramIdentityId("ig:reels:DABC123xyz"),
+  "DABC123xyz",
+  "reel vs reels keys share one shortcode"
+);
+assert.equal(
+  Sites.sameInstagramIdentity(
+    "https://www.instagram.com/reel/DABC123xyz/",
+    "https://www.instagram.com/reels/DABC123xyz/"
+  ),
+  true,
+  "/reel and /reels of the same shortcode are one identity"
+);
+assert.equal(
+  Sites.sameInstagramIdentity(
+    "ig:reel:DABC123xyz",
+    "ig:reel:NEXTREEL99"
+  ),
+  false,
+  "different shortcodes are different identities"
+);
+assert.equal(
+  Sites.sameInstagramIdentity("ig:/reels", "ig:/reels"),
+  true,
+  "Instagram Reels feed keys match even without a shortcode"
+);
+assert.equal(
+  Sites.sameInstagramIdentity("ig:/reels", "ig:reel:DABC123xyz"),
+  false,
+  "the Reels feed key is not the same identity as a shortcode"
+);
+assert.equal(
+  Sites.instagramThumbBelongsToPage(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://www.instagram.com/reel/DABC123xyz/",
+    "ig:reel:DABC123xyz"
+  ),
+  true,
+  "stamped data-URL cover belongs to its reel"
+);
+assert.equal(
+  Sites.instagramThumbBelongsToPage(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://www.instagram.com/reel/NEXTREEL99/",
+    "ig:reel:DABC123xyz"
+  ),
+  false,
+  "reel A's data-URL cover does not belong to reel B"
+);
+assert.equal(
+  Sites.instagramThumbBelongsToPage(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://www.instagram.com/reel/DABC123xyz/"
+  ),
+  false,
+  "unscoped Instagram data-URL cover does not belong to a reel"
+);
+assert.equal(
   Sites.preferInstagramPreviewThumbnail(
     "data:image/jpeg;base64,SUdDT1ZFUg==",
     "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
@@ -664,6 +775,138 @@ assert.equal(
   ),
   "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
 );
+
+const qaInstagram = "https://www.instagram.com/reel/DABC123xyz/";
+const qaInstagramOwner =
+  "https://www.instagram.com/minkoosong/reel/DABC123xyz/";
+const igPageData = {
+  graphql: {
+    shortcode_media: {
+      shortcode: "DABC123xyz",
+      display_url: igCover,
+      edge_media_to_caption: {
+        edges: [{ node: { text: "오늘 스파이크 연습 #volleyball" } }]
+      },
+      owner: { username: "minkoosong", full_name: "송민구" }
+    }
+  },
+  items: [
+    {
+      code: "NEXTREEL99",
+      caption: { text: "다른 릴스 캡션은 쓰면 안 됨" },
+      user: { username: "otheruser" },
+      media_type: 2
+    }
+  ]
+};
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(igPageData, qaInstagram),
+  "오늘 스파이크 연습 #volleyball",
+  "permalink caption comes from matching shortcode_media"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    igPageData,
+    "https://www.instagram.com/reel/NEXTREEL99/"
+  ),
+  "다른 릴스 캡션은 쓰면 안 됨",
+  "title walk still keys off the requested shortcode"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      items: [
+        {
+          code: "NEXTREEL99",
+          caption: { text: "다른 릴스 캡션은 쓰면 안 됨" },
+          user: { username: "otheruser" },
+          media_type: 2
+        }
+      ]
+    },
+    qaInstagram
+  ),
+  "",
+  "another reel's caption is ignored when it is not this shortcode"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      items: [
+        {
+          code: "DABC123xyz",
+          caption: { text: "" },
+          user: { username: "minkoosong" },
+          media_type: 2
+        }
+      ]
+    },
+    qaInstagram
+  ),
+  "@minkoosong",
+  "empty Instagram caption falls back to @handle, not the site label"
+);
+assert.equal(Sites.instagramAuthorHandle(qaInstagramOwner), "@minkoosong");
+assert.equal(Sites.instagramAuthorHandle(qaInstagram), "");
+assert.equal(Sites.isInstagramSiteShellTitle("Instagram"), true);
+assert.equal(Sites.isInstagramSiteShellTitle("Instagram 영상"), true);
+assert.equal(Sites.isInstagramSiteShellTitle("username on Instagram"), true);
+assert.equal(Sites.isInstagramSiteShellTitle("오늘 스파이크 연습"), false);
+assert.equal(
+  Sites.parseInstagramOgCaption(
+    'minkoosong on Instagram: "오늘 스파이크 연습 #volleyball"'
+  ),
+  "오늘 스파이크 연습 #volleyball"
+);
+const igShellItem = Sites.buildSiteItem({
+  url: qaInstagramOwner,
+  title: "Instagram"
+});
+assert.equal(
+  igShellItem.title,
+  "@minkoosong",
+  "placeholder uses @handle instead of the Instagram site shell"
+);
+const igBareShell = Sites.buildSiteItem({
+  url: qaInstagram,
+  title: "Instagram"
+});
+assert.equal(
+  igBareShell.title,
+  "Instagram 영상",
+  "permalink without a handle still uses the site default until caption arrives"
+);
+assert.equal(
+  PopupMedia.displayName(
+    {
+      title: "오늘 스파이크 연습 #volleyball",
+      pageUrl: qaInstagram
+    },
+    { Naming }
+  ),
+  "오늘 스파이크 연습 #volleyball"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    {
+      title: "오늘 스파이크 연습 #volleyball",
+      pageUrl: qaInstagram
+    },
+    { Naming, UVD }
+  ),
+  "오늘 스파이크 연습 #volleyball.mp4"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    { title: "Instagram", pageUrl: qaInstagramOwner },
+    { Naming, UVD }
+  ),
+  "@minkoosong.mp4",
+  "site-shell card title is not saved; @handle is used instead"
+);
+assert.equal(Naming.isUglyBase("username on Instagram"), true);
+assert.equal(UVD.isGenericSaveName("Instagram"), true);
+assert.equal(UVD.isGenericSaveName("Instagram 영상"), true);
 
 const ttAvatar =
   "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
@@ -712,6 +955,139 @@ assert.equal(
   ttOriginCover,
   "page JSON with avatar + covers picks originCover, never the profile photo"
 );
+const ttPageData = {
+  __DEFAULT_SCOPE__: {
+    "webapp.video-detail": {
+      itemInfo: {
+        itemStruct: {
+          id: "7674902153491664150",
+          desc: "스파이크 연습 #volleyball #queen",
+          author: {
+            avatarThumb: ttAvatar,
+            uniqueId: "volleyballqueen86",
+            nickname: "Volleyball Queen"
+          },
+          video: {
+            cover: ttVideoCover,
+            originCover: ttOriginCover,
+            dynamicCover: ttDynamicCover
+          }
+        }
+      }
+    },
+    "webapp.recommend-list": {
+      items: [
+        {
+          id: "1111111111111111111",
+          desc: "Explore filler caption that must not win",
+          author: { uniqueId: "otheruser" },
+          video: { cover: ttVideoCover }
+        }
+      ]
+    }
+  }
+};
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    ttPageData,
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  "스파이크 연습 #volleyball #queen",
+  "permalink caption comes from matching itemStruct.desc"
+);
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    ttPageData,
+    "https://www.tiktok.com/@other/video/1111111111111111111"
+  ),
+  "Explore filler caption that must not win",
+  "title walk still keys off the requested video id"
+);
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    {
+      __DEFAULT_SCOPE__: {
+        "webapp.recommend-list": {
+          items: [
+            {
+              id: "1111111111111111111",
+              desc: "Explore filler caption that must not win",
+              author: { uniqueId: "otheruser" },
+              video: { cover: ttVideoCover }
+            }
+          ]
+        }
+      }
+    },
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  "",
+  "Explore/FYP filler desc is ignored when it is not this video"
+);
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    {
+      ItemModule: {
+        "7674902153491664150": {
+          id: "7674902153491664150",
+          desc: "",
+          author: "volleyballqueen86",
+          nickname: "Volleyball Queen",
+          video: { cover: ttVideoCover }
+        }
+      }
+    },
+    qaTikTok
+  ),
+  "@volleyballqueen86",
+  "empty caption falls back to @handle, not the site label"
+);
+assert.equal(Sites.tiktokAuthorHandle(qaTikTok), "@volleyballqueen86");
+assert.equal(Sites.isTiktokSiteShellTitle("TikTok"), true);
+assert.equal(Sites.isTiktokSiteShellTitle("TikTok 영상"), true);
+assert.equal(Sites.isTiktokSiteShellTitle("username on TikTok"), true);
+assert.equal(Sites.isTiktokSiteShellTitle("스파이크 연습 #volleyball"), false);
+const ttShellItem = Sites.buildSiteItem({
+  url: qaTikTok,
+  title: "TikTok"
+});
+assert.equal(
+  ttShellItem.title,
+  "@volleyballqueen86",
+  "placeholder uses @handle instead of the TikTok site shell"
+);
+assert.equal(
+  PopupMedia.displayName(
+    {
+      title: "스파이크 연습 #volleyball #queen",
+      pageUrl: qaTikTok
+    },
+    { Naming }
+  ),
+  "스파이크 연습 #volleyball #queen"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    {
+      title: "스파이크 연습 #volleyball #queen",
+      pageUrl: qaTikTok
+    },
+    { Naming, UVD }
+  ),
+  "스파이크 연습 #volleyball #queen.mp4"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    { title: "TikTok", pageUrl: qaTikTok },
+    { Naming, UVD }
+  ),
+  "@volleyballqueen86.mp4",
+  "site-shell card title is not saved; @handle is used instead"
+);
+assert.equal(Naming.isUglyBase("username on TikTok"), true);
+assert.equal(Naming.isUglyBase("스파이크 연습 #volleyball"), false);
+assert.equal(UVD.isGenericSaveName("TikTok"), true);
+assert.equal(UVD.isGenericSaveName("TikTok 영상"), true);
 assert.equal(
   Sites.preferTiktokPreviewThumbnail(ttAvatar, ttOriginCover),
   ttOriginCover,
@@ -901,7 +1277,7 @@ assert.equal(
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink("https://tiktok.com/@name/video/123456789"),
-  "TikTok_123456789"
+  "@name"
 );
 assert.equal(
   downloadRequests.preferDownloadTargetUrl(
@@ -919,7 +1295,7 @@ assert.equal(
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink(qaTikTok),
-  "TikTok_7674902153491664150"
+  "@volleyballqueen86"
 );
 assert.equal(downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
 assert.equal(
@@ -928,7 +1304,13 @@ assert.equal(
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink("https://instagram.com/reel/ABC_123/"),
-  "Instagram_ABC_123"
+  ""
+);
+assert.equal(
+  downloadRequests.fnameBaseFromLink(
+    "https://www.instagram.com/minkoosong/reel/DABC123xyz/"
+  ),
+  "@minkoosong"
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink("https://x.com/name/status/987654321"),

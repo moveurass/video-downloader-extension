@@ -188,6 +188,24 @@
       : "";
   }
 
+  function isYoutubeThumbHost(host) {
+    const h = String(host || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    if (!h) return false;
+    return hostMatchesSuffix(h, "ytimg.com") || h === "img.youtube.com";
+  }
+
+  function isYoutubeThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || !/^https?:/i.test(value)) return false;
+    try {
+      return isYoutubeThumbHost(new URL(value).hostname);
+    } catch {
+      return false;
+    }
+  }
+
   function isTiktokUrl(url) {
     const host = hostOf(url);
     if (!host || /tiktokcdn|byteicdn|byteoversea|ibyteimg/i.test(host)) return false;
@@ -260,6 +278,107 @@
   function tiktokVideoId(url) {
     const match = String(url || "").match(/\/(?:@[^/?#]+\/)?video\/(\d+)/i);
     return match ? match[1] : "";
+  }
+
+  function tiktokAuthorHandle(url) {
+    const match = String(url || "").match(/\/@([\w.-]+)\/(?:video|photo)\//i);
+    return match ? `@${match[1]}` : "";
+  }
+
+  function isTiktokSiteShellTitle(value) {
+    const s = String(value || "")
+      .replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+      .trim();
+    if (!s) return true;
+    if (/^(?:tiktok(?:\s*(?:영상|video))?|영상|동영상|video)$/i.test(s)) {
+      return true;
+    }
+    return /^.+\s+on\s+tiktok$/i.test(s);
+  }
+
+  function formatTiktokItemTitle(item = {}) {
+    const desc = String(item.desc || "").trim();
+    if (desc && !isTiktokSiteShellTitle(desc)) return desc;
+    const handle = String(item.uniqueId || "")
+      .replace(/^@/, "")
+      .trim();
+    if (handle) return `@${handle}`;
+    const nick = String(item.nickname || "").trim();
+    if (nick && !isTiktokSiteShellTitle(nick)) return nick;
+    return "";
+  }
+
+  function isTiktokItemLike(obj) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    const id = obj.id || obj.aweme_id || obj.awemeId;
+    if (id == null || id === "") return false;
+    if (typeof id !== "string" && typeof id !== "number") return false;
+    const hasVideo = obj.video && typeof obj.video === "object";
+    const hasDesc = typeof obj.desc === "string";
+    const hasAuthor = obj.author != null;
+    if (hasVideo && (hasDesc || hasAuthor)) return true;
+    return !!(
+      hasDesc &&
+      hasAuthor &&
+      (obj.stats || obj.music || obj.createTime || obj.authorId)
+    );
+  }
+
+  function collectTiktokItemIdentities(obj, out, depth) {
+    if (!obj || depth > 35) return;
+    if (Array.isArray(obj)) {
+      for (const entry of obj.slice(0, 200)) {
+        collectTiktokItemIdentities(entry, out, depth + 1);
+      }
+      return;
+    }
+    if (typeof obj !== "object") return;
+    if (isTiktokItemLike(obj)) {
+      const author = obj.author;
+      const uniqueId =
+        (author && typeof author === "object"
+          ? author.uniqueId || author.unique_id
+          : typeof author === "string"
+            ? author
+            : "") ||
+        obj.uniqueId ||
+        obj.unique_id ||
+        "";
+      const nickname =
+        (author && typeof author === "object"
+          ? author.nickname || author.nickName
+          : "") ||
+        obj.nickname ||
+        "";
+      out.push({
+        id: String(obj.id || obj.aweme_id || obj.awemeId || ""),
+        desc: typeof obj.desc === "string" ? obj.desc : "",
+        uniqueId: String(uniqueId || ""),
+        nickname: String(nickname || "")
+      });
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === "object") {
+        collectTiktokItemIdentities(value, out, depth + 1);
+      }
+    }
+  }
+
+  function pickTiktokItemIdentityFromPageData(data, pageUrl) {
+    const wantId = tiktokVideoId(pageUrl);
+    const found = [];
+    collectTiktokItemIdentities(data, found, 0);
+    if (!found.length) return null;
+    if (wantId) {
+      return found.find((item) => item.id === wantId) || null;
+    }
+    return found.length === 1 ? found[0] : null;
+  }
+
+  function pickTiktokTitleFromPageData(data, pageUrl) {
+    return formatTiktokItemTitle(
+      pickTiktokItemIdentityFromPageData(data, pageUrl) || {}
+    );
   }
 
   function tiktokShareCode(url) {
@@ -556,6 +675,31 @@
     return /(?:^|\.)cdninstagram\.com$/i.test(h) || /(?:^|\.)fbcdn\.net$/i.test(h);
   }
 
+  /**
+   * TikTok / Instagram image CDNs 403 as <img src> from the extension
+   * origin. YouTube ytimg and other remotes that work as direct img src
+   * must not be parked for FETCH_THUMB — that leaves the card blank.
+   */
+  function isHotlinkBlockedThumbHost(host) {
+    return isTikTokImageCdnHost(host) || isInstagramImageCdnHost(host);
+  }
+
+  function isHotlinkBlockedThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || !/^https?:/i.test(value)) return false;
+    try {
+      return isHotlinkBlockedThumbHost(new URL(value).hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  function needsRemoteThumbHydration(url) {
+    const value = String(url || "").trim();
+    if (!value || value.startsWith("data:")) return false;
+    return isHotlinkBlockedThumbUrl(value);
+  }
+
   function isInstagramHostUrl(url) {
     const host = hostOf(url);
     if (!host || /cdninstagram|fbcdn\.net|instagram\.fs/i.test(host)) return false;
@@ -590,6 +734,41 @@
     }
     const match = String(url || "").match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
     return match ? `ig:${match[1]}:${match[2]}` : "";
+  }
+
+  function instagramIdentityId(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const fromUrl = instagramPostId(raw);
+    if (fromUrl) return fromUrl;
+    const keyed = raw.match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i);
+    return keyed ? keyed[1] : "";
+  }
+
+  function sameInstagramIdentity(left, right) {
+    const aRaw = String(left || "").trim();
+    const bRaw = String(right || "").trim();
+    if (!aRaw || !bRaw) return false;
+    if (aRaw === bRaw) return true;
+    const a = instagramIdentityId(aRaw);
+    const b = instagramIdentityId(bRaw);
+    return !!(a && b && a === b);
+  }
+
+  /**
+   * Instagram CDN / data-URL covers do not embed the shortcode. A cover
+   * belongs to a reel/post only when thumbnailPageKey matches that identity.
+   * reel vs reels vs /p vs /share/reel for the same id still match.
+   */
+  function instagramThumbBelongsToPage(thumbnail, pageUrl, boundKey) {
+    const value = String(thumbnail || "").trim();
+    if (!value) return false;
+    if (isInstagramAvatarThumbUrl(value)) return false;
+    const expected =
+      instagramPreviewPageKey(pageUrl) || instagramPostId(pageUrl);
+    if (!expected) return false;
+    const bound = String(boundKey || "").trim();
+    return !!bound && sameInstagramIdentity(bound, expected);
   }
 
   function isInstagramAvatarThumbUrl(url) {
@@ -687,6 +866,236 @@
     }
     walk(data, 0);
     return pickInstagramCoverFromCandidates(found);
+  }
+
+  const INSTAGRAM_RESERVED_USERNAMES = new Set([
+    "share",
+    "p",
+    "reel",
+    "reels",
+    "tv",
+    "stories",
+    "explore",
+    "accounts",
+    "about",
+    "legal",
+    "directory",
+    "web",
+    "api",
+    "graphql",
+    "lite",
+    "direct",
+    "inbox",
+    "reels_home"
+  ]);
+
+  function instagramAuthorHandle(url) {
+    const take = (name) => {
+      const handle = String(name || "").replace(/^@/, "").trim();
+      if (
+        !handle ||
+        INSTAGRAM_RESERVED_USERNAMES.has(handle.toLowerCase()) ||
+        !/^[A-Za-z0-9._]{1,30}$/.test(handle)
+      ) {
+        return "";
+      }
+      return `@${handle}`;
+    };
+    try {
+      const path = new URL(url).pathname || "";
+      const match = path.match(
+        /^\/([^/?#]+)\/(?:reel|reels|p|tv)\/[A-Za-z0-9_-]+/i
+      );
+      const fromPath = take(match?.[1]);
+      if (fromPath) return fromPath;
+    } catch {
+      /* fall through */
+    }
+    const match = String(url || "").match(
+      /(?:instagram\.com|instagr\.am)\/([^/?#]+)\/(?:reel|reels|p|tv)\/[A-Za-z0-9_-]+/i
+    );
+    return take(match?.[1]);
+  }
+
+  function isInstagramSiteShellTitle(value) {
+    const s = String(value || "")
+      .replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+      .trim();
+    if (!s) return true;
+    if (
+      /^(?:instagram(?:\s*(?:영상|video|reels?|post))?|영상|동영상|video|reels?)$/i.test(
+        s
+      )
+    ) {
+      return true;
+    }
+    if (/^.+\s+on\s+instagram$/i.test(s)) return true;
+    if (/^(?:reel|reels|post|video)\s+by\s+/i.test(s)) return true;
+    return /^watch\s+this\s+(?:reel|post)\s+on\s+instagram$/i.test(s);
+  }
+
+  function parseInstagramOgCaption(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const quoted = s.match(/\bon\s+instagram:\s*[“"'](.+?)[”"']\s*$/i);
+    if (quoted) return String(quoted[1] || "").trim();
+    const colon = s.match(/\bon\s+instagram:\s*(.+)$/i);
+    if (colon) {
+      return String(colon[1] || "")
+        .replace(/^["“]|["”]$/g, "")
+        .trim();
+    }
+    return "";
+  }
+
+  function instagramCaptionText(obj) {
+    if (!obj || typeof obj !== "object") return "";
+    const edges = obj.edge_media_to_caption?.edges;
+    if (Array.isArray(edges)) {
+      const text = edges[0]?.node?.text;
+      if (typeof text === "string" && text.trim()) return text.trim();
+    }
+    const caption = obj.caption;
+    if (typeof caption === "string" && caption.trim()) return caption.trim();
+    if (caption && typeof caption === "object") {
+      for (const key of ["text", "caption"]) {
+        const value = caption[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    }
+    const type = String(obj["@type"] || obj.type || "");
+    if (/VideoObject|ImageObject|SocialMediaPosting/i.test(type)) {
+      for (const key of ["name", "description", "headline"]) {
+        const value = obj[key];
+        if (typeof value === "string" && value.trim()) {
+          const parsed = parseInstagramOgCaption(value) || value.trim();
+          if (parsed && !isInstagramSiteShellTitle(parsed)) return parsed;
+        }
+      }
+    }
+    return "";
+  }
+
+  function instagramOwnerUsername(obj) {
+    if (!obj || typeof obj !== "object") return "";
+    const owner = obj.owner || obj.user || obj.author;
+    if (typeof owner === "string") return owner.replace(/^@/, "").trim();
+    if (owner && typeof owner === "object") {
+      const handle =
+        owner.username ||
+        owner.uniqueId ||
+        owner.unique_id ||
+        owner.alternateName ||
+        "";
+      return String(handle || "")
+        .replace(/^@/, "")
+        .trim();
+    }
+    return String(obj.username || "")
+      .replace(/^@/, "")
+      .trim();
+  }
+
+  function instagramOwnerFullName(obj) {
+    if (!obj || typeof obj !== "object") return "";
+    const owner = obj.owner || obj.user || obj.author;
+    if (owner && typeof owner === "object") {
+      return String(owner.full_name || owner.fullName || owner.name || "").trim();
+    }
+    return "";
+  }
+
+  function instagramMediaShortcode(obj) {
+    if (!obj || typeof obj !== "object") return "";
+    for (const key of ["shortcode", "code"]) {
+      const value = obj[key];
+      if (typeof value === "string" && /^[A-Za-z0-9_-]{5,64}$/.test(value)) {
+        return value;
+      }
+    }
+    return "";
+  }
+
+  function formatInstagramItemTitle(item = {}) {
+    const caption = String(item.caption || "").trim();
+    if (caption && !isInstagramSiteShellTitle(caption)) return caption;
+    const handle = String(item.username || "")
+      .replace(/^@/, "")
+      .trim();
+    if (handle) return `@${handle}`;
+    const fullName = String(item.fullName || "").trim();
+    if (fullName && !isInstagramSiteShellTitle(fullName)) return fullName;
+    return "";
+  }
+
+  function isInstagramMediaLike(obj) {
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return false;
+    const code = instagramMediaShortcode(obj);
+    const type = String(obj["@type"] || obj.type || obj.__typename || "");
+    const jsonLd = /VideoObject|ImageObject|SocialMediaPosting/i.test(type);
+    if (!code && !jsonLd) return false;
+    const hasCaption = !!instagramCaptionText(obj) || !!obj.edge_media_to_caption;
+    const hasOwner = !!(obj.owner || obj.user || obj.username);
+    const hasMedia = !!(
+      obj.display_url ||
+      obj.video_url ||
+      obj.video_versions ||
+      obj.image_versions2 ||
+      obj.media_type ||
+      obj.is_video ||
+      obj.product_type ||
+      jsonLd
+    );
+    return hasCaption || (hasOwner && hasMedia) || (jsonLd && (hasCaption || hasOwner));
+  }
+
+  function collectInstagramItemIdentities(obj, out, depth) {
+    if (!obj || depth > 35) return;
+    if (Array.isArray(obj)) {
+      for (const entry of obj.slice(0, 200)) {
+        collectInstagramItemIdentities(entry, out, depth + 1);
+      }
+      return;
+    }
+    if (typeof obj !== "object") return;
+    if (isInstagramMediaLike(obj)) {
+      out.push({
+        shortcode: instagramMediaShortcode(obj),
+        caption: instagramCaptionText(obj),
+        username: instagramOwnerUsername(obj),
+        fullName: instagramOwnerFullName(obj)
+      });
+    }
+    for (const value of Object.values(obj)) {
+      if (value && typeof value === "object") {
+        collectInstagramItemIdentities(value, out, depth + 1);
+      }
+    }
+  }
+
+  function pickInstagramItemIdentityFromPageData(data, pageUrl) {
+    const wantId = instagramPostId(pageUrl) || instagramIdentityId(pageUrl);
+    const found = [];
+    collectInstagramItemIdentities(data, found, 0);
+    if (!found.length) return null;
+    if (wantId) {
+      const keyed = found.find(
+        (item) =>
+          item.shortcode &&
+          (item.shortcode === wantId ||
+            sameInstagramIdentity(item.shortcode, wantId))
+      );
+      if (keyed) return keyed;
+      if (found.length === 1 && !found[0].shortcode) return found[0];
+      return null;
+    }
+    return found.length === 1 ? found[0] : null;
+  }
+
+  function pickInstagramTitleFromPageData(data, pageUrl) {
+    return formatInstagramItemTitle(
+      pickInstagramItemIdentityFromPageData(data, pageUrl) || {}
+    );
   }
 
   const INSTAGRAM_POST_PATH =
@@ -1006,8 +1415,16 @@
       .replace(/\s*[-–—|]\s*(YouTube|TikTok|Instagram|X|Twitter|Facebook|bilibili)\s*$/i, "")
       .replace(/\s*[-–—|].*$/, "")
       .trim();
-    if (!title || /^(youtube|tiktok|instagram|x|twitter|facebook|bilibili)$/i.test(title)) {
-      title = siteDefaultTitle(kind);
+    if (
+      !title ||
+      /^(youtube|tiktok|instagram|x|twitter|facebook|bilibili)$/i.test(title) ||
+      (kind === "tiktok" && isTiktokSiteShellTitle(title)) ||
+      (kind === "instagram" && isInstagramSiteShellTitle(title))
+    ) {
+      title =
+        (kind === "tiktok" && tiktokAuthorHandle(pageUrl)) ||
+        (kind === "instagram" && instagramAuthorHandle(pageUrl)) ||
+        siteDefaultTitle(kind);
     }
     const youtubeId = kind === "youtube" ? youtubeVideoId(pageUrl) : "";
     const thumbnail = youtubeId ? youtubeThumbnailForUrl(pageUrl) : "";
@@ -1044,16 +1461,26 @@
     isKnownVideoCdnHost,
     isTikTokImageCdnHost,
     isInstagramImageCdnHost,
+    isHotlinkBlockedThumbHost,
+    isHotlinkBlockedThumbUrl,
+    needsRemoteThumbHydration,
     isTrustedThumbUrl,
     isYoutubeUrl,
     youtubeVideoId,
     youtubeThumbnailForUrl,
+    isYoutubeThumbHost,
+    isYoutubeThumbUrl,
     isTiktokUrl,
     isTiktokShareUrl,
     isTiktokCanonicalVideoUrl,
     isTiktokVideoUrl,
     isTiktokNonVideoSurface,
     tiktokVideoId,
+    tiktokAuthorHandle,
+    isTiktokSiteShellTitle,
+    formatTiktokItemTitle,
+    pickTiktokItemIdentityFromPageData,
+    pickTiktokTitleFromPageData,
     tiktokShareCode,
     sameTiktokVideo,
     normalizeTiktokUrl,
@@ -1070,6 +1497,15 @@
     instagramPostId,
     sameInstagramPost,
     instagramPreviewPageKey,
+    instagramIdentityId,
+    sameInstagramIdentity,
+    instagramThumbBelongsToPage,
+    instagramAuthorHandle,
+    isInstagramSiteShellTitle,
+    parseInstagramOgCaption,
+    formatInstagramItemTitle,
+    pickInstagramItemIdentityFromPageData,
+    pickInstagramTitleFromPageData,
     isInstagramAvatarThumbUrl,
     preferInstagramPreviewThumbnail,
     pickInstagramCoverFromCandidates,

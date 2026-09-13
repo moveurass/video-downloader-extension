@@ -751,6 +751,20 @@ async function main() {
     false,
     "data URLs are already displayable"
   );
+  check(
+    MediaRenderer.needsRemoteThumbHydration(
+      "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    ),
+    false,
+    "YouTube ytimg paints directly and must not wait on FETCH_THUMB"
+  );
+  check(
+    MediaRenderer.needsRemoteThumbHydration(
+      "https://img.youtube.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+    ),
+    false,
+    "img.youtube.com is also a direct-safe YouTube thumb host"
+  );
 
   const hydrateItem = {
     thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
@@ -1668,11 +1682,152 @@ async function main() {
     "CDN PAGE_META must not replace a hydrated Instagram data URL"
   );
 
+  const ytWatch = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
+  const ytThumbUrl = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg";
+  let ytPatchSrc = "";
+  let ytPatchSrcWrites = 0;
+  let ytDataThumb = "stale-park";
+  let ytFetchCalls = 0;
+  const ytPatchImg = {
+    getAttribute: (name) => {
+      if (name === "src") return ytPatchSrc;
+      if (name === "data-thumb-url") return ytDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") {
+        ytPatchSrc = value;
+        ytPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") ytDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") {
+        ytPatchSrc = "";
+        ytPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") ytDataThumb = "";
+    }
+  };
+  const ytPatchThumb = { innerHTML: "" };
+  const ytPatchCard = {
+    dataset: {
+      mediaIdentity: `yt:dQw4w9WgXcQ\nmedia\n${ytWatch}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? ytPatchImg
+        : selector === ".thumb"
+          ? ytPatchThumb
+          : selector === ".name"
+            ? { textContent: "", title: "" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let ytPatchItems = [{
+    url: ytWatch,
+    pageUrl: ytWatch,
+    title: "YouTube title",
+    thumbnail: ytThumbUrl
+  }];
+  const ytPatchRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? ytPatchCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "yt:dQw4w9WgXcQ",
+    displayName: (item) => item.title,
+    downloadFilename: () => "youtube.mp4",
+    siteLabel: () => "YouTube",
+    thumbHtml: (item) =>
+      item?.thumbnail
+        ? `<img class="thumb-img" src="${item.thumbnail}" alt="" />`
+        : `<span class="thumb-fallback">🎬</span>`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => ytPatchItems,
+    setAllItems: (items) => {
+      ytPatchItems = items;
+    },
+    getCurrentTabUrl: () => ytWatch,
+    fetchThumbDataUrl: async () => {
+      ytFetchCalls += 1;
+      throw new Error("YouTube must not wait on FETCH_THUMB");
+    }
+  });
+  check(ytPatchRenderer.patch(), true, "YouTube card patches in place");
+  check(ytPatchSrc, ytThumbUrl, "YouTube ytimg paints as img.src immediately");
+  check(
+    ytDataThumb,
+    "",
+    "YouTube patch clears a leftover data-thumb-url park"
+  );
+  check(ytFetchCalls, 0, "YouTube patch must not call FETCH_THUMB to paint");
+
+  const writesAfterFirstPaint = ytPatchSrcWrites;
+  check(ytPatchRenderer.patch(), true, "same YouTube thumb patches again");
+  check(ytPatchSrc, ytThumbUrl, "a working YouTube src is not wiped on patch");
+  check(
+    ytPatchSrcWrites,
+    writesAfterFirstPaint,
+    "repeat YouTube patch does not rewrite a good ytimg src"
+  );
+  check(ytFetchCalls, 0, "repeat YouTube patch still skips FETCH_THUMB");
+
+  const ytHydrateItem = {
+    thumbnail: ytThumbUrl,
+    pageUrl: ytWatch
+  };
+  let ytHydratedSrc = ytThumbUrl;
+  const ytHydrateImg = {
+    getAttribute: (name) => (name === "src" ? ytHydratedSrc : ""),
+    setAttribute: (name, value) => {
+      if (name === "src") ytHydratedSrc = value;
+    },
+    removeAttribute: () => {}
+  };
+  const ytHydrateCard = {
+    querySelector: (selector) =>
+      selector === ".thumb-img" ? ytHydrateImg : null
+  };
+  const ytHydrateRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? ytHydrateCard : null)
+    },
+    document: {},
+    fetchThumbDataUrl: async () => {
+      ytFetchCalls += 1;
+      return "data:image/jpeg;base64,SHOULDNOTUSE";
+    }
+  });
+  await ytHydrateRenderer.hydrateRemoteThumbnails([ytHydrateItem]);
+  check(
+    ytFetchCalls,
+    0,
+    "hydrateRemoteThumbnails skips YouTube ytimg FETCH_THUMB"
+  );
+  check(
+    ytHydratedSrc,
+    ytThumbUrl,
+    "YouTube hydrate path leaves the ytimg src in place"
+  );
+  check(
+    ytHydrateItem.thumbnail,
+    ytThumbUrl,
+    "YouTube item thumbnail stays the ytimg URL after hydrate skip"
+  );
+
   check(
     MediaLoader.preferPageThumbnail(
       igHydrated,
       igCover,
-      igPermalink
+      igPermalink,
+      "ig:reel:DABC123xyz"
     ),
     igHydrated,
     "PAGE_META CDN cover must not replace a hydrated Instagram data URL"
@@ -1681,10 +1836,308 @@ async function main() {
     MediaLoader.preferPageThumbnail(
       igHydrated,
       "",
-      igPermalink
+      igPermalink,
+      "ig:reel:DABC123xyz"
     ),
     igHydrated,
     "empty PAGE_META must not drop a hydrated Instagram data URL"
+  );
+
+  const igPermalinkB = "https://www.instagram.com/reel/NEXTREEL99/";
+  const igCoverB =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover-b.jpg";
+  const igPlayCdnB =
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play-b.mp4";
+  check(
+    MediaLoader.preferPageThumbnail(
+      igHydrated,
+      igCoverB,
+      igPermalinkB,
+      "ig:reel:DABC123xyz"
+    ),
+    igCoverB,
+    "reel A's hydrated data URL must not win after the shortcode changes"
+  );
+  check(
+    MediaLoader.preferPageThumbnail(
+      igHydrated,
+      "",
+      igPermalinkB,
+      "ig:reel:DABC123xyz"
+    ),
+    undefined,
+    "reel A's hydrated data URL is dropped when PAGE_META is for reel B"
+  );
+
+  let navIgSrc = igHydrated;
+  let navIgDataThumb = "";
+  const navIgImg = {
+    getAttribute: (name) => {
+      if (name === "src") return navIgSrc;
+      if (name === "data-thumb-url") return navIgDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") navIgSrc = value;
+      if (name === "data-thumb-url") navIgDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") navIgSrc = "";
+      if (name === "data-thumb-url") navIgDataThumb = "";
+    }
+  };
+  const navIgCard = {
+    dataset: {
+      mediaIdentity: `ig:reel:DABC123xyz\nmedia\n${igPlayCdn}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? navIgImg
+        : selector === ".thumb"
+          ? { innerHTML: "" }
+          : selector === ".name"
+            ? { textContent: "송민구(@minkoosong)", title: "송민구(@minkoosong)" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let navIgItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: igHydrated,
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  }];
+  let navIgTabUrl = igPermalink;
+  const igPageKey = (url) => {
+    const match = String(url || "").match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+    return match ? `ig:${match[1]}:${match[2]}` : "";
+  };
+  const navIgRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? navIgCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: igPageKey,
+    isInstagramPostUrl: (url) => /instagram\.com\/(?:p|reel|reels)\//i.test(url || ""),
+    isInstagramHost: (url) => /instagram\.com/i.test(url || ""),
+    displayName: (item) => item.title,
+    downloadFilename: () => "instagram.mp4",
+    siteLabel: () => "Instagram",
+    thumbHtml: (item) =>
+      item?.thumbnail
+        ? `<img class="thumb-img" src="${item.thumbnail}" alt="" />`
+        : `<span class="thumb-fallback">🎬</span>`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => navIgItems,
+    setAllItems: (items) => {
+      navIgItems = items;
+    },
+    getCurrentTabUrl: () => navIgTabUrl,
+    fetchThumbDataUrl: async () => {
+      throw new Error("hydrate must not run during the identity-change patch");
+    }
+  });
+  navIgTabUrl = igPermalinkB;
+  navIgItems = [{
+    url: igPlayCdnB,
+    pageUrl: igPermalinkB,
+    title: "다음 릴스",
+    thumbnail: igHydrated,
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  }];
+  check(
+    navIgRenderer.patch(),
+    false,
+    "Instagram shortcode change must not patch the previous reel's card"
+  );
+  check(
+    navIgItems[0].thumbnail !== igHydrated,
+    true,
+    "identity change drops the previous reel's hydrated data URL"
+  );
+  check(
+    navIgItems[0].thumbnailPageKey == null ||
+      navIgItems[0].thumbnailPageKey === "",
+    true,
+    "identity change clears the previous reel's thumbnailPageKey"
+  );
+
+  const stayAfterNavRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? stayCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: igPageKey,
+    isInstagramPostUrl: (url) => /instagram\.com\/reel\//i.test(url || ""),
+    isInstagramHost: (url) => /instagram\.com/i.test(url || ""),
+    displayName: (item) => item.title,
+    downloadFilename: () => "instagram.mp4",
+    siteLabel: () => "Instagram",
+    thumbHtml: (item) =>
+      item?.thumbnail
+        ? `<img class="thumb-img" src="${item.thumbnail}" alt="" />`
+        : `<span class="thumb-fallback">🎬</span>`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => stayItems,
+    setAllItems: (items) => {
+      stayItems = items;
+    },
+    getCurrentTabUrl: () => igPermalink,
+    fetchThumbDataUrl: async () => {
+      throw new Error("hydrate must not run after a stable Instagram data URL");
+    }
+  });
+  staySrc = igHydrated;
+  stayItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: "",
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  }];
+  check(
+    stayAfterNavRenderer.patch(),
+    true,
+    "same Instagram reel still patches with a real pageKey helper"
+  );
+  check(
+    stayItems[0].thumbnail,
+    igHydrated,
+    "same reel still keeps the hydrated data URL after PAGE_META clears the thumb"
+  );
+
+  let igNavTab = { id: 22, url: igPermalink, title: "Reel A | Instagram" };
+  let igNavItems = [];
+  let igNavUrl = null;
+  let igNavId = null;
+  const igNavLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [igNavTab],
+        get: async () => igNavTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type === "GET_PAGE_META") {
+            return {
+              title: igNavTab.title,
+              thumbnail: igNavTab.url === igPermalink ? igCover : igCoverB,
+              pageUrl: igNavTab.url,
+              lastUrl: igNavTab.url
+            };
+          }
+          return { ok: true };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: igNavTab.url === igPermalink ? igPlayCdn : igPlayCdnB,
+                pageUrl: igNavTab.url,
+                title: "Instagram",
+                thumbnail: igNavTab.url === igPermalink ? igCover : igCoverB,
+                thumbnailPageKey:
+                  igNavTab.url === igPermalink
+                    ? "ig:reel:DABC123xyz"
+                    : "ig:reel:NEXTREEL99",
+                source: "instagram-page",
+                site: "instagram"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => igElements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items, tabLike) => {
+      const url = tabLike?.url || igNavUrl;
+      if (!items?.length) {
+        return [{
+          url,
+          pageUrl: url,
+          title: "Instagram",
+          isSiteDownload: true,
+          isPagePlaceholder: true,
+          thumbnail: igHydrated,
+          thumbnailPageKey: "ig:reel:DABC123xyz"
+        }];
+      }
+      return items.map((item) => ({ ...item, pageUrl: url, url: item.url || url }));
+    },
+    pageKey: igPageKey,
+    isInstagramUrl: (url) => /instagram\.com\/(?:p|reel)\//i.test(url || ""),
+    isTiktokUrl: () => false,
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: (url) => /instagram\.com\/(?:p|reel)\//i.test(url || ""),
+    isHlsItem: () => false,
+    cleanTitleText: (value) => value,
+    isUglyName: PopupMedia.isUglyName,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    patchMedia: () => false,
+    hydrateRemoteThumbnails: async () => {},
+    loadAvailableQualities: async (item) => {
+      igNavItems = [{
+        ...item,
+        thumbnail: igPageKey(item.pageUrl) === "ig:reel:DABC123xyz" ? igCover : igCoverB,
+        thumbnailPageKey: igPageKey(item.pageUrl),
+        thumbnailSource: "formats"
+      }];
+    },
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => igNavItems,
+    setAllItems: (items) => {
+      igNavItems = items;
+    },
+    getCurrentTabId: () => igNavId,
+    setCurrentTabId: (value) => {
+      igNavId = value;
+    },
+    getCurrentTabUrl: () => igNavUrl,
+    setCurrentTabUrl: (value) => {
+      igNavUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {}
+  });
+  await igNavLoader.loadMedia();
+  check(igNavItems[0].thumbnail, igCover, "first Instagram reel shows its formats cover");
+  igNavTab = { id: 22, url: igPermalinkB, title: "Reel B | Instagram" };
+  await igNavLoader.loadMedia({ navigation: true });
+  check(
+    igNavItems[0].thumbnail !== igHydrated,
+    true,
+    "after A → B Instagram navigation the card does not keep reel A's data URL"
+  );
+  check(
+    igNavItems[0].thumbnail !== igCover,
+    true,
+    "after A → B Instagram navigation the card does not keep reel A's CDN cover"
+  );
+  check(
+    igNavItems[0].thumbnail,
+    igCoverB,
+    "after A → B Instagram navigation the card uses reel B's formats cover"
   );
 
   console.log(`popup media loader: ${assertions} assertions passed`);

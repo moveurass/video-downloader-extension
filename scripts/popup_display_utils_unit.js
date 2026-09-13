@@ -199,10 +199,39 @@ function main() {
   check(u.escapeHtml(null), "", "null HTML escape");
   check(u.escapeHtml(`<a x="1">&`), "&lt;a x=&quot;1&quot;&gt;&amp;", "HTML escaping");
   check(u.escapeAttr(`"'&<>`), "&quot;&#39;&amp;&lt;&gt;", "attribute escaping");
+  const ytThumb = "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg";
+  check(
+    u.thumbHtml({ thumbnail: ytThumb }),
+    `<img class="thumb-img" src="${ytThumb}" alt="" />`,
+    "YouTube ytimg paints as src immediately"
+  );
+  check(
+    u.thumbHtml({ thumbnail: ytThumb }).includes("data-thumb-url"),
+    false,
+    "YouTube is not parked as empty-src + data-thumb-url"
+  );
+  const ttCoverHtml = "https://p19-common-sign.tiktokcdn-us.com/cover";
+  check(
+    u.thumbHtml({ thumbnail: ttCoverHtml }),
+    `<img class="thumb-img" data-thumb-url="${ttCoverHtml}" alt="" />`,
+    "TikTok CDN stays off-src for FETCH_THUMB"
+  );
+  check(
+    /src=/.test(u.thumbHtml({ thumbnail: ttCoverHtml })),
+    false,
+    "TikTok CDN must not paint a broken src that becomes 🎬"
+  );
+  const igCoverHtml =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg";
+  check(
+    u.thumbHtml({ thumbnail: igCoverHtml }),
+    `<img class="thumb-img" data-thumb-url="${igCoverHtml}" alt="" />`,
+    "Instagram CDN stays off-src for FETCH_THUMB"
+  );
   check(
     u.thumbHtml({ thumbnail: `https://x.test/a'"&.jpg` }),
-    `<img class="thumb-img" data-thumb-url="https://x.test/a&#39;&quot;&amp;.jpg" alt="" />`,
-    "remote covers stay off-src until FETCH_THUMB hydrates them"
+    `<img class="thumb-img" src="https://x.test/a&#39;&quot;&amp;.jpg" alt="" />`,
+    "direct-safe remotes paint as src"
   );
   check(
     u.thumbHtml({ thumbnail: "data:image/jpeg;base64,abc" }),
@@ -970,6 +999,64 @@ function main() {
     afterCdnMeta[0].thumbnail,
     igHydrated,
     "ensureSiteItems keeps a hydrated Instagram data URL when formats returns a CDN"
+  );
+
+  const igPermalinkB = "https://www.instagram.com/reel/NEXTREEL99/";
+  const igCoverB =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover-b.jpg";
+  igTabUrl = igPermalinkB;
+  const afterIgNav = igUtils.ensureSiteItems(
+    [{
+      url: igPermalink,
+      pageUrl: igPermalink,
+      title: "송민구(@minkoosong)",
+      thumbnail: igHydrated,
+      thumbnailPageKey: "ig:reel:DABC123xyz",
+      isSiteDownload: true
+    }],
+    { url: igPermalinkB, title: "다음 릴스" }
+  );
+  check(
+    afterIgNav[0].thumbnail !== igHydrated,
+    true,
+    "navigating Instagram A → B without closing the popup drops reel A's cover"
+  );
+  check(
+    afterIgNav[0].pageUrl,
+    igPermalinkB,
+    "A → B Instagram card is rebound to the new permalink"
+  );
+  const afterIgNavFresh = igUtils.ensureSiteItems(
+    [{
+      url: igPermalinkB,
+      pageUrl: igPermalinkB,
+      title: "다음 릴스",
+      thumbnail: igHydrated,
+      thumbnailPageKey: "ig:reel:DABC123xyz",
+      isSiteDownload: true
+    }],
+    { url: igPermalinkB, title: "다음 릴스" }
+  );
+  check(
+    afterIgNavFresh[0].thumbnail !== igHydrated,
+    true,
+    "reel A's stamped data URL does not merge onto reel B's incoming item"
+  );
+  const afterIgNavCdn = igUtils.ensureSiteItems(
+    [{
+      url: igPermalinkB,
+      pageUrl: igPermalinkB,
+      title: "다음 릴스",
+      thumbnail: igCoverB,
+      thumbnailSource: "formats",
+      isSiteDownload: true
+    }],
+    { url: igPermalinkB, title: "다음 릴스" }
+  );
+  check(
+    afterIgNavCdn[0].thumbnail,
+    igCoverB,
+    "reel B's formats cover is kept after dropping reel A's hydrated thumb"
   );
 
   console.log(`popup display utils unit: ${assertions} assertions passed`);

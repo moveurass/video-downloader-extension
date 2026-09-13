@@ -59,6 +59,43 @@
       };
     }
 
+    function instagramThumbForPage(item, pageUrl) {
+      const sites = sitesApi();
+      if (
+        !sites?.isInstagramPostUrl?.(pageUrl) &&
+        !sites?.isInstagramHostUrl?.(pageUrl)
+      ) {
+        return item;
+      }
+      if (
+        sites.instagramThumbBelongsToPage?.(
+          item?.thumbnail,
+          pageUrl,
+          item?.thumbnailPageKey
+        )
+      ) {
+        return item;
+      }
+      const thumb = String(item?.thumbnail || "");
+      if (
+        /^https?:/i.test(thumb) &&
+        !item?.thumbnailPageKey &&
+        !sites.isInstagramAvatarThumbUrl?.(thumb)
+      ) {
+        return {
+          ...item,
+          thumbnailPageKey:
+            sites.instagramPreviewPageKey?.(pageUrl) || item?.thumbnailPageKey
+        };
+      }
+      return {
+        ...item,
+        thumbnail: undefined,
+        thumbnailPageKey: undefined,
+        thumbnailSource: undefined
+      };
+    }
+
     function youtubeThumbnailMatches(thumbnail, videoId) {
       if (!thumbnail || !videoId) return false;
       const actual = String(thumbnail).match(
@@ -219,6 +256,18 @@
                 thumbnailSource: undefined
               }, currentTabUrl)];
             }
+            if (
+              pageChanged &&
+              (sitesApi()?.isInstagramPostUrl?.(currentTabUrl) ||
+                sitesApi()?.isInstagramHostUrl?.(currentTabUrl))
+            ) {
+              return [instagramThumbForPage({
+                ...item,
+                thumbnail: undefined,
+                thumbnailPageKey: undefined,
+                thumbnailSource: undefined
+              }, currentTabUrl)];
+            }
             if (!identityReady) {
               const currentYoutubeId = youtubeVideoId(currentTabUrl);
               const provisionalSafe =
@@ -239,7 +288,10 @@
                 filename: provisionalSafe ? item.filename : undefined
               }];
             }
-            return [tiktokThumbForPage(item, currentTabUrl)];
+            return [instagramThumbForPage(
+              tiktokThumbForPage(item, currentTabUrl),
+              currentTabUrl
+            )];
           });
           const knownCodeHost = (() => {
             try {

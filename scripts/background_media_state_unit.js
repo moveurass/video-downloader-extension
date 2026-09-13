@@ -197,6 +197,32 @@ async function main() {
     "ig:reel:Clip_One"
   );
   equal(
+    store.thumbnailMatchesPageKey(
+      "data:image/jpeg;base64,SUdDT1ZFUg==",
+      "ig:reel:NEXTREEL99"
+    ),
+    false,
+    "unscoped Instagram data-URL cover does not match another shortcode"
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "data:image/jpeg;base64,SUdDT1ZFUg==",
+      "ig:reel:DABC123xyz",
+      "ig:reel:DABC123xyz"
+    ),
+    true,
+    "stamped Instagram data-URL cover matches its shortcode"
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "data:image/jpeg;base64,SUdDT1ZFUg==",
+      "ig:reel:NEXTREEL99",
+      "ig:reel:DABC123xyz"
+    ),
+    false,
+    "reel A stamp does not match reel B pageKey"
+  );
+  equal(
     store.pageIdentityKey("https://missav.example/dm14/v/snos-309"),
     "missav.example:code:SNOS-309"
   );
@@ -228,6 +254,169 @@ async function main() {
     }),
     [],
     "Explore/FYP landing media is not offered as a downloadable TikTok video"
+  );
+
+  const ttPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  tabs.set(42, {
+    id: 42,
+    url: ttPermalink,
+    title: "TikTok"
+  });
+  const ttPlaceholder = store.makeSitePlaceholder({
+    id: 42,
+    url: ttPermalink,
+    title: "TikTok"
+  });
+  equal(
+    ttPlaceholder.title,
+    "@volleyballqueen86",
+    "TikTok placeholder uses @handle instead of the site shell"
+  );
+  store.setTabMeta(42, {
+    lastUrl: ttPermalink,
+    pageKey: "tt:7674902153491664150",
+    title: "TikTok",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(42).title,
+    undefined,
+    "site-shell PAGE_META titles are not trusted"
+  );
+  store.addMedia(42, {
+    url: "https://v16m.tiktokcdn.com/play.mp4",
+    pageUrl: ttPermalink,
+    title: "스파이크 연습 #volleyball #queen",
+    pageTitle: "스파이크 연습 #volleyball #queen",
+    site: "tiktok",
+    source: "tiktok-page",
+    type: "video"
+  });
+  const ttItems = await store.getMediaForTabAsync(42, { pageUrl: ttPermalink });
+  equal(
+    ttItems[0]?.title,
+    "스파이크 연습 #volleyball #queen",
+    "permalink caption survives enrichItem"
+  );
+  equal(
+    ttItems[0]?.filename,
+    "스파이크 연습 #volleyball #queen.mp4",
+    "caption is the download filename"
+  );
+
+  tabs.set(52, {
+    id: 52,
+    url: "https://www.instagram.com/reel/DABC123xyz/",
+    title: "Reel A"
+  });
+  store.setTabMeta(52, {
+    lastUrl: "https://www.instagram.com/reel/DABC123xyz/",
+    pageKey: "ig:reel:DABC123xyz",
+    title: "Reel A",
+    thumbnail: "data:image/jpeg;base64,SUdDT1ZFUg==",
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  });
+  equal(
+    store.getTabMeta(52).thumbnail,
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "same Instagram reel keeps its hydrated cover"
+  );
+  store.setTabMeta(52, {
+    lastUrl: "https://www.instagram.com/reel/NEXTREEL99/",
+    pageKey: "ig:reel:NEXTREEL99",
+    title: "Reel B",
+    thumbnail: "data:image/jpeg;base64,SUdDT1ZFUg==",
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  });
+  equal(
+    store.getTabMeta(52).thumbnail,
+    undefined,
+    "Instagram shortcode change wipes the previous reel's cover"
+  );
+
+  const igOwnerPermalink =
+    "https://www.instagram.com/minkoosong/reel/DABC123xyz/";
+  tabs.set(53, {
+    id: 53,
+    url: igOwnerPermalink,
+    title: "Instagram"
+  });
+  const igPlaceholder = store.makeSitePlaceholder({
+    id: 53,
+    url: igOwnerPermalink,
+    title: "Instagram"
+  });
+  equal(
+    igPlaceholder.title,
+    "@minkoosong",
+    "Instagram placeholder uses @handle instead of the site shell"
+  );
+  store.setTabMeta(53, {
+    lastUrl: igOwnerPermalink,
+    pageKey: "ig:reel:DABC123xyz",
+    title: "Instagram",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(53).title,
+    undefined,
+    "Instagram site-shell PAGE_META titles are not trusted"
+  );
+  store.addMedia(53, {
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    pageUrl: igOwnerPermalink,
+    title: "오늘 스파이크 연습 #volleyball",
+    pageTitle: "오늘 스파이크 연습 #volleyball",
+    site: "instagram",
+    source: "instagram-page",
+    type: "video"
+  });
+  const igItems = await store.getMediaForTabAsync(53, {
+    pageUrl: igOwnerPermalink
+  });
+  equal(
+    igItems[0]?.title,
+    "오늘 스파이크 연습 #volleyball",
+    "Instagram permalink caption survives enrichItem"
+  );
+  equal(
+    igItems[0]?.filename,
+    "오늘 스파이크 연습 #volleyball.mp4",
+    "Instagram caption is the download filename"
+  );
+  store.setTabMeta(53, {
+    lastUrl: "https://www.instagram.com/reel/NEXTREEL99/",
+    pageKey: "ig:reel:NEXTREEL99",
+    title: "Instagram",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(53).title,
+    undefined,
+    "swipe to the next reel drops the previous caption"
+  );
+  store.addMedia(53, {
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/other.mp4",
+    pageUrl: "https://www.instagram.com/reel/NEXTREEL99/",
+    title: "다른 릴스 캡션은 쓰면 안 됨",
+    pageTitle: "다른 릴스 캡션은 쓰면 안 됨",
+    site: "instagram",
+    source: "instagram-page",
+    type: "video"
+  });
+  const igNext = await store.getMediaForTabAsync(53, {
+    pageUrl: "https://www.instagram.com/reel/NEXTREEL99/"
+  });
+  equal(
+    igNext[0]?.title,
+    "다른 릴스 캡션은 쓰면 안 됨",
+    "reel B uses its own caption after the identity change"
+  );
+  equal(
+    igNext[0]?.filename,
+    "다른 릴스 캡션은 쓰면 안 됨.mp4",
+    "reel B filename is not reel A's caption"
   );
 
   const provisionalYoutubeUrl =

@@ -530,7 +530,11 @@
             if (
               response.title &&
               (!patch.title ||
-                /^(YouTube|TikTok|Instagram)/i.test(patch.title))
+                /^(YouTube|TikTok|Instagram)/i.test(patch.title) ||
+                sites?.isTiktokSiteShellTitle?.(patch.title) ||
+                sites?.isInstagramSiteShellTitle?.(patch.title) ||
+                /^@[\w.-]+$/.test(String(patch.title || "").trim()) ||
+                /^.+\(@[\w.]+\)$/.test(String(patch.title || "").trim()))
             ) {
               patch.title = response.title;
               patch.pageTitle = response.title;
@@ -556,7 +560,13 @@
                 }
               } else if (
                 !String(patch.thumbnail || "").startsWith("data:image/") ||
-                sites?.isInstagramAvatarThumbUrl?.(patch.thumbnail)
+                sites?.isInstagramAvatarThumbUrl?.(patch.thumbnail) ||
+                (sites?.isInstagramPostUrl?.(pageHint) &&
+                  !sites.instagramThumbBelongsToPage?.(
+                    patch.thumbnail,
+                    pageHint,
+                    patch.thumbnailPageKey
+                  ))
               ) {
                 patch.thumbnail = response.thumbnail;
                 if (sites?.isInstagramPostUrl?.(pageHint)) {

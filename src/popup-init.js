@@ -729,6 +729,8 @@
         syncGlobalQualityBox,
         isInstagramHost,
         isInstagramPostUrl,
+        sameInstagramIdentity: UVDSites.sameInstagramIdentity,
+        instagramIdentityId: UVDSites.instagramIdentityId,
         isYoutubeUrl,
         isTiktokUrl,
         isDownloadableSiteVideo,
@@ -985,7 +987,10 @@
         }
         allItems = ensureSiteItems(allItems, {
           url: paste,
-          title: allItems[0]?.title || "TikTok"
+          title:
+            allItems[0]?.title ||
+            UVDSites.tiktokAuthorHandle?.(paste) ||
+            ""
         });
         render();
         const item = allItems[0];
