@@ -210,6 +210,33 @@
         // follow SPA navigation / FYP residue onto another permalink.
         return false;
       }
+      if (/^ig:/i.test(key)) {
+        const bound = String(boundKey || "").trim();
+        const identityId = (value) => {
+          if (typeof deps.instagramIdentityId === "function") {
+            const id = deps.instagramIdentityId(value);
+            if (id) return id;
+          }
+          const raw = String(value || "");
+          return (
+            raw.match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i)?.[1] ||
+            raw.match(
+              /\/(?:share\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i
+            )?.[1] ||
+            ""
+          );
+        };
+        if (bound) {
+          if (typeof deps.sameInstagramIdentity === "function") {
+            return !!deps.sameInstagramIdentity(bound, key);
+          }
+          const expected = identityId(key);
+          const actual = identityId(bound);
+          return !!(expected && actual && expected === actual);
+        }
+        // data-URL covers must be stamped. Unscoped https is first-paint only.
+        return !String(thumbnail || "").startsWith("data:");
+      }
       return true;
     }
 
@@ -654,7 +681,19 @@
       if (item.pageUrl) {
         const itemKey = pageIdentityKey(item.pageUrl);
         const currentKey = tabMeta.get(tabId)?.pageKey || "";
-        if (itemKey && currentKey && itemKey !== currentKey) return;
+        const identityId = (value) =>
+          String(value || "").match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i)?.[1] ||
+          "";
+        const sameInstagram =
+          typeof deps.sameInstagramIdentity === "function"
+            ? !!deps.sameInstagramIdentity(itemKey, currentKey)
+            : !!(
+                identityId(itemKey) &&
+                identityId(itemKey) === identityId(currentKey)
+              );
+        if (itemKey && currentKey && itemKey !== currentKey && !sameInstagram) {
+          return;
+        }
       }
       if (Naming.isJunkMedia(item)) return;
 
@@ -764,7 +803,9 @@
         // from the previous title, including a stale PAGE_META payload.
         // TikTok SPA og:image lags behind /@user/video/id — wipe on id change.
         thumbnail =
-          Naming.isKnownCodeSite?.(nextHost) || /^tt:(?:\d+|t:.+)$/i.test(nextKey)
+          Naming.isKnownCodeSite?.(nextHost) ||
+          /^tt:(?:\d+|t:.+)$/i.test(nextKey) ||
+          /^ig:/i.test(nextKey)
             ? undefined
             : incomingThumbnail || undefined;
       } else if (Object.prototype.hasOwnProperty.call(meta, "thumbnail")) {

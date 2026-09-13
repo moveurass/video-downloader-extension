@@ -972,6 +972,64 @@ function main() {
     "ensureSiteItems keeps a hydrated Instagram data URL when formats returns a CDN"
   );
 
+  const igPermalinkB = "https://www.instagram.com/reel/NEXTREEL99/";
+  const igCoverB =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover-b.jpg";
+  igTabUrl = igPermalinkB;
+  const afterIgNav = igUtils.ensureSiteItems(
+    [{
+      url: igPermalink,
+      pageUrl: igPermalink,
+      title: "송민구(@minkoosong)",
+      thumbnail: igHydrated,
+      thumbnailPageKey: "ig:reel:DABC123xyz",
+      isSiteDownload: true
+    }],
+    { url: igPermalinkB, title: "다음 릴스" }
+  );
+  check(
+    afterIgNav[0].thumbnail !== igHydrated,
+    true,
+    "navigating Instagram A → B without closing the popup drops reel A's cover"
+  );
+  check(
+    afterIgNav[0].pageUrl,
+    igPermalinkB,
+    "A → B Instagram card is rebound to the new permalink"
+  );
+  const afterIgNavFresh = igUtils.ensureSiteItems(
+    [{
+      url: igPermalinkB,
+      pageUrl: igPermalinkB,
+      title: "다음 릴스",
+      thumbnail: igHydrated,
+      thumbnailPageKey: "ig:reel:DABC123xyz",
+      isSiteDownload: true
+    }],
+    { url: igPermalinkB, title: "다음 릴스" }
+  );
+  check(
+    afterIgNavFresh[0].thumbnail !== igHydrated,
+    true,
+    "reel A's stamped data URL does not merge onto reel B's incoming item"
+  );
+  const afterIgNavCdn = igUtils.ensureSiteItems(
+    [{
+      url: igPermalinkB,
+      pageUrl: igPermalinkB,
+      title: "다음 릴스",
+      thumbnail: igCoverB,
+      thumbnailSource: "formats",
+      isSiteDownload: true
+    }],
+    { url: igPermalinkB, title: "다음 릴스" }
+  );
+  check(
+    afterIgNavCdn[0].thumbnail,
+    igCoverB,
+    "reel B's formats cover is kept after dropping reel A's hydrated thumb"
+  );
+
   console.log(`popup display utils unit: ${assertions} assertions passed`);
 }
 

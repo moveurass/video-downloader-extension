@@ -595,6 +595,45 @@ async function main() {
     "Instagram formats cover is marked as a trusted source"
   );
 
+  const igNextPermalink = "https://www.instagram.com/reel/NEXTREEL99/";
+  const igNextCover =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover-b.jpg";
+  const igStale = makeHarness();
+  igStale.setCurrentTabUrl(igNextPermalink);
+  igStale.setAllItems([{
+    title: "다음 릴스",
+    url: igNextPermalink,
+    pageUrl: igNextPermalink,
+    thumbnail: "data:image/jpeg;base64,SUdDT1ZFUg==",
+    thumbnailPageKey: "ig:reel:DABC123xyz",
+    isSiteDownload: true
+  }]);
+  let finishIgStale;
+  const igStaleProbe = new Promise((resolve) => {
+    finishIgStale = resolve;
+  });
+  igStale.runtimeResponses.push(igStaleProbe);
+  const igStaleLoad = igStale.controller.loadAvailableQualities(
+    igStale.getAllItems()[0]
+  );
+  finishIgStale({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: igNextCover,
+    title: "다음 릴스"
+  });
+  await igStaleLoad;
+  check(
+    igStale.getAllItems()[0].thumbnail,
+    igNextCover,
+    "formats cover replaces a hydrated thumb stamped for the previous reel"
+  );
+  check(
+    igStale.getAllItems()[0].thumbnailPageKey,
+    "ig:reel:NEXTREEL99",
+    "replacement Instagram cover is stamped with the new shortcode"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

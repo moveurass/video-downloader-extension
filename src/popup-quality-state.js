@@ -556,7 +556,13 @@
                 }
               } else if (
                 !String(patch.thumbnail || "").startsWith("data:image/") ||
-                sites?.isInstagramAvatarThumbUrl?.(patch.thumbnail)
+                sites?.isInstagramAvatarThumbUrl?.(patch.thumbnail) ||
+                (sites?.isInstagramPostUrl?.(pageHint) &&
+                  !sites.instagramThumbBelongsToPage?.(
+                    patch.thumbnail,
+                    pageHint,
+                    patch.thumbnailPageKey
+                  ))
               ) {
                 patch.thumbnail = response.thumbnail;
                 if (sites?.isInstagramPostUrl?.(pageHint)) {

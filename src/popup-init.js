@@ -729,6 +729,8 @@
         syncGlobalQualityBox,
         isInstagramHost,
         isInstagramPostUrl,
+        sameInstagramIdentity: UVDSites.sameInstagramIdentity,
+        instagramIdentityId: UVDSites.instagramIdentityId,
         isYoutubeUrl,
         isTiktokUrl,
         isDownloadableSiteVideo,

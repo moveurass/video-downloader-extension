@@ -592,6 +592,41 @@
     return match ? `ig:${match[1]}:${match[2]}` : "";
   }
 
+  function instagramIdentityId(value) {
+    const raw = String(value || "").trim();
+    if (!raw) return "";
+    const fromUrl = instagramPostId(raw);
+    if (fromUrl) return fromUrl;
+    const keyed = raw.match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i);
+    return keyed ? keyed[1] : "";
+  }
+
+  function sameInstagramIdentity(left, right) {
+    const aRaw = String(left || "").trim();
+    const bRaw = String(right || "").trim();
+    if (!aRaw || !bRaw) return false;
+    if (aRaw === bRaw) return true;
+    const a = instagramIdentityId(aRaw);
+    const b = instagramIdentityId(bRaw);
+    return !!(a && b && a === b);
+  }
+
+  /**
+   * Instagram CDN / data-URL covers do not embed the shortcode. A cover
+   * belongs to a reel/post only when thumbnailPageKey matches that identity.
+   * reel vs reels vs /p vs /share/reel for the same id still match.
+   */
+  function instagramThumbBelongsToPage(thumbnail, pageUrl, boundKey) {
+    const value = String(thumbnail || "").trim();
+    if (!value) return false;
+    if (isInstagramAvatarThumbUrl(value)) return false;
+    const expected =
+      instagramPreviewPageKey(pageUrl) || instagramPostId(pageUrl);
+    if (!expected) return false;
+    const bound = String(boundKey || "").trim();
+    return !!bound && sameInstagramIdentity(bound, expected);
+  }
+
   function isInstagramAvatarThumbUrl(url) {
     const value = String(url || "").trim();
     if (!value || value.startsWith("data:")) return false;
@@ -1070,6 +1105,9 @@
     instagramPostId,
     sameInstagramPost,
     instagramPreviewPageKey,
+    instagramIdentityId,
+    sameInstagramIdentity,
+    instagramThumbBelongsToPage,
     isInstagramAvatarThumbUrl,
     preferInstagramPreviewThumbnail,
     pickInstagramCoverFromCandidates,
