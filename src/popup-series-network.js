@@ -8,22 +8,37 @@
   function createClient(deps) {
     const thumbCache = new Map();
 
-    async function fetchThumbDataUrl(url) {
+    async function fetchThumbDataUrl(url, referer, extra = {}) {
       const key = String(url || "").trim();
-      if (!key) return "";
+      const path = String(extra.path || extra.thumbnailPath || "").trim();
+      const pageKey = String(extra.pageKey || extra.videoId || "").trim();
+      const scopedKey = pageKey && key ? `${pageKey}\n${key}` : "";
+      const scopedPath = pageKey && path ? `${pageKey}\npath:${path}` : "";
       if (key.startsWith("data:image/")) return key;
-      if (thumbCache.has(key)) return thumbCache.get(key);
+      if (scopedKey && thumbCache.has(scopedKey)) return thumbCache.get(scopedKey);
+      if (scopedPath && thumbCache.has(scopedPath)) return thumbCache.get(scopedPath);
+      if (!pageKey && key && thumbCache.has(key)) return thumbCache.get(key);
+      if (!pageKey && path && thumbCache.has(`path:${path}`)) {
+        return thumbCache.get(`path:${path}`);
+      }
+      if (!key && !path) return "";
       try {
         const response = await deps.sendMessage({
           type: "FETCH_THUMB",
           url: key,
-          tabId: deps.getTabId()
+          path,
+          thumbnailPath: path,
+          tabId: deps.getTabId(),
+          referer: referer || extra.pageUrl || deps.getPageUrl?.() || ""
         });
         const dataUrl = response?.ok && String(response.dataUrl || "").startsWith("data:image/")
           ? response.dataUrl
           : "";
         if (dataUrl) {
-          thumbCache.set(key, dataUrl);
+          if (scopedKey) thumbCache.set(scopedKey, dataUrl);
+          else if (key) thumbCache.set(key, dataUrl);
+          if (scopedPath) thumbCache.set(scopedPath, dataUrl);
+          else if (path) thumbCache.set(`path:${path}`, dataUrl);
           if (thumbCache.size > 80) thumbCache.delete(thumbCache.keys().next().value);
         }
         return dataUrl;

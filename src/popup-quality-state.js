@@ -28,6 +28,53 @@
       Object.freeze({ id: "480p", label: "480p" })
     ]);
 
+    function sitesApi(deps) {
+      if (deps?.UVDSites) return deps.UVDSites;
+      if (typeof UVDSites !== "undefined") return UVDSites;
+      try {
+        return require("./site-detection.js");
+      } catch {
+        return null;
+      }
+    }
+
+    function qualityProbePageUrl(itemPage, tabUrl, sites) {
+      const item = String(itemPage || "").trim();
+      const tab = String(tabUrl || "").trim();
+      if (
+        sites?.isTiktokVideoUrl?.(item) &&
+        (!tab || !sites.sameTiktokVideo?.(tab, item))
+      ) {
+        return sites.normalizeTiktokUrl?.(item) || item;
+      }
+      return tab || item || "";
+    }
+
+    function mediaUrlOf(value) {
+      return String(value?.url || "").trim();
+    }
+
+    // Paste-on-Explore keeps item.url === permalink. Opening /@user/video/id
+    // often swaps that for an EXTRACT play-CDN mid-probe. Treat the same
+    // TikTok video as the same media so formats cover still lands on the card.
+    function isSameProbedMedia(liveItem, probedUrl, probedPageUrl, tabUrl, sites) {
+      const liveUrl = mediaUrlOf(liveItem);
+      if (!probedUrl || !liveUrl || liveUrl === probedUrl) return true;
+      if (!sites?.sameTiktokVideo) return false;
+      const livePage = liveItem?.pageUrl || liveUrl;
+      const probedPage = probedPageUrl || probedUrl;
+      if (sites.sameTiktokVideo(livePage, probedPage)) return true;
+      if (tabUrl && sites.sameTiktokVideo(livePage, tabUrl)) {
+        if (
+          sites.sameTiktokVideo(probedPage, tabUrl) ||
+          sites.isTiktokVideoUrl?.(tabUrl)
+        ) {
+          return true;
+        }
+      }
+      return !!sites.sameTiktokVideo(liveUrl, probedUrl);
+    }
+
     function createController(deps) {
       const quality = deps.UVDQuality || defaultQuality;
       const {
@@ -301,10 +348,6 @@
         return !(q.height >= 240);
       }
 
-      function mediaUrlOf(value) {
-        return String(value?.url || "").trim();
-      }
-
       async function loadAvailableQualities(item) {
         const requestId = ++qualitiesRequestId;
         const probedUrl = mediaUrlOf(item);
@@ -313,7 +356,11 @@
         availableAudioTracks = [];
         availableSubtitleTracks = [];
         const currentTabUrl = getCurrentTabUrl();
-        const pageUrl = currentTabUrl || item?.pageUrl || item?.url || "";
+        const pageUrl = qualityProbePageUrl(
+          item?.pageUrl || item?.url || "",
+          currentTabUrl,
+          sitesApi(deps)
+        );
         const mediaUrl = item?.url || pageUrl;
         const isHls =
           item?.isHls ||
@@ -417,8 +464,14 @@
             );
           }
           if (requestId !== qualitiesRequestId) return;
-          const liveUrl = mediaUrlOf(getAllItems()[0]);
-          const sameProbedMedia = !probedUrl || !liveUrl || liveUrl === probedUrl;
+          const sites = sitesApi(deps);
+          const sameProbedMedia = isSameProbedMedia(
+            getAllItems()[0],
+            probedUrl,
+            item?.pageUrl || pageUrl,
+            currentTabUrl,
+            sites
+          );
           if (!sameProbedMedia) {
             if (requestId === qualitiesRequestId) qualitiesLoading = false;
             return;
@@ -444,7 +497,17 @@
           }
 
           const allItems = getAllItems();
-          if (response?.ok && allItems[0] && mediaUrlOf(allItems[0]) === probedUrl) {
+          if (
+            response?.ok &&
+            allItems[0] &&
+            isSameProbedMedia(
+              allItems[0],
+              probedUrl,
+              item?.pageUrl || pageUrl,
+              currentTabUrl,
+              sites
+            )
+          ) {
             const patch = { ...allItems[0] };
             if (response.duration >= 1) patch.duration = response.duration;
             if (response.estimatedSize > 0) {
@@ -460,8 +523,29 @@
               patch.pageTitle = response.title;
               patch.displayName = response.title;
             }
-            if (response.thumbnail && !patch.thumbnail) {
-              patch.thumbnail = response.thumbnail;
+            if (response.thumbnail) {
+              const pageHint = patch.pageUrl || pageUrl;
+              if (
+                sites?.isTiktokUrl?.(pageHint) &&
+                sites.preferTiktokPreviewThumbnail
+              ) {
+                const preferred = sites.preferTiktokPreviewThumbnail(
+                  patch.thumbnail,
+                  response.thumbnail,
+                  { fromFormats: true }
+                );
+                if (preferred) {
+                  patch.thumbnail = preferred;
+                  patch.thumbnailPageKey =
+                    sites.tiktokPreviewPageKey?.(pageHint) ||
+                    patch.thumbnailPageKey;
+                  patch.thumbnailSource = "formats";
+                }
+              } else if (
+                !String(patch.thumbnail || "").startsWith("data:image/")
+              ) {
+                patch.thumbnail = response.thumbnail;
+              }
             }
             const bestQ =
               availableQualities.find((q) => q.id === "best") ||
@@ -600,6 +684,8 @@
 
     return {
       createController,
+      qualityProbePageUrl,
+      isSameProbedMedia,
       INITIAL_QUALITY_CHOICES,
       FALLBACK_QUALITY_CHIPS,
       heightToQualityId,

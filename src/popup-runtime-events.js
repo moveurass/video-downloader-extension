@@ -37,6 +37,28 @@
       return sitesApi()?.youtubeThumbnailForUrl?.(pageUrl) || "";
     }
 
+    function tiktokThumbForPage(item, pageUrl) {
+      const sites = sitesApi();
+      if (!sites?.isTiktokUrl?.(pageUrl) && !sites?.isTiktokVideoUrl?.(pageUrl)) {
+        return item;
+      }
+      if (
+        sites.tiktokThumbBelongsToPage?.(
+          item?.thumbnail,
+          pageUrl,
+          item?.thumbnailPageKey
+        )
+      ) {
+        return item;
+      }
+      return {
+        ...item,
+        thumbnail: undefined,
+        thumbnailPageKey: undefined,
+        thumbnailSource: undefined
+      };
+    }
+
     function youtubeThumbnailMatches(thumbnail, videoId) {
       if (!thumbnail || !videoId) return false;
       const actual = String(thumbnail).match(
@@ -189,6 +211,14 @@
             if (curKey && k && k !== curKey) {
               return [];
             }
+            if (pageChanged && sitesApi()?.isTiktokUrl?.(currentTabUrl)) {
+              return [tiktokThumbForPage({
+                ...item,
+                thumbnail: undefined,
+                thumbnailPageKey: undefined,
+                thumbnailSource: undefined
+              }, currentTabUrl)];
+            }
             if (!identityReady) {
               const currentYoutubeId = youtubeVideoId(currentTabUrl);
               const provisionalSafe =
@@ -209,7 +239,7 @@
                 filename: provisionalSafe ? item.filename : undefined
               }];
             }
-            return [item];
+            return [tiktokThumbForPage(item, currentTabUrl)];
           });
           const knownCodeHost = (() => {
             try {

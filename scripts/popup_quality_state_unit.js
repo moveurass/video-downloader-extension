@@ -355,6 +355,177 @@ async function main() {
   check(QualityState.heightToQualityId(1440), "1440p", "quality alias exported");
   check(QualityState.formatMb(5 * 1024 * 1024), "5.0MB", "format alias exported");
 
+  const Sites = require("../src/site-detection.js");
+  const qaPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  check(
+    QualityState.qualityProbePageUrl(
+      qaPermalink,
+      "https://www.tiktok.com/explore",
+      Sites
+    ),
+    qaPermalink,
+    "quality probe uses the pasted TikTok permalink instead of Explore"
+  );
+  check(
+    QualityState.qualityProbePageUrl(
+      qaPermalink,
+      qaPermalink + "?is_from_webapp=1",
+      Sites
+    ),
+    qaPermalink + "?is_from_webapp=1",
+    "same TikTok video keeps the current tab URL for the quality probe"
+  );
+
+  const exploreHarness = makeHarness();
+  exploreHarness.setCurrentTabUrl("https://www.tiktok.com/explore");
+  exploreHarness.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true
+  }]);
+  exploreHarness.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    title: "jumping killing shoot"
+  });
+  await exploreHarness.controller.loadAvailableQualities(
+    exploreHarness.getAllItems()[0]
+  );
+  check(
+    exploreHarness.runtimeMessages.at(-1).pageUrl,
+    qaPermalink,
+    "LIST_QUALITIES pageUrl is the pasted permalink while the tab is Explore"
+  );
+  check(
+    exploreHarness.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/cover",
+    "formats cover hydrates an empty paste-target card"
+  );
+
+  const playCdn =
+    "https://v16-webapp-prime.us.tiktok.com/video/tos/on-page.mp4";
+  check(
+    QualityState.isSameProbedMedia(
+      { url: playCdn, pageUrl: qaPermalink },
+      qaPermalink,
+      qaPermalink,
+      qaPermalink,
+      Sites
+    ),
+    true,
+    "EXTRACT play-CDN is the same probed TikTok video as the permalink"
+  );
+  check(
+    QualityState.isSameProbedMedia(
+      { url: "https://cdn.example/feature.m3u8" },
+      "https://cdn.example/preview.m3u8",
+      "https://cdn.example/preview.m3u8",
+      "https://example.com/watch",
+      Sites
+    ),
+    false,
+    "unrelated media URLs are not the same probe"
+  );
+
+  const onPageHarness = makeHarness();
+  onPageHarness.setCurrentTabUrl(qaPermalink);
+  onPageHarness.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true
+  }]);
+  let finishOnPage;
+  const onPageProbe = new Promise((resolve) => {
+    finishOnPage = resolve;
+  });
+  onPageHarness.runtimeResponses.push(onPageProbe);
+  const onPageLoad = onPageHarness.controller.loadAvailableQualities(
+    onPageHarness.getAllItems()[0]
+  );
+  onPageHarness.setAllItems([{
+    title: "TikTok",
+    url: playCdn,
+    pageUrl: qaPermalink,
+    thumbnail: ""
+  }]);
+  finishOnPage({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    title: "jumping killing shoot"
+  });
+  await onPageLoad;
+  check(
+    onPageHarness.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/cover",
+    "on-page TikTok video keeps the formats cover after EXTRACT swaps in a play-CDN"
+  );
+  check(
+    onPageHarness.getAllItems()[0].url,
+    playCdn,
+    "on-page EXTRACT play-CDN url is left in place"
+  );
+  check(
+    onPageHarness.getAllItems()[0].thumbnailPageKey,
+    "tt:7674902153491664150",
+    "formats cover is stamped with the current TikTok video id"
+  );
+  check(
+    onPageHarness.getAllItems()[0].thumbnailSource,
+    "formats",
+    "formats cover is marked as a trusted source"
+  );
+
+  const avatarOnPage = makeHarness();
+  const ttAvatar =
+    "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
+  avatarOnPage.setCurrentTabUrl(qaPermalink);
+  avatarOnPage.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true,
+    thumbnail: "data:image/jpeg;base64,AVATARFACE"
+  }]);
+  avatarOnPage.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover",
+    title: "jumping killing shoot"
+  });
+  await avatarOnPage.controller.loadAvailableQualities(
+    avatarOnPage.getAllItems()[0]
+  );
+  check(
+    avatarOnPage.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover",
+    "formats cover replaces an already-hydrated PAGE_META profile photo"
+  );
+  avatarOnPage.setAllItems([{
+    title: "TikTok",
+    url: qaPermalink,
+    pageUrl: qaPermalink,
+    isSiteDownload: true,
+    thumbnail: ttAvatar
+  }]);
+  avatarOnPage.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover"
+  });
+  await avatarOnPage.controller.loadAvailableQualities(
+    avatarOnPage.getAllItems()[0]
+  );
+  check(
+    avatarOnPage.getAllItems()[0].thumbnail,
+    "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/cover",
+    "formats cover replaces a raw avatar CDN thumbnail"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

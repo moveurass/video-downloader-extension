@@ -107,6 +107,21 @@
    * Credentialed thumbnail fetches must stay on the page's site, or on a
    * known video CDN when the page itself is a known-code host.
    */
+  function isTikTokImageCdnHost(host) {
+    const h = String(host || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    if (!h) return false;
+    return (
+      /(?:^|\.)tiktokcdn(?:-[a-z0-9]+)?\.com$/i.test(h) ||
+      /(?:^|\.)ibyteimg\.com$/i.test(h) ||
+      /(?:^|\.)byteicdn\.com$/i.test(h) ||
+      /(?:^|\.)byteoversea\.com$/i.test(h) ||
+      /(?:^|\.)muscdn\.com$/i.test(h) ||
+      /(?:^|\.)tiktokv\.com$/i.test(h)
+    );
+  }
+
   function isTrustedThumbUrl(pageUrl, imageUrl) {
     let pageHost = "";
     let imageHost = "";
@@ -122,6 +137,10 @@
       return false;
     }
     if (isSameRegistrableSite(pageHost, imageHost)) return true;
+    // TikTok covers live on ByteDance image CDNs (often no .jpg in the path).
+    // Explore/FYP tabs are still first-party TikTok, so page-credentialed
+    // FETCH_THUMB_PAGE must be allowed for those hosts.
+    if (isTiktokUrl(pageUrl) && isTikTokImageCdnHost(imageHost)) return true;
     return isKnownCodeHost(pageHost) && isKnownVideoCdnHost(imageHost);
   }
 
@@ -175,6 +194,352 @@
       host === "tiktokv.com" ||
       host.endsWith(".tiktokv.com")
     );
+  }
+
+  const TIKTOK_NEED_PERMALINK =
+    "TikTok 탐색·팔로잉·라이브·검색 페이지는 받을 수 없습니다. /@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요";
+
+  const TIKTOK_NON_VIDEO_SEGMENTS = new Set([
+    "explore",
+    "foryou",
+    "following",
+    "live",
+    "search",
+    "discover",
+    "feedback",
+    "messages",
+    "activity"
+  ]);
+
+  function tiktokPermalinkError() {
+    return TIKTOK_NEED_PERMALINK;
+  }
+
+  function tiktokPathname(url) {
+    try {
+      return new URL(url).pathname || "/";
+    } catch {
+      return "";
+    }
+  }
+
+  function isTiktokShareUrl(url) {
+    if (!isTiktokUrl(url)) return false;
+    const host = hostOf(url);
+    const path = tiktokPathname(url);
+    if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+      return /\/[A-Za-z0-9]+\/?$/.test(path) && path !== "/";
+    }
+    return /\/t\/[A-Za-z0-9]+/i.test(path);
+  }
+
+  function isTiktokCanonicalVideoUrl(url) {
+    if (!isTiktokUrl(url) || isTiktokShareUrl(url)) return false;
+    return /\/@[\w.-]+\/video\/\d+|\/video\/\d+/i.test(tiktokPathname(url) || url);
+  }
+
+  function isTiktokVideoUrl(url) {
+    if (!isTiktokUrl(url)) return false;
+    return isTiktokCanonicalVideoUrl(url) || isTiktokShareUrl(url);
+  }
+
+  function isTiktokNonVideoSurface(url) {
+    if (!isTiktokUrl(url) || isTiktokVideoUrl(url)) return false;
+    const path = (tiktokPathname(url) || "/").replace(/\/+$/, "") || "/";
+    if (path === "/") return true;
+    const first = path.split("/").filter(Boolean)[0] || "";
+    return TIKTOK_NON_VIDEO_SEGMENTS.has(first.toLowerCase());
+  }
+
+  function tiktokVideoId(url) {
+    const match = String(url || "").match(/\/(?:@[^/?#]+\/)?video\/(\d+)/i);
+    return match ? match[1] : "";
+  }
+
+  function tiktokShareCode(url) {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+      const path = parsed.pathname || "";
+      if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+        return path.replace(/^\/|\/$/g, "");
+      }
+      return path.match(/\/t\/([A-Za-z0-9]+)/i)?.[1] || "";
+    } catch {
+      return "";
+    }
+  }
+
+  function sameTiktokVideo(left, right) {
+    const idA = tiktokVideoId(left);
+    const idB = tiktokVideoId(right);
+    if (idA && idB) return idA === idB;
+    const codeA = tiktokShareCode(left);
+    const codeB = tiktokShareCode(right);
+    return !!(codeA && codeB && codeA.toLowerCase() === codeB.toLowerCase());
+  }
+
+  function normalizeTiktokUrl(url) {
+    const raw = String(url || "").trim();
+    if (!raw) return raw;
+    try {
+      const parsed = new URL(raw);
+      const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+      parsed.search = "";
+      parsed.hash = "";
+      if (host === "vm.tiktok.com" || host === "vt.tiktok.com") {
+        if (!parsed.pathname.endsWith("/")) parsed.pathname += "/";
+        return parsed.href;
+      }
+      const path = parsed.pathname || "/";
+      const video = path.match(/(\/@[\w.-]+\/video\/\d+)/i);
+      const share = path.match(/(\/t\/[A-Za-z0-9]+)/i);
+      const bare = path.match(/(\/video\/\d+)/i);
+      if (video) parsed.pathname = video[1];
+      else if (share) parsed.pathname = share[1];
+      else if (bare) parsed.pathname = bare[1];
+      if (/tiktok\.com$/i.test(host) && host !== "vm.tiktok.com" && host !== "vt.tiktok.com") {
+        parsed.hostname = "www.tiktok.com";
+      }
+      return parsed.href;
+    } catch {
+      return raw;
+    }
+  }
+
+  function preferDownloadTargetUrl(targetUrl, tabUrl) {
+    const target = String(targetUrl || "").trim();
+    const tab = String(tabUrl || "").trim();
+    if (isTiktokVideoUrl(target)) return normalizeTiktokUrl(target);
+    if (isTiktokUrl(target)) return normalizeTiktokUrl(target);
+    if (isTiktokVideoUrl(tab) && !target) return normalizeTiktokUrl(tab);
+    return target || tab;
+  }
+
+  const TIKTOK_COVER_KEYS = new Set([
+    "cover",
+    "origincover",
+    "origin_cover",
+    "origincov",
+    "dynamiccover",
+    "dynamic_cover",
+    "zoomcover",
+    "zoom_cover",
+    "sharecover",
+    "share_cover",
+    "thumbnail",
+    "thumbnailurl",
+    "thumbnail_url",
+    "poster",
+    "coverurl",
+    "cover_url"
+  ]);
+
+  const TIKTOK_AVATAR_OBJECT_KEYS = new Set([
+    "author",
+    "authorstats",
+    "authorinfo",
+    "user",
+    "uniqueid",
+    "avatarthumb",
+    "avatarmedium",
+    "avatarlarger",
+    "avatar300x300",
+    "avatar168x168",
+    "avatar100x100",
+    "imprint",
+    "verifiedinfo",
+    "followstatus"
+  ]);
+
+  function isTiktokAvatarThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || value.startsWith("data:")) return false;
+    const hay = value.toLowerCase();
+    if (
+      /avatar|user-avatar|imprint|follow[-_]?btn|\/avt[-_/]|-avt-|tos-[a-z0-9-]*avt[-_]/i.test(
+        hay
+      )
+    ) {
+      return true;
+    }
+    const crop = hay.match(/cropcenter:(\d+):(\d+)/i);
+    if (crop) {
+      const width = Number(crop[1]);
+      const height = Number(crop[2]);
+      const max = Math.max(width, height);
+      if (
+        width &&
+        height &&
+        max > 0 &&
+        Math.abs(width - height) / max < 0.08 &&
+        width <= 1080 &&
+        /avt|avatar|imprint/i.test(hay)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function tiktokCoverKeyScore(key) {
+    const kl = String(key || "").toLowerCase();
+    if (/origin_?cover|origincov/.test(kl)) return 50;
+    if (/dynamic_?cover/.test(kl)) return 40;
+    if (/zoom_?cover|photomode/.test(kl)) return 35;
+    if (/share_?cover/.test(kl)) return 25;
+    if (kl === "cover" || kl === "coverurl" || kl === "cover_url") return 20;
+    if (/thumb|poster/.test(kl)) return 10;
+    return 1;
+  }
+
+  function isTiktokVideoCoverThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || isTiktokAvatarThumbUrl(value)) return false;
+    const hay = value.toLowerCase();
+    if (
+      /origincov|origin_cover|dynamiccover|dynamic_cover|zoomcover|zoom_cover|sharecover|share_cover|photomode|tplv-[a-z0-9-]*cover/i.test(
+        hay
+      )
+    ) {
+      return true;
+    }
+    if (/\/tos-[a-z0-9-]+-p-\d+/i.test(hay)) return true;
+    return /tiktokcdn|byteicdn|ibyteimg|byteoversea|muscdn/i.test(hay);
+  }
+
+  function tiktokCoverUrlScore(url) {
+    const hay = String(url || "").toLowerCase();
+    if (!hay) return 0;
+    if (/origin_?cover|origincov|tplv-[a-z0-9-]*origin/.test(hay)) return 50;
+    if (/dynamic_?cover|dcover/.test(hay)) return 40;
+    if (/zoom_?cover|photomode/.test(hay)) return 35;
+    if (/share_?cover/.test(hay)) return 25;
+    if (/\/cover(?:[/?#]|$)|tplv-[a-z0-9-]*cover/.test(hay)) return 20;
+    return 1;
+  }
+
+  function collectTiktokCoverUrls(value, out, score) {
+    if (!value) return;
+    if (typeof value === "string") {
+      if (/^https?:\/\//i.test(value)) out.push({ url: value, score });
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const entry of value.slice(0, 20)) {
+        collectTiktokCoverUrls(entry, out, score);
+      }
+      return;
+    }
+    if (typeof value !== "object") return;
+    if (typeof value.url === "string") {
+      collectTiktokCoverUrls(value.url, out, score);
+    }
+    if (Array.isArray(value.url_list)) {
+      collectTiktokCoverUrls(value.url_list, out, score);
+    }
+    if (Array.isArray(value.urlList)) {
+      collectTiktokCoverUrls(value.urlList, out, score);
+    }
+  }
+
+  function walkTiktokCoverCandidates(obj, out, depth, inAvatarBranch) {
+    if (!obj || depth > 35) return;
+    if (typeof obj === "string") return;
+    if (Array.isArray(obj)) {
+      for (const entry of obj.slice(0, 200)) {
+        walkTiktokCoverCandidates(entry, out, depth + 1, inAvatarBranch);
+      }
+      return;
+    }
+    if (typeof obj !== "object") return;
+    for (const [key, value] of Object.entries(obj)) {
+      const kl = String(key).toLowerCase();
+      const avatarBranch =
+        inAvatarBranch ||
+        TIKTOK_AVATAR_OBJECT_KEYS.has(kl) ||
+        kl.startsWith("avatar");
+      if (avatarBranch) {
+        walkTiktokCoverCandidates(value, out, depth + 1, true);
+        continue;
+      }
+      if (TIKTOK_COVER_KEYS.has(kl)) {
+        collectTiktokCoverUrls(value, out, tiktokCoverKeyScore(kl));
+      }
+      walkTiktokCoverCandidates(value, out, depth + 1, false);
+    }
+  }
+
+  function pickTiktokCoverFromCandidates(candidates) {
+    const list = (Array.isArray(candidates) ? candidates : [])
+      .map((entry) => {
+        if (typeof entry === "string") return { url: entry, score: 1 };
+        return {
+          url: String(entry?.url || ""),
+          score: Number(entry?.score) || 1
+        };
+      })
+      .filter((entry) => entry.url && !isTiktokAvatarThumbUrl(entry.url));
+    if (!list.length) return "";
+    list.sort((left, right) => {
+      const rightTotal =
+        (right.score || 0) + tiktokCoverUrlScore(right.url);
+      const leftTotal = (left.score || 0) + tiktokCoverUrlScore(left.url);
+      if (rightTotal !== leftTotal) return rightTotal - leftTotal;
+      return (
+        Number(isTiktokVideoCoverThumbUrl(right.url)) -
+        Number(isTiktokVideoCoverThumbUrl(left.url))
+      );
+    });
+    return list[0].url;
+  }
+
+  function pickTiktokCoverFromPageData(data) {
+    const found = [];
+    walkTiktokCoverCandidates(data, found, 0, false);
+    return pickTiktokCoverFromCandidates(found);
+  }
+
+  function tiktokPreviewPageKey(url) {
+    const id = tiktokVideoId(url);
+    if (id) return `tt:${id}`;
+    const code = tiktokShareCode(url);
+    if (code) return `tt:t:${code}`;
+    return "";
+  }
+
+  /**
+   * TikTok CDN covers do not embed the aweme id. A preview belongs to a
+   * permalink only when it is stamped with that video's page key (formats /
+   * helper). Explore/FYP and leftover avatars never match.
+   */
+  function tiktokThumbBelongsToPage(thumbnail, pageUrl, boundKey) {
+    const value = String(thumbnail || "").trim();
+    if (!value) return false;
+    if (isTiktokAvatarThumbUrl(value)) return false;
+    const expected = tiktokPreviewPageKey(pageUrl);
+    if (!expected) return false;
+    const bound = String(boundKey || "").trim();
+    return !!bound && bound === expected;
+  }
+
+  function preferTiktokPreviewThumbnail(current, candidate, opts = {}) {
+    const cur = String(current || "").trim();
+    const next = String(candidate || "").trim();
+    if (isTiktokAvatarThumbUrl(next)) {
+      return isTiktokAvatarThumbUrl(cur) ? "" : cur;
+    }
+    if (!next) {
+      return isTiktokAvatarThumbUrl(cur) ? "" : cur;
+    }
+    if (opts.fromFormats) return next;
+    if (isTiktokAvatarThumbUrl(cur)) return next;
+    if (cur.startsWith("data:image/")) return cur;
+    if (!cur) return next;
+    if (isTiktokVideoCoverThumbUrl(next) && !isTiktokVideoCoverThumbUrl(cur)) {
+      return next;
+    }
+    return cur;
   }
 
   function isInstagramHostUrl(url) {
@@ -465,10 +830,7 @@
         return /[?&]v=|\/shorts\/[\w-]+|youtu\.be\/[\w-]+/i.test(url);
       }
     }
-    if (isTiktokUrl(url)) {
-      if (/vm\.tiktok\.com|vt\.tiktok\.com/i.test(url)) return true;
-      return /\/@[\w.-]+\/video\/\d+|\/video\/\d+|\/t\//i.test(url);
-    }
+    if (isTiktokUrl(url)) return isTiktokVideoUrl(url);
     if (isInstagramHostUrl(url)) return isInstagramPostUrl(url);
     if (isXUrl(url)) return true;
     if (isFacebookUrl(url)) {
@@ -544,11 +906,29 @@
     isSameRegistrableSite,
     isKnownCodeHost,
     isKnownVideoCdnHost,
+    isTikTokImageCdnHost,
     isTrustedThumbUrl,
     isYoutubeUrl,
     youtubeVideoId,
     youtubeThumbnailForUrl,
     isTiktokUrl,
+    isTiktokShareUrl,
+    isTiktokCanonicalVideoUrl,
+    isTiktokVideoUrl,
+    isTiktokNonVideoSurface,
+    tiktokVideoId,
+    tiktokShareCode,
+    sameTiktokVideo,
+    normalizeTiktokUrl,
+    preferDownloadTargetUrl,
+    isTiktokAvatarThumbUrl,
+    isTiktokVideoCoverThumbUrl,
+    pickTiktokCoverFromCandidates,
+    pickTiktokCoverFromPageData,
+    preferTiktokPreviewThumbnail,
+    tiktokPreviewPageKey,
+    tiktokThumbBelongsToPage,
+    tiktokPermalinkError,
     isInstagramHostUrl,
     isInstagramPostUrl,
     isInstagramUrl,

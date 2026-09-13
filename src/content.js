@@ -365,7 +365,7 @@
     );
     for (const el of nodes) {
       const url = cssBackgroundImageUrl(el);
-      if (url && !/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(url)) {
+      if (url && !/sprite|icon|logo|avatar|avt-|imprint|badge|1x1|pixel/i.test(url)) {
         return url;
       }
     }
@@ -383,8 +383,11 @@
       document.querySelector('meta[property="og:video:poster"]')?.content,
       document.querySelector('link[rel="image_src"]')?.href,
       document.querySelector("video[poster]")?.getAttribute("poster"),
+      isTikTokVideoPage() ? extractTikTokCoverUrl() : "",
       playerWrapCover(),
-      ...(knownCode
+      // TikTok video pages: skip generic large-img scrape. Profile
+      // headshots are often the biggest <img> on /@user/video/id.
+      ...(knownCode || isTikTokVideoPage()
         ? []
         : [
             document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")
@@ -409,7 +412,15 @@
       const u = absUrl(c);
       if (!u || u.startsWith("data:")) continue;
       if (/\.svg(\?|$)/i.test(u)) continue;
-      if (/sprite|icon|logo|avatar|badge|1x1|pixel/i.test(u)) continue;
+      if (/sprite|icon|logo|avatar|badge|1x1|pixel|imprint|user-avatar/i.test(u)) {
+        continue;
+      }
+      if (
+        typeof UVDSites !== "undefined" &&
+        UVDSites.isTiktokAvatarThumbUrl?.(u)
+      ) {
+        continue;
+      }
       if (youtubeId && youtubeImageVideoId(u) !== youtubeId) continue;
       return u;
     }
@@ -771,8 +782,10 @@
       }
     }
 
-    // TikTok: pull play URLs from embedded page JSON (works while watching)
-    if (/tiktok\.com$/i.test(host.replace(/^www\./, "")) || host.includes("tiktok")) {
+    // TikTok: pull play URLs from embedded page JSON (works while watching).
+    // Explore / Following / Live / Search embed FYP filler — do not surface it.
+    if (isTikTokVideoPage()) {
+      const permalink = extractTikTokPermalink() || location.href;
       for (const u of extractTikTokPlayUrls()) {
         items.push({
           url: u,
@@ -785,7 +798,8 @@
           isHls: false,
           isSiteDownload: false,
           site: "tiktok",
-          thumbnail: thumb || undefined
+          thumbnail: thumb || undefined,
+          pageUrl: permalink
         });
       }
     }
@@ -957,6 +971,38 @@
     });
 
     return [...found].slice(0, 12);
+  }
+
+  /**
+   * Cover from the same page JSON SnapTik-class tools walk. og:image is often
+   * empty or stale on the SPA video permalink; formats/helper hydrate this URL.
+   */
+  function extractTikTokCoverUrl() {
+    if (!isTikTokVideoPage()) return "";
+    const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+    const found = [];
+
+    document
+      .querySelectorAll(
+        'script#__UNIVERSAL_DATA_FOR_REHYDRATION__, script#SIGI_STATE, script[id*="SIGI"], script[type="application/json"]'
+      )
+      .forEach((s) => {
+        const t = (s.textContent || "").trim();
+        if (t.length < 80) return;
+        try {
+          const picked = sites?.pickTiktokCoverFromPageData?.(JSON.parse(t));
+          if (picked) found.push(picked);
+        } catch {
+          /* keyed JSON walk only — do not harvest every tplv URL */
+        }
+      });
+
+    const og = document.querySelector('meta[property="og:image"]')?.content;
+    if (og) found.push(og);
+    if (sites?.pickTiktokCoverFromCandidates) {
+      return sites.pickTiktokCoverFromCandidates(found);
+    }
+    return found.find((url) => !/avatar|avt-|imprint/i.test(url || "")) || "";
   }
 
   /**
@@ -1245,6 +1291,29 @@
   function isTikTokHost() {
     const h = (location.hostname || "").toLowerCase();
     return h.includes("tiktok.com") || h.includes("tiktokv.com");
+  }
+
+  function isTikTokVideoPage(url) {
+    const value = url || location.href;
+    if (typeof UVDSites !== "undefined" && UVDSites.isTiktokVideoUrl) {
+      return UVDSites.isTiktokVideoUrl(value);
+    }
+    return /\/@[\w.-]+\/video\/\d+|\/video\/\d+|\/t\/[A-Za-z0-9]+|vm\.tiktok\.com|vt\.tiktok\.com/i.test(
+      value
+    );
+  }
+
+  function extractTikTokPermalink() {
+    const consider = (raw) => {
+      if (!raw || typeof raw !== "string") return "";
+      const value = raw.split("#")[0];
+      return isTikTokVideoPage(value) ? value.split("?")[0] : "";
+    };
+    return (
+      consider(document.querySelector('link[rel="canonical"]')?.href) ||
+      consider(document.querySelector('meta[property="og:url"]')?.content) ||
+      consider(location.href)
+    );
   }
 
   function isYouTubeHost() {
@@ -1601,6 +1670,17 @@
     }
 
     if (msg.type === "EXTRACT_TIKTOK") {
+      const permalink = extractTikTokPermalink();
+      if (!isTikTokVideoPage()) {
+        sendResponse({
+          ok: false,
+          urls: [],
+          title: pageTitle(),
+          pageUrl: location.href,
+          permalink: ""
+        });
+        return false;
+      }
       const urls = extractTikTokPlayUrls();
       // Also re-scan so background store gets them
       if (urls.length) {
@@ -1614,7 +1694,9 @@
             filename: buildFilename(title, null, "mp4"),
             type: "video",
             source: "tiktok-page",
-            site: "tiktok"
+            site: "tiktok",
+            thumbnail: pageThumbnail() || undefined,
+            pageUrl: permalink || location.href
           }))
         );
       }
@@ -1622,7 +1704,9 @@
         ok: urls.length > 0,
         urls,
         title: pageTitle(),
-        pageUrl: location.href
+        pageUrl: permalink || location.href,
+        permalink: permalink || location.href,
+        thumbnail: pageThumbnail() || ""
       });
       return false;
     }

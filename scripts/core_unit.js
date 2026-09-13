@@ -200,6 +200,65 @@ assert.equal(
   true
 );
 assert.equal(Sites.isDownloadableSiteVideo("https://www.instagram.com/"), false);
+const qaTikTok =
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150?is_from_webapp=1&sender_device=pc";
+assert.equal(Sites.isTiktokVideoUrl(qaTikTok), true);
+assert.equal(Sites.tiktokVideoId(qaTikTok), "7674902153491664150");
+assert.equal(
+  Sites.normalizeTiktokUrl(qaTikTok),
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+);
+assert.equal(
+  Sites.preferDownloadTargetUrl(qaTikTok, "https://www.tiktok.com/explore"),
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+);
+assert.equal(
+  Sites.sameTiktokVideo(qaTikTok, "https://www.tiktok.com/video/7674902153491664150"),
+  true
+);
+assert.equal(
+  Sites.sameTiktokVideo(qaTikTok, "https://www.tiktok.com/@other/video/1"),
+  false
+);
+assert.equal(
+  Sites.isTiktokVideoUrl("https://www.tiktok.com/@name/video/1234567890?is_from_webapp=1"),
+  true
+);
+assert.equal(Sites.isTiktokVideoUrl("https://vm.tiktok.com/ZMabcd123/"), true);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/t/ZTabcd123/"), true);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/following"), false);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/live"), false);
+assert.equal(Sites.isTiktokVideoUrl("https://www.tiktok.com/search?q=dance"), false);
+assert.equal(Sites.isTiktokNonVideoSurface("https://www.tiktok.com/explore"), true);
+assert.equal(Sites.isTiktokNonVideoSurface("https://www.tiktok.com/foryou"), true);
+assert.equal(
+  Sites.normalizeTiktokUrl(
+    "https://m.tiktok.com/@name/video/1234567890?is_from_webapp=1&sender_device=pc"
+  ),
+  "https://www.tiktok.com/@name/video/1234567890"
+);
+assert.equal(
+  Sites.preferDownloadTargetUrl(
+    "https://www.tiktok.com/@name/video/1234567890",
+    "https://www.tiktok.com/explore"
+  ),
+  "https://www.tiktok.com/@name/video/1234567890"
+);
+assert.equal(
+  Sites.preferDownloadTargetUrl(
+    "https://www.tiktok.com/explore",
+    "https://www.tiktok.com/@name/video/999"
+  ),
+  "https://www.tiktok.com/explore"
+);
+assert.equal(
+  Sites.isDownloadableSiteVideo("https://www.tiktok.com/@name/video/1234567890"),
+  true
+);
+assert.equal(Sites.isDownloadableSiteVideo("https://www.tiktok.com/explore"), false);
+assert.equal(Sites.isDownloadableSiteVideo("https://www.tiktok.com/following"), false);
+assert.match(Sites.tiktokPermalinkError(), /\/@.+\/video\//);
 assert.equal(Sites.isTiktokCdnUrl("https://cdn.example/image.jpg"), false);
 assert.equal(
   Sites.looksLikeVideoFileUrl(
@@ -373,6 +432,19 @@ assert.equal(
   "1080p"
 );
 assert.equal(queuePresenter.jobPhaseLabel({ status: "paused" }), "일시정지");
+assert.ok(
+  queuePresenter.jobThumbHtml({
+    thumbnail: "data:image/jpeg;base64,abc"
+  }).includes('src="data:image/jpeg;base64,abc"'),
+  "queue row paints a data URL cover"
+);
+assert.ok(
+  PopupQueueUI.jobThumbHtml({
+    thumbnail: "https://p19-common-sign.tiktokcdn-us.com/cover",
+    result: { thumbnailPath: "/tmp/cover.jpg" }
+  }).includes('data-thumb-url="https://p19-common-sign.tiktokcdn-us.com/cover"'),
+  "queue row keeps CDN covers off-src until hydration"
+);
 assert.equal(queuePresenter.cleanJobMessage("[download] 10% ETA 00:10", "download"), "받는 중…");
 
 assert.equal(PopupSeriesUI.isYouTubeVideoId("dQw4w9WgXcQ"), true);
@@ -500,6 +572,133 @@ assert.equal(Sites.isTrustedThumbUrl(
   "https://watch.example/v",
   "https://other.example/cover.jpg"
 ), false);
+assert.equal(Sites.isTikTokImageCdnHost("p19-common-sign.tiktokcdn-us.com"), true);
+assert.equal(Sites.isTikTokImageCdnHost("evil-tiktokcdn.com.example"), false);
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.tiktok.com/explore",
+  "https://p19-common-sign.tiktokcdn-us.com/obj/tos-maliva-p-0068/~tplv-tiktokx-cropcenter:300:400.jpeg"
+), true, "TikTok Explore may fetch ByteDance cover CDNs");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+  "https://p16-sign.tiktokcdn-eu.com/tos-useast2a-p-0068/~tplv-photomode"
+), true, "TikTok video pages may fetch cover CDNs without a .jpg suffix");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.youtube.com/watch?v=abc",
+  "https://p19-common-sign.tiktokcdn-us.com/cover"
+), false, "non-TikTok pages must not page-fetch TikTok CDNs");
+
+const ttAvatar =
+  "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
+const ttOriginCover =
+  "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-tiktokx-origin.jpeg";
+const ttDynamicCover =
+  "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-tiktokx-dcover.jpeg";
+const ttVideoCover =
+  "https://p19-common-sign.tiktokcdn-us.com/tos-maliva-p-0068/vid~tplv-photomode-zoomcover.jpeg";
+assert.equal(Sites.isTiktokAvatarThumbUrl(ttAvatar), true, "avt- CDN is an avatar");
+assert.equal(
+  Sites.isTiktokAvatarThumbUrl(
+    "https://p16-sign.tiktokcdn.com/obj/imprint/follow-btn.png"
+  ),
+  true,
+  "imprint / follow-button art is not a video cover"
+);
+assert.equal(Sites.isTiktokAvatarThumbUrl(ttOriginCover), false);
+assert.equal(Sites.isTiktokVideoCoverThumbUrl(ttOriginCover), true);
+assert.equal(
+  Sites.pickTiktokCoverFromCandidates([ttAvatar, ttVideoCover, ttOriginCover]),
+  ttOriginCover,
+  "originCover wins over avatar and generic cover URL"
+);
+assert.equal(
+  Sites.pickTiktokCoverFromPageData({
+    __DEFAULT_SCOPE__: {
+      "webapp.video-detail": {
+        itemInfo: {
+          itemStruct: {
+            author: {
+              avatarThumb: ttAvatar,
+              avatarLarger: ttAvatar,
+              uniqueId: "volleyballqueen86"
+            },
+            video: {
+              cover: ttVideoCover,
+              originCover: ttOriginCover,
+              dynamicCover: ttDynamicCover
+            }
+          }
+        }
+      }
+    }
+  }),
+  ttOriginCover,
+  "page JSON with avatar + covers picks originCover, never the profile photo"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(ttAvatar, ttOriginCover),
+  ttOriginCover,
+  "page-meta avatar loses to a real cover"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(
+    "data:image/jpeg;base64,AVATAR",
+    ttOriginCover,
+    { fromFormats: true }
+  ),
+  ttOriginCover,
+  "formats cover replaces a hydrated PAGE_META avatar"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(ttOriginCover, ttAvatar),
+  ttOriginCover,
+  "avatar candidate never overwrites a video cover"
+);
+assert.equal(
+  Sites.preferTiktokPreviewThumbnail(ttAvatar, ""),
+  "",
+  "avatar-only current thumb is discarded"
+);
+assert.equal(
+  Sites.tiktokPreviewPageKey(
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  "tt:7674902153491664150"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+    "tt:7674902153491664150"
+  ),
+  true,
+  "stamped cover belongs to that video id"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/@other/video/111",
+    "tt:7674902153491664150"
+  ),
+  false,
+  "video A cover does not belong to video B"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  false,
+  "unscoped cover is not trusted on a permalink"
+);
+assert.equal(
+  Sites.tiktokThumbBelongsToPage(
+    ttOriginCover,
+    "https://www.tiktok.com/explore",
+    "tt:7674902153491664150"
+  ),
+  false,
+  "Explore/FYP is not a video page for covers"
+);
 assert.equal(QualityMessages.heightFromBandwidth(2_500_000), 1080);
 assert.equal(
   QualityMessages.heightFromString("https://cdn.example/720p/index.m3u8"),
@@ -627,6 +826,29 @@ assert.equal(
   "TikTok_123456789"
 );
 assert.equal(
+  downloadRequests.preferDownloadTargetUrl(
+    "https://www.tiktok.com/@name/video/123456789",
+    "https://www.tiktok.com/explore"
+  ),
+  "https://www.tiktok.com/@name/video/123456789"
+);
+assert.equal(
+  downloadRequests.preferDownloadTargetUrl(
+    qaTikTok,
+    "https://www.tiktok.com/explore"
+  ),
+  "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+);
+assert.equal(
+  downloadRequests.fnameBaseFromLink(qaTikTok),
+  "TikTok_7674902153491664150"
+);
+assert.equal(downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
+assert.equal(
+  downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/@name/video/123456789"),
+  true
+);
+assert.equal(
   downloadRequests.fnameBaseFromLink("https://instagram.com/reel/ABC_123/"),
   "Instagram_ABC_123"
 );
@@ -635,4 +857,4 @@ assert.equal(
   "X_987654321"
 );
 
-console.log("core modules: 102 assertions passed");
+console.log("core modules: assertions passed");

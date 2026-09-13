@@ -19,6 +19,11 @@
       return siteName ? `${siteName} 영상 받기` : "영상 받기";
     }
 
+    function needsRemoteThumbHydration(url) {
+      const value = String(url || "").trim();
+      return !!value && /^https?:/i.test(value);
+    }
+
     function createRenderer(deps) {
       const {
         listEl,
@@ -76,28 +81,157 @@
         }\n${item?.url || ""}`;
       }
 
-      function bindThumbFallback(card) {
+      function replaceThumbWithFallback(img) {
+        if (!img?.replaceWith || !document?.createElement) return;
+        img.replaceWith(
+          Object.assign(document.createElement("span"), {
+            className: "thumb-fallback",
+            textContent: "🎬"
+          })
+        );
+      }
+
+      function liveCard() {
+        return listEl?.querySelector?.(".card") || null;
+      }
+
+      function applyThumbSrc(card, dataUrl) {
+        const target = card || liveCard();
+        if (!target || !dataUrl) return;
+        const img = target.querySelector?.(".thumb-img");
+        if (img) {
+          if (img.getAttribute?.("src") !== dataUrl) {
+            img.setAttribute("src", dataUrl);
+          }
+          if (img.removeAttribute) img.removeAttribute("data-thumb-url");
+          return;
+        }
+        const thumb = target.querySelector?.(".thumb");
+        if (thumb && typeof thumbHtml === "function") {
+          thumb.innerHTML = thumbHtml({ thumbnail: dataUrl });
+          bindThumbFallback(target);
+        }
+      }
+
+      function bindThumbFallback(card, item) {
         const img = card?.querySelector?.(".thumb-img");
-        if (!img) return;
-        img.addEventListener("error", () => {
-          img.replaceWith(
-            Object.assign(document.createElement("span"), {
-              className: "thumb-fallback",
-              textContent: "🎬"
-            })
-          );
+        if (!img?.addEventListener) return;
+        img.addEventListener("error", async () => {
+          const src = img.getAttribute?.("src") || "";
+          if (!src) return;
+          if (String(src).startsWith("data:")) {
+            replaceThumbWithFallback(img);
+            return;
+          }
+          const fetchThumb = deps.fetchThumbDataUrl;
+          if (
+            typeof fetchThumb === "function" &&
+            needsRemoteThumbHydration(src) &&
+            img.dataset?.thumbTried !== "1"
+          ) {
+            if (img.dataset) img.dataset.thumbTried = "1";
+            try {
+              const dataUrl = await fetchThumb(src, item?.pageUrl || item?.url || "");
+              if (dataUrl) {
+                if (item) item.thumbnail = dataUrl;
+                img.setAttribute("src", dataUrl);
+                return;
+              }
+            } catch {
+              /* fall through */
+            }
+          }
+          replaceThumbWithFallback(img);
         });
+      }
+
+      let hydrateGeneration = 0;
+
+      function pageKeyOf(url) {
+        return (
+          (typeof deps.pageKey === "function" && deps.pageKey(url)) ||
+          String(url || "")
+        );
+      }
+
+      function thumbStillCurrent(item, generation) {
+        if (generation !== hydrateGeneration) return false;
+        const liveUrl =
+          typeof getCurrentTabUrl === "function" ? getCurrentTabUrl() : "";
+        const liveKey = pageKeyOf(liveUrl);
+        const itemKey = pageKeyOf(item?.pageUrl || item?.url || "");
+        if (liveKey && itemKey && liveKey !== itemKey) return false;
+        const card = liveCard();
+        const liveItem =
+          typeof getAllItems === "function" ? getAllItems()[0] : null;
+        if (card?.dataset?.mediaIdentity && liveItem) {
+          const identity = mediaIdentity(liveItem, liveUrl);
+          if (card.dataset.mediaIdentity !== identity) return false;
+        }
+        return true;
+      }
+
+      async function hydrateRemoteThumbnails(items, generation) {
+        const fetchThumb = deps.fetchThumbDataUrl;
+        if (typeof fetchThumb !== "function") return;
+        const gen =
+          generation == null ? hydrateGeneration : generation;
+        await Promise.all(
+          (items || []).map(async (item) => {
+            const url = String(item?.thumbnail || "");
+            const pageUrl = item.pageUrl || item.url || "";
+            const pageKey = pageKeyOf(pageUrl);
+            if (url.startsWith("data:image/")) {
+              if (thumbStillCurrent(item, gen)) applyThumbSrc(liveCard(), url);
+              return;
+            }
+            if (!needsRemoteThumbHydration(url)) return;
+            try {
+              const dataUrl = await fetchThumb(url, pageUrl, {
+                pageKey,
+                videoId: pageKey
+              });
+              if (!dataUrl || !thumbStillCurrent(item, gen)) return;
+              item.thumbnail = dataUrl;
+              if (pageKey) item.thumbnailPageKey = pageKey;
+              applyThumbSrc(liveCard(), dataUrl);
+            } catch {
+              /* pending img stays empty until a later hydrate */
+            }
+          })
+        );
+      }
+
+      function scheduleThumbHydration(items) {
+        if (typeof deps.fetchThumbDataUrl !== "function") return;
+        const generation = ++hydrateGeneration;
+        Promise.resolve()
+          .then(() => hydrateRemoteThumbnails(items, generation))
+          .catch(() => {});
+      }
+
+      function resolveRenderTabLike(currentTabUrl, allItems) {
+        const pasteUrl =
+          typeof deps.getPastedTiktokPreviewUrl === "function"
+            ? deps.getPastedTiktokPreviewUrl(currentTabUrl)
+            : "";
+        return {
+          url: pasteUrl || currentTabUrl,
+          title: allItems[0]?.title || ""
+        };
       }
 
       function render() {
         const currentTabUrl = getCurrentTabUrl();
         let allItems = getAllItems();
 
-        // Always re-apply YT/TT card before paint
-        allItems = ensureSiteItems(allItems, {
-          url: currentTabUrl,
-          title: allItems[0]?.title || ""
-        });
+        // Always re-apply YT/TT card before paint. A pasted TikTok
+        // permalink wins over Explore/FYP so the visible card matches
+        // what 받기 will download.
+        allItems = ensureSiteItems(
+          allItems,
+          resolveRenderTabLike(currentTabUrl, allItems)
+        );
         setAllItems(allItems);
         const items = allItems.slice(0, 1);
         listEl.innerHTML = "";
@@ -122,7 +256,8 @@
             !isDownloadableSiteVideo(currentTabUrl)
           ) {
             title = "TikTok 영상 페이지를 열어 주세요";
-            hint = "개별 영상 주소에서 다시 열어 주세요";
+            hint =
+              "/@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요 (탐색·팔로잉·라이브·검색은 받을 수 없습니다)";
           } else if (
             /(?:^|\.)x\.com|(?:^|\.)twitter\.com/i.test(
               (() => {
@@ -202,7 +337,7 @@
     </details>
   `;
 
-        bindThumbFallback(card);
+        bindThumbFallback(card, item);
 
         card.querySelectorAll(".q-chip").forEach((chip) => {
           chip.addEventListener("click", async () => {
@@ -334,14 +469,15 @@
         listEl.appendChild(card);
         // Card already has quality chips — hide the global bar
         syncGlobalQualityBox(true);
+        scheduleThumbHydration(items);
       }
 
       function patch() {
         const currentTabUrl = getCurrentTabUrl();
-        const allItems = ensureSiteItems(getAllItems(), {
-          url: currentTabUrl,
-          title: getAllItems()[0]?.title || ""
-        });
+        const allItems = ensureSiteItems(
+          getAllItems(),
+          resolveRenderTabLike(currentTabUrl, getAllItems())
+        );
         setAllItems(allItems);
         const item = allItems[0];
         const card = listEl.querySelector?.(".card");
@@ -396,13 +532,39 @@
         const thumb = card.querySelector(".thumb");
         const image = card.querySelector(".thumb-img");
         if (item.thumbnail) {
+          const thumbUrl = String(item.thumbnail);
+          const isDataThumb = thumbUrl.startsWith("data:image/");
           if (image) {
-            if (image.getAttribute("src") !== item.thumbnail) {
-              image.setAttribute("src", item.thumbnail);
+            const currentSrc = image.getAttribute("src") || "";
+            if (isDataThumb) {
+              if (currentSrc !== thumbUrl) {
+                image.setAttribute("src", thumbUrl);
+              }
+              if (typeof image.removeAttribute === "function") {
+                image.removeAttribute("data-thumb-url");
+              }
+            } else if (needsRemoteThumbHydration(thumbUrl)) {
+              // Never paint a hotlink-blocked CDN as src. On-page PAGE_META
+              // used to do that and bindThumbFallback replaced the img with 🎬
+              // before FETCH_THUMB could hydrate — paste cards skipped this
+              // because they only go through render() + data-thumb-url.
+              if (currentSrc && !currentSrc.startsWith("data:image/")) {
+                if (currentSrc !== thumbUrl) {
+                  if (typeof image.removeAttribute === "function") {
+                    image.removeAttribute("src");
+                  } else {
+                    image.setAttribute("src", "");
+                  }
+                }
+              } else if (!currentSrc && typeof image.setAttribute === "function") {
+                image.setAttribute("data-thumb-url", thumbUrl);
+              }
+            } else if (currentSrc !== thumbUrl) {
+              image.setAttribute("src", thumbUrl);
             }
           } else if (thumb) {
             thumb.innerHTML = thumbHtml(item);
-            bindThumbFallback(card);
+            bindThumbFallback(card, item);
           }
         } else if (image) {
           if (typeof image.removeAttribute === "function") {
@@ -414,12 +576,13 @@
             thumb.innerHTML = thumbHtml(item);
           }
         }
+        scheduleThumbHydration([item]);
         return true;
       }
 
-      return { render, patch };
+      return { render, patch, hydrateRemoteThumbnails };
     }
 
-    return { createRenderer, primaryDownloadLabel };
+    return { createRenderer, primaryDownloadLabel, needsRemoteThumbHydration };
   }
 );

@@ -249,7 +249,7 @@ async function main() {
   equal(persisted.id, jobId);
   equal(persisted.progressAttempt, 2);
   equal(persisted.progressSeq, 5);
-  equal(persisted.thumbnail, undefined);
+  equal(persisted.thumbnail, "https://example.test/thumb.jpg");
   equal(persisted.cancelRequested, undefined);
   equal(persisted.tags, undefined);
   equal(persisted.speedLabel, "");

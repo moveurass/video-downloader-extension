@@ -178,6 +178,7 @@
 
     const {
       jobDisplayInfo,
+      jobThumbHtml,
       shortJobTitle,
       jobEtaLabel,
       jobPhaseLabel,
@@ -341,6 +342,33 @@
         filename: job.filename || prev.filename || resultName || "",
         quality: job.quality || prev.quality || "",
         pageUrl: job.pageUrl || prev.pageUrl || "",
+        thumbnail: (() => {
+          const pageKeyFn =
+            typeof deps.pageKey === "function" ? deps.pageKey : null;
+          const jobKey = pageKeyFn
+            ? pageKeyFn(job.pageUrl || "")
+            : String(job.pageUrl || "");
+          const prevKey = pageKeyFn
+            ? pageKeyFn(prev.pageUrl || "")
+            : String(prev.pageUrl || "");
+          const sameVideo = !jobKey || !prevKey || jobKey === prevKey;
+          if (!sameVideo) return job.thumbnail || "";
+          return (
+            (String(job.thumbnail || "").startsWith("data:image/") &&
+              job.thumbnail) ||
+            (String(prev.thumbnail || "").startsWith("data:image/") &&
+              prev.thumbnail) ||
+            job.thumbnail ||
+            prev.thumbnail ||
+            ""
+          );
+        })(),
+        thumbnailPath:
+          job.thumbnailPath ||
+          job.result?.thumbnailPath ||
+          prev.thumbnailPath ||
+          prev.result?.thumbnailPath ||
+          "",
         speedBps:
           typeof job.speedBps === "number" && job.speedBps > 0
             ? job.speedBps
@@ -371,7 +399,9 @@
         statusChanged ||
         !prev.id ||
         prev.title !== next.title ||
-        prev.filename !== next.filename;
+        prev.filename !== next.filename ||
+        prev.thumbnail !== next.thumbnail ||
+        prev.thumbnailPath !== next.thumbnailPath;
       if (
         !structureNeeded &&
         prev.status === next.status &&
@@ -515,6 +545,72 @@
           dlQueueSub.title = "";
         }
       }
+    }
+
+    function applyQueueThumbSrc(jobId, dataUrl) {
+      if (!dlQueueList || !dataUrl) return;
+      const safeId = String(jobId).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      const row = dlQueueList.querySelector?.(`.dl-job[data-job-id="${safeId}"]`);
+      const thumb = row?.querySelector?.(".dl-job-thumb");
+      if (!thumb) return;
+      const img = thumb.querySelector?.(".dl-job-thumb-img");
+      if (img) {
+        if (img.getAttribute?.("src") !== dataUrl) img.setAttribute("src", dataUrl);
+        img.removeAttribute?.("data-thumb-url");
+        img.removeAttribute?.("data-thumb-path");
+        return;
+      }
+      thumb.innerHTML = `<img class="dl-job-thumb-img" src="${escapeAttr(dataUrl)}" alt="" />`;
+    }
+
+    async function hydrateQueueThumbs(jobs) {
+      const fetchThumb = deps.fetchThumbDataUrl;
+      if (typeof fetchThumb !== "function") return;
+      await Promise.all(
+        (jobs || []).map(async (job) => {
+          if (!job) return;
+          if (String(job.thumbnail || "").startsWith("data:image/")) {
+            applyQueueThumbSrc(job.id, job.thumbnail);
+            return;
+          }
+          try {
+            let dataUrl = "";
+            const pageKeyFn =
+              typeof deps.pageKey === "function" ? deps.pageKey : null;
+            const jobKey = pageKeyFn
+              ? pageKeyFn(job.pageUrl || "")
+              : String(job.pageUrl || "");
+            if (/^https?:/i.test(job.thumbnail || "")) {
+              dataUrl = await fetchThumb(job.thumbnail, job.pageUrl || "", {
+                pageKey: jobKey
+              });
+            }
+            const path = job.result?.thumbnailPath || job.thumbnailPath || "";
+            if (!dataUrl && path) {
+              dataUrl = await fetchThumb("", job.pageUrl || "", {
+                path,
+                pageKey: jobKey
+              });
+            }
+            const live = uiJobs.get(job.id);
+            const liveKey = pageKeyFn
+              ? pageKeyFn(live?.pageUrl || "")
+              : String(live?.pageUrl || "");
+            if (!dataUrl || (jobKey && liveKey && jobKey !== liveKey)) return;
+            job.thumbnail = dataUrl;
+            applyQueueThumbSrc(job.id, dataUrl);
+          } catch {
+            /* keep placeholder */
+          }
+        })
+      );
+    }
+
+    function scheduleQueueThumbHydration(jobs) {
+      if (typeof deps.fetchThumbDataUrl !== "function") return;
+      Promise.resolve()
+        .then(() => hydrateQueueThumbs(jobs))
+        .catch(() => {});
     }
 
     function patchQueueProgress() {
@@ -692,6 +788,7 @@
           <div class="dl-job-top">
             <span class="dl-job-num" title="큐 순서">#${number}</span>
             <span class="dl-job-status ${escapeAttr(status)}" aria-hidden="true">${icon}</span>
+            ${jobThumbHtml(job, escapeAttr)}
             <div class="dl-job-meta">
               <div class="dl-job-title" title="${escapeAttr(tip)}">${escapeHtml(titleShort)}</div>
               ${fileHtml}
@@ -723,6 +820,7 @@
       deps.bindRecoveryButtons(dlQueueList);
       syncDownloadingFlag();
       if (deps.getPlaylistDl().jobIds.size) deps.updatePlaylistProgressUi();
+      scheduleQueueThumbHydration(visible);
     }
 
     function showProgress(show, percent = 0, text = "") {
@@ -794,6 +892,8 @@
         filename: progress.filename,
         quality: progress.quality,
         pageUrl: progress.pageUrl,
+        thumbnail: progress.thumbnail,
+        thumbnailPath: progress.thumbnailPath || progress.result?.thumbnailPath,
         startedAt: progress.startedAt,
         updatedAt: progress.updatedAt || now(),
         progressVersion: progress.progressVersion,
@@ -847,6 +947,7 @@
       updateQueueHeader,
       patchQueueProgress,
       renderDownloadQueue,
+      hydrateQueueThumbs,
       showProgress,
       applyJobProgress,
       restoreActiveDownloads,

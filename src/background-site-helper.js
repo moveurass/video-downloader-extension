@@ -226,6 +226,48 @@
       }
     }
 
+    function sitesApi() {
+      if (typeof deps.UVDSites !== "undefined" && deps.UVDSites) return deps.UVDSites;
+      try {
+        return require("./site-detection.js");
+      } catch {
+        return null;
+      }
+    }
+
+    function isTiktokVideoUrl(url) {
+      if (typeof deps.isTiktokVideoUrl === "function") return deps.isTiktokVideoUrl(url);
+      return !!sitesApi()?.isTiktokVideoUrl?.(url);
+    }
+
+    function sameTiktokVideo(left, right) {
+      if (typeof deps.sameTiktokVideo === "function") return deps.sameTiktokVideo(left, right);
+      return !!sitesApi()?.sameTiktokVideo?.(left, right);
+    }
+
+    function normalizeTiktokUrl(raw) {
+      if (typeof deps.normalizeTiktokUrl === "function") return deps.normalizeTiktokUrl(raw);
+      return sitesApi()?.normalizeTiktokUrl?.(raw) || String(raw || "").trim();
+    }
+
+    function tiktokPermalinkError() {
+      if (typeof deps.tiktokPermalinkError === "function") return deps.tiktokPermalinkError();
+      return (
+        sitesApi()?.tiktokPermalinkError?.() ||
+        "TikTok 탐색·팔로잉·라이브·검색 페이지는 받을 수 없습니다. /@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요"
+      );
+    }
+
+    async function tabUrlFor(tabId) {
+      if (tabId == null || !deps.chrome?.tabs?.get) return "";
+      try {
+        const tab = await deps.chrome.tabs.get(tabId);
+        return tab?.url || "";
+      } catch {
+        return "";
+      }
+    }
+
     function normalizeInstagramUrl(raw) {
       try {
         const u = new deps.URL(String(raw || "").trim());
@@ -258,20 +300,31 @@
         urls.push(u);
       };
 
-      if (tabId != null) {
-        try {
-          await deps.ensureContentScripts(tabId);
-          const ext = await deps.withTimeout(
-            deps.chrome.tabs.sendMessage(tabId, { type: "EXTRACT_TIKTOK" }),
-            5000,
-            "extract"
-          );
-          for (const u of ext?.urls || []) push(u);
-        } catch {
-          // Use captured network items.
+      if (tabId == null) return urls;
+      const tabUrl = await tabUrlFor(tabId);
+      const target = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
+      // EXTRACT_TIKTOK on Explore/FYP returns landing media. Only trust the
+      // current tab when it is the same /@user/video/id (or share) permalink.
+      if (target && isTiktokVideoUrl(target)) {
+        if (!tabUrl || !isTiktokVideoUrl(tabUrl) || !sameTiktokVideo(tabUrl, target)) {
+          return urls;
         }
-        for (const item of deps.getTabItems(tabId)) push(item.url);
+      } else if (!isTiktokVideoUrl(tabUrl)) {
+        return urls;
       }
+
+      try {
+        await deps.ensureContentScripts(tabId);
+        const ext = await deps.withTimeout(
+          deps.chrome.tabs.sendMessage(tabId, { type: "EXTRACT_TIKTOK" }),
+          5000,
+          "extract"
+        );
+        for (const u of ext?.urls || []) push(u);
+      } catch {
+        // Use captured network items.
+      }
+      for (const item of deps.getTabItems(tabId)) push(item.url);
       return urls;
     }
 
@@ -374,13 +427,11 @@
       forceOpts = {}
     ) {
       const jid = jobId || deps.getCurrentJobContext();
-      const targetPage = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
+      const rawTarget = pageUrl && /^https?:/i.test(pageUrl) ? pageUrl : "";
+      const targetPage = rawTarget ? normalizeTiktokUrl(rawTarget) : "";
       if (!targetPage) throw new Error("TikTok 페이지 주소가 없습니다");
-      if (
-        !deps.isTiktokUrl(targetPage) &&
-        !/vm\.tiktok\.com|vt\.tiktok\.com/i.test(targetPage)
-      ) {
-        throw new Error("TikTok 영상 링크가 아닙니다");
+      if (!isTiktokVideoUrl(targetPage)) {
+        throw new Error(tiktokPermalinkError());
       }
       deps.emitDownloadProgress(tabId, 8, "TikTok 링크로 받는 중…", "start", jid);
       const helperUp = await deps.YtDlp.available().catch(() => false);

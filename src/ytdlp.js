@@ -297,6 +297,28 @@ const YtDlp = (() => {
    * List available quality labels for a page/media URL (yt-dlp -J).
    * @returns {Promise<{qualities: Array<{id:string,label:string,height?:number}>, heights: number[]}>}
    */
+  async function fetchThumb(url, referer, extra = {}) {
+    try {
+      const res = await fetch(`${BASE}/thumb`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await ensureAuthed()) },
+        body: JSON.stringify({
+          url: url || "",
+          referer: referer || "",
+          pageUrl: referer || extra.pageUrl || "",
+          path: extra.path || extra.thumbnailPath || ""
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok && String(data.dataUrl || "").startsWith("data:image/")) {
+        return { ok: true, dataUrl: data.dataUrl, bytes: data.bytes };
+      }
+      return { ok: false, error: data.error || `thumb HTTP ${res.status}` };
+    } catch (e) {
+      return { ok: false, error: String(e?.message || e) };
+    }
+  }
+
   async function listFormats(url, extra = {}) {
     const res = await fetch(`${BASE}/formats`, {
       method: "POST",
@@ -580,6 +602,7 @@ const YtDlp = (() => {
     getJob,
     cancelJob,
     downloadAndWait,
+    fetchThumb,
     listFormats,
     listPlaylist,
     updateSelf,

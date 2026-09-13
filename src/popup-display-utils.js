@@ -7,6 +7,19 @@
   function makePopupDisplayUtils() {
     "use strict";
 
+    function pastedTiktokPreviewUrl(text, tabUrl, sites, parseUrlsFromText) {
+      const parse =
+        typeof parseUrlsFromText === "function"
+          ? parseUrlsFromText
+          : (value) => String(value || "").match(/https?:\/\/[^\s]+/g) || [];
+      const urls = parse(text);
+      if (!Array.isArray(urls) || urls.length !== 1) return "";
+      const first = String(urls[0] || "").trim();
+      if (!sites?.isTiktokVideoUrl?.(first)) return "";
+      if (tabUrl && sites.sameTiktokVideo?.(tabUrl, first)) return "";
+      return sites.normalizeTiktokUrl?.(first) || first;
+    }
+
     function createUtils(deps) {
       const documentRef = deps.document;
       const setTimeoutFn = deps.setTimeout || setTimeout;
@@ -131,9 +144,15 @@
       }
 
       function thumbHtml(item) {
-        const src = item.thumbnail;
-        if (src) {
-          return `<img class="thumb-img" src="${escapeAttr(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" />`;
+        const src = String(item?.thumbnail || "");
+        if (src.startsWith("data:image/")) {
+          return `<img class="thumb-img" src="${escapeAttr(src)}" alt="" />`;
+        }
+        // TikTok CDN covers 403 from the extension origin. Keep the URL
+        // for FETCH_THUMB hydration instead of painting a broken <img>
+        // that bindThumbFallback replaces with 🎬.
+        if (/^https?:/i.test(src)) {
+          return `<img class="thumb-img" data-thumb-url="${escapeAttr(src)}" alt="" />`;
         }
         return `<span class="thumb-fallback">🎬</span>`;
       }
@@ -296,8 +315,10 @@
             return `yt:${path}`;
           }
           if (host.includes("tiktok")) {
-            const m = path.match(/\/@[^/]+\/video\/(\d+)/i);
+            const m = path.match(/\/(?:@[^/]+\/)?video\/(\d+)/i);
             if (m) return `tt:${m[1]}`;
+            const t = path.match(/\/t\/([^/?#]+)/i);
+            if (t) return `tt:t:${t[1]}`;
             return `tt:${path}`;
           }
           if (host.includes("instagram") || host.includes("instagr.am")) {
@@ -377,6 +398,40 @@
             previous.isPagePlaceholder ||
             titlesMatchVideo(previous.title, incoming.title));
         const sameMedia = !!(previous.url && incoming.url && previous.url === incoming.url);
+        const pageHint =
+          incoming.pageUrl ||
+          previous.pageUrl ||
+          incoming.url ||
+          previous.url ||
+          "";
+        const sites = deps.UVDSites || {};
+        const incomingTrusted =
+          !sites.isTiktokUrl?.(pageHint) ||
+          sites.tiktokThumbBelongsToPage?.(
+            incoming.thumbnail,
+            pageHint,
+            incoming.thumbnailPageKey
+          );
+        const previousTrusted =
+          sameVideo &&
+          (!sites.isTiktokUrl?.(pageHint) ||
+            sites.tiktokThumbBelongsToPage?.(
+              previous.thumbnail,
+              pageHint,
+              previous.thumbnailPageKey
+            ));
+        const mergedThumb =
+          sites.isTiktokUrl?.(pageHint) && sites.preferTiktokPreviewThumbnail
+            ? sites.preferTiktokPreviewThumbnail(
+                previousTrusted ? previous.thumbnail : "",
+                incomingTrusted ? incoming.thumbnail : "",
+                {
+                  fromFormats:
+                    incoming.thumbnailSource === "formats" && incomingTrusted
+                }
+              ) || undefined
+            : incoming.thumbnail ||
+              (sameVideo ? previous.thumbnail : undefined);
         return {
           ...previous,
           ...incoming,
@@ -391,9 +446,15 @@
             incoming.displayName
           ),
           filename: preferStableText(previous.filename, incoming.filename),
-          thumbnail:
-            incoming.thumbnail ||
-            (sameVideo ? previous.thumbnail : undefined),
+          thumbnail: mergedThumb,
+          thumbnailPageKey: mergedThumb
+            ? incoming.thumbnailPageKey ||
+              previous.thumbnailPageKey ||
+              (sites.tiktokPreviewPageKey?.(pageHint) || undefined)
+            : undefined,
+          thumbnailSource: mergedThumb
+            ? incoming.thumbnailSource || previous.thumbnailSource
+            : undefined,
           quality:
             incoming.quality ||
             (sameMedia ? previous.quality : incoming.quality),
@@ -425,12 +486,34 @@
         }
       }
 
+      function resolveEnsurePageUrl(tabLike) {
+        const tabUrl = getCurrentTabUrl() || "";
+        const hintUrl = tabLike?.url || "";
+        const sites = deps.UVDSites || {};
+        if (sites.isTiktokVideoUrl?.(hintUrl)) {
+          if (!tabUrl || !sites.sameTiktokVideo?.(tabUrl, hintUrl)) {
+            return sites.normalizeTiktokUrl?.(hintUrl) || hintUrl;
+          }
+        }
+        return tabUrl || hintUrl || "";
+      }
+
+      function pastedPreviewFromInput(tabUrl) {
+        const text = deps.$("#linkInput")?.value || "";
+        return pastedTiktokPreviewUrl(
+          text,
+          tabUrl || getCurrentTabUrl() || "",
+          deps.UVDSites,
+          (value) => deps.UVD.parseUrlsFromText(value)
+        );
+      }
+
       function ensureSiteItems(items, tabLike) {
         const source = items == null ? getAllItems() : items;
         let list = Array.isArray(source)
           ? source.map((item) => ({ ...item }))
           : [];
-        const url = getCurrentTabUrl() || tabLike?.url || "";
+        const url = resolveEnsurePageUrl(tabLike);
         const curKey = pageKey(url);
         const cached = lastGoodItemsByPage.get(curKey) || [];
         if (!isKnownDownloadablePage(url)) return list;
@@ -458,7 +541,10 @@
 
         let top = list[0];
         const topKey = pageKey(top.pageUrl || top.url || "");
-        const samePage = !topKey || !curKey || topKey === curKey;
+        const tiktokPage = !!(deps.UVDSites || {}).isTiktokUrl?.(url);
+        const samePage = tiktokPage
+          ? !!(topKey && curKey && topKey === curKey)
+          : !topKey || !curKey || topKey === curKey;
         if (samePage && cached[0]) {
           top = mergeStableItem(cached[0], top);
         }
@@ -478,9 +564,35 @@
           rememberStableItems(curKey, result);
           return result;
         }
+        const sites = deps.UVDSites || {};
+        const topTrusted =
+          sites.tiktokThumbBelongsToPage?.(
+            top.thumbnail,
+            url,
+            top.thumbnailPageKey
+          ) ||
+          (!tiktokPage && !!top.thumbnail);
+        const localTrusted =
+          sites.tiktokThumbBelongsToPage?.(
+            local.thumbnail,
+            url,
+            local.thumbnailPageKey
+          ) ||
+          (!tiktokPage && !!local.thumbnail);
         const thumb = samePage
-          ? top.thumbnail || local.thumbnail
-          : local.thumbnail;
+          ? tiktokPage && sites.preferTiktokPreviewThumbnail
+            ? sites.preferTiktokPreviewThumbnail(
+                localTrusted ? local.thumbnail : "",
+                topTrusted ? top.thumbnail : "",
+                {
+                  fromFormats:
+                    top.thumbnailSource === "formats" && topTrusted
+                }
+              ) || undefined
+            : top.thumbnail || local.thumbnail
+          : localTrusted
+            ? local.thumbnail
+            : undefined;
         const title = samePage
           ? top.title || local.title
           : local.title || top.title;
@@ -504,7 +616,16 @@
             filename: samePage
               ? top.filename || local.filename
               : local.filename,
-            thumbnail: thumb || undefined
+            thumbnail: thumb || undefined,
+            thumbnailPageKey: thumb
+              ? top.thumbnailPageKey ||
+                local.thumbnailPageKey ||
+                sites.tiktokPreviewPageKey?.(url) ||
+                undefined
+              : undefined,
+            thumbnailSource: thumb
+              ? top.thumbnailSource || local.thumbnailSource
+              : undefined
           }
         ];
         rememberStableItems(curKey, result);
@@ -526,10 +647,11 @@
         escapeAttr,
         userError,
         pageKey,
-        ensureSiteItems
+        ensureSiteItems,
+        pastedTiktokPreviewUrl: pastedPreviewFromInput
       };
     }
 
-    return { createUtils };
+    return { createUtils, pastedTiktokPreviewUrl };
   }
 );

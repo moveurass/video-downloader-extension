@@ -7,7 +7,28 @@
   function makePopupDownloadRequests() {
     "use strict";
 
+    function sitesApi() {
+      if (typeof UVDSites !== "undefined") return UVDSites;
+      try {
+        return require("./site-detection.js");
+      } catch {
+        return null;
+      }
+    }
+
     function createController(deps) {
+      const sites = sitesApi();
+      const isTiktokVideoUrl =
+        deps.isTiktokVideoUrl || ((url) => !!sites?.isTiktokVideoUrl?.(url));
+      const preferDownloadTargetUrl =
+        deps.preferDownloadTargetUrl ||
+        ((target, tab) =>
+          sites?.preferDownloadTargetUrl?.(target, tab) || target || tab);
+      const tiktokPermalinkError =
+        deps.tiktokPermalinkError ||
+        (() =>
+          sites?.tiktokPermalinkError?.() ||
+          "TikTok 탐색·팔로잉·라이브·검색 페이지는 받을 수 없습니다. /@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요");
       const {
         $,
         sendMessage,
@@ -63,7 +84,15 @@
 
         const currentTabUrl = getCurrentTabUrl();
         const selectedQuality = getSelectedQuality();
-        const pageUrl = currentTabUrl || item.pageUrl || item.url;
+        const itemTarget = item.pageUrl || item.url || "";
+        const pageUrl =
+          item.site === "tiktok" ||
+          isTiktokUrl(itemTarget) ||
+          isTiktokUrl(currentTabUrl)
+            ? preferDownloadTargetUrl(itemTarget, currentTabUrl) ||
+              itemTarget ||
+              currentTabUrl
+            : currentTabUrl || itemTarget;
         if (!opts.skipDupCheck) {
           const ok = await confirmNotDuplicate(pageUrl);
           if (!ok) return;
@@ -124,6 +153,7 @@
               filename: saveName || title,
               pageUrl,
               quality: selectedQuality || "",
+              thumbnail: item.thumbnail || "",
               status: "running",
               percent: 3,
               message: "대기열에 추가됨…",
@@ -141,6 +171,7 @@
                 : "DOWNLOAD",
             url: useHelper || usePageFallback ? pageUrl : item.url,
             pageUrl,
+            thumbnail: item.thumbnail || "",
             filename: saveName,
             tabId: getCurrentTabId(),
             preferQuality: selectedQuality || "best",
@@ -162,6 +193,7 @@
                 filename: saveName || title,
                 pageUrl,
                 quality: selectedQuality || "",
+                thumbnail: item.thumbnail || "",
                 status: "running",
                 percent: 4,
                 message: "백그라운드에서 받는 중…",
@@ -359,6 +391,11 @@
           input?.focus();
           return;
         }
+        if (isTiktokUrl(link) && !isTiktokVideoUrl(link)) {
+          toast(tiktokPermalinkError(), "error");
+          input?.focus();
+          return;
+        }
 
         if (!skipDup) {
           const ok = await confirmNotDuplicate(link);
@@ -424,6 +461,8 @@
           });
 
           const tempId = `local_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const pastedThumb =
+            (sameAsCard && allItems[0]?.thumbnail) || opts.thumbnail || "";
           upsertUiJob(
             {
               id: tempId,
@@ -431,6 +470,7 @@
               filename: filename || displayLabel,
               pageUrl: pageUrlHint,
               quality: preferQ,
+              thumbnail: pastedThumb,
               status: "running",
               percent: 3,
               message: "대기열에 추가됨…",
@@ -450,6 +490,7 @@
               filename: filename || undefined,
               tabId: currentTabId,
               preferQuality: preferQ,
+              thumbnail: pastedThumb,
               title: realTitle && !UVD.isGenericSaveName(realTitle) ? realTitle : undefined
             });
           } else if (
@@ -494,6 +535,7 @@
                 title: displayLabel,
                 filename: filename || displayLabel,
                 pageUrl: link,
+                thumbnail: pastedThumb,
                 status: "running",
                 percent: 4,
                 message: "백그라운드에서 받는 중…",
@@ -550,6 +592,10 @@
 
       async function downloadThisPage() {
         const currentTabUrl = getCurrentTabUrl();
+        if (isTiktokUrl(currentTabUrl) && !isTiktokVideoUrl(currentTabUrl)) {
+          toast(tiktokPermalinkError(), "error");
+          return;
+        }
         if (!currentTabUrl || !isSitePage(currentTabUrl)) {
           toast("지원 사이트 페이지에서 열어 주세요", "error");
           return;
@@ -564,7 +610,9 @@
         fnameBaseFromLink,
         downloadByPastedLink,
         downloadThisPage,
-        looksLikeDirectMedia
+        looksLikeDirectMedia,
+        preferDownloadTargetUrl,
+        isTiktokVideoUrl
       };
     }
 

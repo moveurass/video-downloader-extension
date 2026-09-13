@@ -596,24 +596,127 @@ def is_tiktok_page(url: str) -> bool:
     return "tiktok.com" in h or h.endswith("tiktokv.com")
 
 
+TIKTOK_NEED_PERMALINK = (
+    "TikTok 탐색·팔로잉·라이브·검색 페이지는 받을 수 없습니다. "
+    "/@사용자/video/숫자 또는 공유 링크를 붙여 넣어 주세요"
+)
+TIKTOK_NON_VIDEO_SEGMENTS = {
+    "explore",
+    "foryou",
+    "following",
+    "live",
+    "search",
+    "discover",
+    "feedback",
+    "messages",
+    "activity",
+}
+
+
+def tiktok_need_permalink_message() -> str:
+    return TIKTOK_NEED_PERMALINK
+
+
+def _tiktok_path(url: str) -> str:
+    try:
+        return urlparse(url).path or "/"
+    except Exception:
+        return ""
+
+
+def is_tiktok_share_url(url: str) -> bool:
+    if not is_tiktok_page(url):
+        return False
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return False
+    path = _tiktok_path(url)
+    if host in {"vm.tiktok.com", "vt.tiktok.com"}:
+        return bool(re.search(r"/[A-Za-z0-9]+/?$", path)) and path not in {"", "/"}
+    return bool(re.search(r"/t/[A-Za-z0-9]+", path, re.I))
+
+
+def is_tiktok_canonical_video_url(url: str) -> bool:
+    if not is_tiktok_page(url) or is_tiktok_share_url(url):
+        return False
+    return bool(re.search(r"/@[\w.-]+/video/\d+|/(?:video)/\d+", _tiktok_path(url) or url, re.I))
+
+
+def is_tiktok_video_url(url: str) -> bool:
+    return is_tiktok_canonical_video_url(url) or is_tiktok_share_url(url)
+
+
+def is_tiktok_non_video_surface(url: str) -> bool:
+    if not is_tiktok_page(url) or is_tiktok_video_url(url):
+        return False
+    path = (_tiktok_path(url) or "/").rstrip("/") or "/"
+    if path == "/":
+        return True
+    first = path.strip("/").split("/", 1)[0].lower()
+    return first in TIKTOK_NON_VIDEO_SEGMENTS
+
+
+def tiktok_video_id(url: str) -> str:
+    match = re.search(r"/(?:@[^/?#]+/)?video/(\d+)", url or "", flags=re.I)
+    return match.group(1) if match else ""
+
+
 def clean_tiktok_url(url: str) -> str:
-    """Normalize share / short links to a stable form for APIs."""
+    """Normalize share / short / watch links to a stable form for APIs."""
     u = (url or "").strip()
     if not u:
         return u
-    # strip tracking query noise but keep path
     try:
         p = urlparse(u)
-        # keep only essential query if any (usually none for /@user/video/id)
-        q = parse_qs(p.query)
-        keep = {}
-        for k in ("_d", "is_from_webapp", "sender_device", "item_id"):
-            if k in q:
-                keep[k] = q[k][0]
-        u = urlunparse((p.scheme, p.netloc, p.path, "", urlencode(keep), ""))
+        path = p.path or "/"
+        video = re.search(r"(/@[\w.-]+/video/\d+)", path, flags=re.I)
+        share = re.search(r"(/t/[A-Za-z0-9]+)", path, flags=re.I)
+        bare = re.search(r"(/video/\d+)", path, flags=re.I)
+        host = (p.hostname or "").lower()
+        netloc = p.netloc
+        if host not in {"vm.tiktok.com", "vt.tiktok.com"} and host.endswith("tiktok.com"):
+            netloc = "www.tiktok.com"
+        if video:
+            path = video.group(1)
+        elif share:
+            path = share.group(1)
+        elif bare:
+            path = bare.group(1)
+        elif host in {"vm.tiktok.com", "vt.tiktok.com"} and not path.endswith("/"):
+            path = path + "/"
+        u = urlunparse((p.scheme or "https", netloc, path, "", "", ""))
     except Exception:
         pass
-    return u.rstrip("/")
+    return u.rstrip("/") if not is_tiktok_share_url(u) else u
+
+
+def expand_tiktok_share_url(url: str, timeout: int = 12) -> str:
+    """Follow vm/vt/t redirects to a /@user/video/id permalink when possible."""
+    cleaned = clean_tiktok_url(url)
+    if not cleaned or is_tiktok_canonical_video_url(cleaned) or not is_tiktok_share_url(cleaned):
+        return cleaned
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+    }
+    try:
+        req = Request(cleaned, headers=hdrs, method="GET")
+        with urlopen(req, timeout=timeout) as resp:
+            final = resp.geturl() or cleaned
+        final = clean_tiktok_url(final)
+        if is_tiktok_canonical_video_url(final):
+            return final
+    except Exception:
+        pass
+    return cleaned
+
+
+def reject_tiktok_non_video_target(*urls: str) -> str | None:
+    for value in urls:
+        if is_tiktok_page(value) and not is_tiktok_video_url(value):
+            return tiktok_need_permalink_message()
+    return None
 
 
 def walk_json_for_media(obj, out: list[str], depth: int = 0) -> None:
@@ -916,33 +1019,149 @@ def output_template_basename(payload: dict) -> str:
     return "%(title).100s.%(ext)s"
 
 
+def guess_image_mime(data: bytes, ctype: str = "") -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    cleaned = (ctype or "").split(";", 1)[0].strip().lower()
+    if cleaned.startswith("image/") and "octet-stream" not in cleaned:
+        return cleaned
+    return "image/jpeg"
+
+
+def image_bytes_to_data_url(data: bytes, ctype: str = "") -> str:
+    mime = guess_image_mime(data, ctype)
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def download_image_bytes(image_url: str, referer: str = "") -> tuple[bytes, str] | None:
+    """Fetch a cover/thumbnail with a TikTok-friendly Referer. Returns (bytes, content-type)."""
+    if not image_url or not image_url.startswith("http"):
+        return None
+    hdrs = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
+        "Referer": referer or "https://www.tiktok.com/",
+    }
+    try:
+        req = Request(image_url, headers=hdrs, method="GET")
+        with urlopen(req, timeout=20) as resp:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if ctype and not ctype.startswith("image/") and "octet-stream" not in ctype:
+                return None
+            data = resp.read(2_500_000)
+        if len(data) < 400:
+            return None
+        is_image = (
+            data[:3] == b"\xff\xd8\xff"
+            or data[:8] == b"\x89PNG\r\n\x1a\n"
+            or data[:4] == b"RIFF"
+            or data[:4] == b"GIF8"
+        )
+        if not is_image and not ctype.startswith("image/"):
+            return None
+        return data, ctype
+    except Exception:
+        return None
+
+
+def download_image_to_file(image_url: str, dest: Path, referer: str = "") -> bool:
+    """Save a cover/thumbnail image next to a TikTok video. Returns True on success."""
+    got = download_image_bytes(image_url, referer)
+    if not got:
+        return False
+    data, _ctype = got
+    try:
+        dest.write_bytes(data)
+        return dest.is_file() and dest.stat().st_size >= 400
+    except Exception:
+        try:
+            dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
+
+
+def tiktok_formats_target(url: str, page_url: str = "") -> tuple[str | None, str | None]:
+    """Prefer a video permalink over Explore/FYP when probing /formats."""
+    for candidate in (url, page_url):
+        cleaned = clean_tiktok_url(candidate or "")
+        if is_tiktok_video_url(cleaned):
+            return cleaned, None
+    for candidate in (url, page_url):
+        err = reject_tiktok_non_video_target(candidate or "")
+        if err:
+            return None, err
+    return None, None
+
+
+def tiktok_formats_preview(url: str, page_url: str = "") -> dict | None:
+    """Resolve a TikTok permalink for title/cover without yt-dlp."""
+    target, err = tiktok_formats_target(url, page_url)
+    if err or not target:
+        return None
+    resolved = resolve_tiktok_via_public_apis(target)
+    if not resolved:
+        return None
+    return {
+        "title": resolved.get("title") or "",
+        "thumbnail": resolved.get("cover") or "",
+        "duration": resolved.get("duration") or 0,
+        "id": resolved.get("id") or "",
+    }
+
+
 def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) -> bool:
     """
-    SnapTik-style path: resolve play URL via public API or client-provided mediaUrl,
-    then download bytes. Returns True if job completed successfully.
+    SnapTik-style path: resolve the pasted/page permalink first, then download
+    bytes. Client mediaUrl is only a same-page fallback — never explore/FYP CDN.
     """
-    page_url = (payload.get("pageUrl") or payload.get("url") or "").strip()
+    page_url = clean_tiktok_url(payload.get("pageUrl") or payload.get("url") or "")
+    if is_tiktok_share_url(page_url):
+        page_url = expand_tiktok_share_url(page_url)
     media_hint = (payload.get("mediaUrl") or "").strip()
     cookie_header = (payload.get("cookieHeader") or "").strip()
     title_hint = supplied_title_hint(payload)
+    write_thumb = payload.get("writeThumbnail")
+    if write_thumb is None:
+        write_thumb = True
+
+    if reject_tiktok_non_video_target(page_url):
+        return False
 
     play_url = ""
     title = title_hint
     method = ""
+    cover = ""
+    resolved = None
 
-    if media_hint and media_hint.startswith("http") and "tiktok.com/@" not in media_hint:
-        play_url = media_hint
-        method = "client-cdn"
-
-    if (not play_url or not title) and is_tiktok_page(page_url):
+    if is_tiktok_video_url(page_url):
         with jobs_lock:
             jobs[job_id]["message"] = "TikTok 링크 해석 중… (공개 API)"
             jobs[job_id]["percent"] = 8
         resolved = resolve_tiktok_via_public_apis(page_url)
         if resolved and resolved.get("play_url"):
-            play_url = play_url or resolved["play_url"]
+            play_url = resolved["play_url"]
             title = resolved.get("title") or title
+            cover = resolved.get("cover") or ""
             method = resolved.get("method") or "public-api"
+
+    # Leftover Explore/FYP CDN from the current tab must not win over a
+    # concrete /@user/video/id (or share) permalink. Only use it after the
+    # permalink resolver failed.
+    if (
+        not play_url
+        and media_hint.startswith("http")
+        and "tiktok.com/@" not in media_hint
+        and is_tiktok_video_url(page_url)
+    ):
+        play_url = media_hint
+        method = "client-cdn"
 
     if not play_url:
         return False
@@ -978,6 +1197,11 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
             except Exception:
                 pass
             return False
+        thumb_path = ""
+        if write_thumb and cover:
+            thumb_dest = dest.with_suffix(".jpg")
+            if download_image_to_file(cover, thumb_dest, page_url):
+                thumb_path = str(thumb_dest)
         with jobs_lock:
             jobs[job_id].update(
                 {
@@ -988,6 +1212,8 @@ def try_tiktok_direct_download(job_id: str, payload: dict, outtmpl_base: str) ->
                     "filename": dest.name,
                     "size": size,
                     "method": f"tiktok-{method}",
+                    "writeThumbnail": bool(thumb_path),
+                    "thumbnailPath": thumb_path,
                     "finishedAt": time.time(),
                 }
             )
@@ -1151,6 +1377,20 @@ def verify_media_integrity(path: str | Path) -> dict:
         "duration": 0.0,
         "reason": "재생 정보를 읽지 못했습니다 — 파일이 잘렸거나 손상된 것 같습니다",
     }
+
+
+def path_in_out_dir(path: str, out_root: Path | None = None) -> Path | None:
+    """Resolve a helper-owned file path, or None if it is outside OUT_DIR."""
+    root = (out_root or OUT_DIR).resolve()
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except Exception:
+        return None
+    if resolved != root and root not in resolved.parents:
+        return None
+    if not resolved.is_file():
+        return None
+    return resolved
 
 
 def reveal_in_file_manager(path: str, out_root: Path | None = None) -> bool:
@@ -1948,8 +2188,32 @@ def run_download(job_id: str, payload: dict) -> None:
     # ── TikTok first: SnapTik/TikWM-style resolve (no yt-dlp required) ──
     site_early = (payload.get("site") or "").lower()
     media_hint_early = (payload.get("mediaUrl") or "").strip()
+    is_tiktok_job = (
+        site_early == "tiktok"
+        or is_tiktok_page(target)
+        or is_tiktok_page(page_url)
+    )
+    if is_tiktok_job:
+        if is_tiktok_share_url(target):
+            target = expand_tiktok_share_url(target)
+            page_url = target
+            payload["url"] = target
+            payload["pageUrl"] = target
+        surface_err = reject_tiktok_non_video_target(target, page_url)
+        if surface_err:
+            with jobs_lock:
+                jobs[job_id].update(
+                    {
+                        "status": "error",
+                        "percent": 0,
+                        "message": surface_err,
+                        "error": "tiktok-need-permalink",
+                    }
+                )
+            return
     # A non-empty mediaUrl used to force the TikTok path. Instagram CDN
-    # hints must not inherit TikTok referers / cookie scoping.
+    # hints must not inherit TikTok referers / cookie scoping. Explore-tab
+    # leftovers also must not force TikTok when the pasted URL is elsewhere.
     if (
         site_early != "instagram"
         and not is_instagram_download(site_early, target, page_url, media_hint_early)
@@ -1957,7 +2221,6 @@ def run_download(job_id: str, payload: dict) -> None:
             site_early == "tiktok"
             or is_tiktok_page(target)
             or is_tiktok_page(page_url)
-            or media_hint_early
         )
     ):
         try:
@@ -3118,11 +3381,94 @@ class Handler(BaseHTTPRequestHandler):
                 )
             return
 
+        # Fetch a remote cover as a data URL (TikTok CDN blocks extension origin)
+        if self.path == "/thumb" or self.path.startswith("/thumb?"):
+            payload = read_json(self)
+            image_url = str(payload.get("url") or "").strip()
+            referer = str(payload.get("referer") or payload.get("pageUrl") or "").strip()
+            local_path = str(
+                payload.get("path") or payload.get("thumbnailPath") or ""
+            ).strip()
+            if image_url.startswith("data:image/"):
+                send_json(self, 200, {"ok": True, "dataUrl": image_url})
+                return
+            if local_path:
+                resolved = path_in_out_dir(local_path)
+                if resolved is None:
+                    send_json(self, 403, {"ok": False, "error": "path outside output"})
+                    return
+                try:
+                    data = resolved.read_bytes()[:2_500_000]
+                except Exception:
+                    send_json(self, 502, {"ok": False, "error": "thumbnail read failed"})
+                    return
+                if len(data) < 400:
+                    send_json(self, 502, {"ok": False, "error": "thumbnail too small"})
+                    return
+                send_json(
+                    self,
+                    200,
+                    {
+                        "ok": True,
+                        "dataUrl": image_bytes_to_data_url(data),
+                        "bytes": len(data),
+                        "source": "file",
+                    },
+                )
+                return
+            if not image_url.startswith(("http://", "https://")):
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            got = download_image_bytes(image_url, referer)
+            if not got:
+                send_json(self, 502, {"ok": False, "error": "thumbnail fetch failed"})
+                return
+            data, ctype = got
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "dataUrl": image_bytes_to_data_url(data, ctype),
+                    "bytes": len(data),
+                },
+            )
+            return
+
         # List available video heights / quality labels (no download)
         if self.path == "/formats" or self.path.startswith("/formats?"):
             payload = read_json(self)
+            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
+            page_url = (payload.get("pageUrl") or url or "").strip()
+            if not url:
+                send_json(self, 400, {"ok": False, "error": "url required"})
+                return
+            tt_target, tt_err = tiktok_formats_target(url, page_url)
+            if tt_err:
+                send_json(self, 400, {"ok": False, "error": tt_err})
+                return
+            tt_meta = tiktok_formats_preview(url, page_url) if tt_target else None
             bin_path = find_ytdlp()
             if not bin_path:
+                if tt_meta and (tt_meta.get("thumbnail") or tt_meta.get("title")):
+                    send_json(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "url": tt_target or url,
+                            "title": tt_meta.get("title") or "",
+                            "duration": tt_meta.get("duration") or 0,
+                            "estimatedSize": 0,
+                            "thumbnail": tt_meta.get("thumbnail") or "",
+                            "heights": [],
+                            "qualities": [{"id": "best", "label": "최고"}],
+                            "audioTracks": [],
+                            "subtitleTracks": [],
+                            "source": "tiktok-resolve",
+                        },
+                    )
+                    return
                 send_json(
                     self,
                     503,
@@ -3132,10 +3478,6 @@ class Handler(BaseHTTPRequestHandler):
                         "hint": "pip install -U yt-dlp",
                     },
                 )
-                return
-            url = (payload.get("url") or payload.get("pageUrl") or "").strip()
-            if not url:
-                send_json(self, 400, {"ok": False, "error": "url required"})
                 return
             site = (payload.get("site") or "").lower()
             is_youtube = is_youtube_download(site, url)
@@ -3257,6 +3599,26 @@ class Handler(BaseHTTPRequestHandler):
                     msg = verdict["message"]
                 if "IP address is blocked" in msg or "blocked from accessing" in msg:
                     msg = "TikTok 접근이 막혔습니다. 브라우저에서 재생 후 다시 열어 주세요"
+                if tt_meta and (tt_meta.get("thumbnail") or tt_meta.get("title")):
+                    send_json(
+                        self,
+                        200,
+                        {
+                            "ok": True,
+                            "url": tt_target or url,
+                            "title": tt_meta.get("title") or "",
+                            "duration": tt_meta.get("duration") or 0,
+                            "estimatedSize": 0,
+                            "thumbnail": tt_meta.get("thumbnail") or "",
+                            "heights": [],
+                            "qualities": [{"id": "best", "label": "최고"}],
+                            "audioTracks": [],
+                            "subtitleTracks": [],
+                            "source": "tiktok-resolve",
+                            "detail": f"포맷 조회 실패: {msg}",
+                        },
+                    )
+                    return
                 send_json(self, 500, {"ok": False, "error": f"포맷 조회 실패: {msg}"})
                 return
             finally:
@@ -3462,6 +3824,7 @@ class Handler(BaseHTTPRequestHandler):
                 primary.get("thumbnail")
                 or (primary.get("thumbnails") or [{}])[-1].get("url")
                 or info.get("thumbnail")
+                or (tt_meta.get("thumbnail") if tt_meta else "")
                 or ""
             )
             audio_tracks, subtitle_tracks = collect_track_choices(info)
@@ -3706,7 +4069,11 @@ class Handler(BaseHTTPRequestHandler):
             url = (payload.get("url") or payload.get("pageUrl") or "").strip()
             site = (payload.get("site") or "").lower()
             # TikTok can resolve via public APIs without yt-dlp
-            is_tt = site == "tiktok" or is_tiktok_page(url) or bool(payload.get("mediaUrl"))
+            is_tt = (
+                site == "tiktok"
+                or is_tiktok_page(url)
+                or is_tiktok_page(payload.get("pageUrl") or "")
+            )
             if not bin_path and not is_tt:
                 send_json(
                     self,

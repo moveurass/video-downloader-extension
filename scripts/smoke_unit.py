@@ -186,6 +186,74 @@ def main() -> int:
             "Should not publish",
         ),
     )
+    qa_tiktok = (
+        "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+        "?is_from_webapp=1&sender_device=pc"
+    )
+    check(
+        "Mac QA volleyballqueen86 permalink is the download target",
+        helper_server.clean_tiktok_url(qa_tiktok)
+        == "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+        and helper_server.tiktok_video_id(qa_tiktok) == "7674902153491664150"
+        and helper_server.is_tiktok_video_url(qa_tiktok)
+        and helper_server.reject_tiktok_non_video_target(qa_tiktok) is None
+        and helper_server.expand_tiktok_share_url(qa_tiktok)
+        == "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+        and helper_server.tiktok_formats_target(
+            qa_tiktok, "https://www.tiktok.com/explore"
+        )
+        == (
+            "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150",
+            None,
+        )
+        and helper_server.tiktok_formats_target(
+            "https://www.tiktok.com/explore", "https://www.tiktok.com/explore"
+        )
+        == (None, helper_server.tiktok_need_permalink_message()),
+    )
+    jpeg = b"\xff\xd8\xff" + b"\x00" * 400
+    check(
+        "helper cover bytes become a JPEG data URL",
+        helper_server.guess_image_mime(jpeg) == "image/jpeg"
+        and helper_server.image_bytes_to_data_url(jpeg).startswith(
+            "data:image/jpeg;base64,"
+        ),
+    )
+    outside = helper_server.path_in_out_dir("/etc/passwd")
+    check("helper /thumb refuses paths outside the output tree", outside is None)
+    check(
+        "TikTok permalink normalize and explore rejection",
+        helper_server.clean_tiktok_url(
+            "https://m.tiktok.com/@name/video/1234567890?is_from_webapp=1"
+        )
+        == "https://www.tiktok.com/@name/video/1234567890"
+        and helper_server.is_tiktok_video_url(
+            "https://www.tiktok.com/@name/video/1234567890"
+        )
+        and helper_server.is_tiktok_video_url("https://vm.tiktok.com/ZMabcd123/")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/explore")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/following")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/live")
+        and helper_server.is_tiktok_non_video_surface("https://www.tiktok.com/search?q=x")
+        and helper_server.reject_tiktok_non_video_target(
+            "https://www.tiktok.com/explore"
+        )
+        == helper_server.tiktok_need_permalink_message()
+        and "/@사용자/video/" in helper_server.tiktok_need_permalink_message()
+        and helper_server.expand_tiktok_share_url(
+            "https://www.tiktok.com/@name/video/1234567890"
+        )
+        == "https://www.tiktok.com/@name/video/1234567890"
+        and not helper_server.try_tiktok_direct_download(
+            "tt-explore",
+            {
+                "pageUrl": "https://www.tiktok.com/explore",
+                "mediaUrl": "https://v16-webapp.tiktokcdn.com/explore.mp4",
+                "title": "탐색",
+            },
+            "탐색",
+        ),
+    )
     check(
         "Instagram share links normalize to /reel/ or /p/",
         helper_server.normalize_instagram_target(

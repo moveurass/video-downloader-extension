@@ -439,17 +439,67 @@
           (async () => {
             try {
               const url = String(msg.url || "").trim();
-              if (!url) {
-                sendResponse({ ok: false, error: "url 없음" });
-                return;
-              }
+              const localPath = String(
+                msg.path || msg.thumbnailPath || ""
+              ).trim();
+              const referer = String(
+                msg.referer || msg.pageUrl || ""
+              ).trim();
+              const tryHelperThumb = async () => {
+                if (typeof deps.YtDlp?.fetchThumb !== "function") return null;
+                const helper = await deps.YtDlp.fetchThumb(url, referer, {
+                  path: localPath
+                });
+                if (
+                  helper?.ok &&
+                  String(helper.dataUrl || "").startsWith("data:image/")
+                ) {
+                  return helper.dataUrl;
+                }
+                return null;
+              };
               if (url.startsWith("data:image/")) {
                 sendResponse({ ok: true, dataUrl: url });
+                return;
+              }
+              if (localPath) {
+                const fromFile = await tryHelperThumb();
+                if (fromFile) {
+                  sendResponse({
+                    ok: true,
+                    dataUrl: fromFile,
+                    source: "helper-file"
+                  });
+                  return;
+                }
+              }
+              if (!url) {
+                sendResponse({ ok: false, error: "url 없음" });
                 return;
               }
               if (!/^https?:/i.test(url)) {
                 sendResponse({ ok: false, error: "bad url" });
                 return;
+              }
+              let thumbHost = "";
+              try {
+                thumbHost = new URL(url).hostname;
+              } catch {
+                thumbHost = "";
+              }
+              // TikTok CDN covers 403 from the extension origin and often
+              // from Explore page fetches. Helper /thumb (Referer) is the
+              // path that already writes the companion jpg.
+              if (sitesApi()?.isTikTokImageCdnHost?.(thumbHost)) {
+                const fromHelper = await tryHelperThumb();
+                if (fromHelper) {
+                  sendResponse({
+                    ok: true,
+                    dataUrl: fromHelper,
+                    source: "helper"
+                  });
+                  return;
+                }
               }
               const thumbTabId = tabId;
               if (thumbTabId != null && thumbTabId >= 0) {
@@ -494,54 +544,87 @@
               } finally {
                 clearTimeout(timer);
               }
-              if (!res.ok) {
-                sendResponse({ ok: false, error: `HTTP ${res.status}` });
+              if (res?.ok) {
+                const contentType = (
+                  res.headers.get("content-type") || ""
+                ).toLowerCase();
+                if (
+                  !contentType ||
+                  contentType.startsWith("image/") ||
+                  contentType.includes("octet-stream")
+                ) {
+                  const buffer = await res.arrayBuffer();
+                  if (
+                    buffer &&
+                    buffer.byteLength >= 80 &&
+                    buffer.byteLength <= 2_500_000 &&
+                    !(buffer.byteLength < 200 && contentType.includes("gif"))
+                  ) {
+                    const bytes = new Uint8Array(buffer);
+                    let binary = "";
+                    const chunk = 0x8000;
+                    for (let i = 0; i < bytes.length; i += chunk) {
+                      binary += String.fromCharCode.apply(
+                        null,
+                        bytes.subarray(i, i + chunk)
+                      );
+                    }
+                    const mime =
+                      contentType && contentType.startsWith("image/")
+                        ? contentType.split(";")[0]
+                        : "image/jpeg";
+                    sendResponse({
+                      ok: true,
+                      dataUrl: `data:${mime};base64,${deps.btoa(binary)}`,
+                      bytes: buffer.byteLength,
+                      source: "sw"
+                    });
+                    return;
+                  }
+                }
+              }
+              const fromHelper = await tryHelperThumb();
+              if (fromHelper) {
+                sendResponse({
+                  ok: true,
+                  dataUrl: fromHelper,
+                  source: "helper"
+                });
                 return;
               }
-              const contentType = (
-                res.headers.get("content-type") || ""
-              ).toLowerCase();
-              if (
-                contentType &&
-                !contentType.startsWith("image/") &&
-                !contentType.includes("octet-stream")
-              ) {
-                sendResponse({ ok: false, error: "not image" });
+              if (typeof deps.YtDlp?.fetchThumb === "function") {
+                sendResponse({
+                  ok: false,
+                  error: res ? `HTTP ${res.status}` : "fetch failed"
+                });
                 return;
               }
-              const buffer = await res.arrayBuffer();
-              if (
-                !buffer ||
-                buffer.byteLength < 80 ||
-                buffer.byteLength > 2_500_000
-              ) {
-                sendResponse({ ok: false, error: "size" });
-                return;
-              }
-              const bytes = new Uint8Array(buffer);
-              if (buffer.byteLength < 200 && contentType.includes("gif")) {
-                sendResponse({ ok: false, error: "tiny" });
-                return;
-              }
-              let binary = "";
-              const chunk = 0x8000;
-              for (let i = 0; i < bytes.length; i += chunk) {
-                binary += String.fromCharCode.apply(
-                  null,
-                  bytes.subarray(i, i + chunk)
-                );
-              }
-              const mime =
-                contentType && contentType.startsWith("image/")
-                  ? contentType.split(";")[0]
-                  : "image/jpeg";
-              const dataUrl = `data:${mime};base64,${deps.btoa(binary)}`;
               sendResponse({
-                ok: true,
-                dataUrl,
-                bytes: buffer.byteLength
+                ok: false,
+                error: res ? `HTTP ${res.status}` : "fetch failed"
               });
             } catch (error) {
+              try {
+                const referer = String(
+                  msg.referer || msg.pageUrl || ""
+                ).trim();
+                if (typeof deps.YtDlp?.fetchThumb === "function") {
+                  const helper = await deps.YtDlp.fetchThumb(url, referer);
+                  if (
+                    helper?.ok &&
+                    String(helper.dataUrl || "").startsWith("data:image/")
+                  ) {
+                    sendResponse({
+                      ok: true,
+                      dataUrl: helper.dataUrl,
+                      source: "helper"
+                    });
+                    return;
+                  }
+                }
+              } catch {
+                /* fall through */
+              }
               sendResponse({
                 ok: false,
                 error: String(error?.message || error || "fetch failed")
