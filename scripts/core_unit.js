@@ -696,6 +696,63 @@ assert.equal(
   "ig:reel:DABC123xyz"
 );
 assert.equal(
+  Sites.instagramIdentityId("ig:reels:DABC123xyz"),
+  "DABC123xyz",
+  "reel vs reels keys share one shortcode"
+);
+assert.equal(
+  Sites.sameInstagramIdentity(
+    "https://www.instagram.com/reel/DABC123xyz/",
+    "https://www.instagram.com/reels/DABC123xyz/"
+  ),
+  true,
+  "/reel and /reels of the same shortcode are one identity"
+);
+assert.equal(
+  Sites.sameInstagramIdentity(
+    "ig:reel:DABC123xyz",
+    "ig:reel:NEXTREEL99"
+  ),
+  false,
+  "different shortcodes are different identities"
+);
+assert.equal(
+  Sites.sameInstagramIdentity("ig:/reels", "ig:/reels"),
+  true,
+  "Instagram Reels feed keys match even without a shortcode"
+);
+assert.equal(
+  Sites.sameInstagramIdentity("ig:/reels", "ig:reel:DABC123xyz"),
+  false,
+  "the Reels feed key is not the same identity as a shortcode"
+);
+assert.equal(
+  Sites.instagramThumbBelongsToPage(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://www.instagram.com/reel/DABC123xyz/",
+    "ig:reel:DABC123xyz"
+  ),
+  true,
+  "stamped data-URL cover belongs to its reel"
+);
+assert.equal(
+  Sites.instagramThumbBelongsToPage(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://www.instagram.com/reel/NEXTREEL99/",
+    "ig:reel:DABC123xyz"
+  ),
+  false,
+  "reel A's data-URL cover does not belong to reel B"
+);
+assert.equal(
+  Sites.instagramThumbBelongsToPage(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://www.instagram.com/reel/DABC123xyz/"
+  ),
+  false,
+  "unscoped Instagram data-URL cover does not belong to a reel"
+);
+assert.equal(
   Sites.preferInstagramPreviewThumbnail(
     "data:image/jpeg;base64,SUdDT1ZFUg==",
     "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"

@@ -440,13 +440,28 @@
 
   function currentPageMeta() {
     const videoId = youtubeVideoId();
+    const igPermalink = isInstagramHost() ? extractInstagramPermalink() : "";
+    const pageUrl =
+      (isInstagramHost() &&
+        typeof UVDSites !== "undefined" &&
+        UVDSites.isInstagramPostUrl?.(location.href) &&
+        location.href) ||
+      igPermalink ||
+      location.href;
+    const igKey =
+      isInstagramHost() && typeof UVDSites !== "undefined"
+        ? UVDSites.instagramPreviewPageKey?.(pageUrl) || ""
+        : "";
     return {
       title: pageTitle(),
       thumbnail: pageThumbnail(),
       host: location.hostname,
       lastUrl: location.href,
-      pageUrl: location.href,
-      videoId: videoId || undefined,
+      pageUrl,
+      videoId:
+        videoId ||
+        (igKey ? UVDSites.instagramPostId?.(pageUrl) || undefined : undefined),
+      thumbnailPageKey: igKey || undefined,
       identityConfirmed: videoId
         ? youtubeIdentityConfirmed(videoId)
         : true
@@ -1301,9 +1316,11 @@
         found.push(u.split("?")[0]);
       }
     };
+    // Address bar updates on Reels swipe before og:url / canonical catch up.
+    consider(location.href);
+    if (found[0]) return found[0];
     consider(document.querySelector('link[rel="canonical"]')?.href);
     consider(document.querySelector('meta[property="og:url"]')?.content);
-    consider(location.href);
     document
       .querySelectorAll('a[href*="/reel/"], a[href*="/reels/"], a[href*="/p/"]')
       .forEach((a) => consider(a.href));
@@ -1328,6 +1345,13 @@
   function currentNavigationIdentity() {
     const videoId = youtubeVideoId();
     if (videoId) return `yt:${videoId}`;
+    if (isInstagramHost() && typeof UVDSites !== "undefined") {
+      const hrefKey = UVDSites.instagramPreviewPageKey?.(location.href) || "";
+      if (hrefKey) return hrefKey;
+      const permalinkKey =
+        UVDSites.instagramPreviewPageKey?.(extractInstagramPermalink()) || "";
+      if (permalinkKey) return permalinkKey;
+    }
     return `${location.origin}${location.pathname}${location.search}`;
   }
 
@@ -2066,10 +2090,25 @@
     return;
   }
 
-  // Instagram: light scan only (og:video / <video>) — no aggressive hooks
+  // Instagram: light scan only (og:video / <video>) — no aggressive hooks.
+  // Reels swipe is pushState; re-scan when the shortcode identity changes.
   if (isInstagramHost()) {
     scanPage();
     setTimeout(scanPage, 1500);
+    const notifySpa = () =>
+      setTimeout(() => refreshAfterSpaNavigation(false), 0);
+    for (const method of ["pushState", "replaceState"]) {
+      const orig = history[method];
+      if (typeof orig !== "function") continue;
+      history[method] = function (...args) {
+        const ret = orig.apply(this, args);
+        notifySpa();
+        return ret;
+      };
+    }
+    window.addEventListener("popstate", () => {
+      setTimeout(() => refreshAfterSpaNavigation(true), 0);
+    });
     return;
   }
 

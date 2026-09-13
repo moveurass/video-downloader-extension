@@ -408,10 +408,12 @@
         }
         const previousKey = pageKey(previous.pageUrl || previous.url || "");
         const incomingKey = pageKey(incoming.pageUrl || incoming.url || "");
+        const sitesForKeys = deps.UVDSites || {};
         const samePage = !!(
           previousKey &&
           incomingKey &&
-          previousKey === incomingKey
+          (previousKey === incomingKey ||
+            sitesForKeys.sameInstagramIdentity?.(previousKey, incomingKey))
         );
         const sameVideo =
           samePage &&
@@ -428,17 +430,36 @@
           previous.url ||
           "";
         const sites = deps.UVDSites || {};
+        const instagramPage = !!(
+          sites.isInstagramPostUrl?.(pageHint) ||
+          sites.isInstagramHostUrl?.(pageHint)
+        );
         const incomingTrusted =
-          !sites.isTiktokUrl?.(pageHint) ||
-          sites.tiktokThumbBelongsToPage?.(
-            incoming.thumbnail,
-            pageHint,
-            incoming.thumbnailPageKey
-          );
+          (!sites.isTiktokUrl?.(pageHint) ||
+            sites.tiktokThumbBelongsToPage?.(
+              incoming.thumbnail,
+              pageHint,
+              incoming.thumbnailPageKey
+            )) &&
+          (!instagramPage ||
+            !incoming.thumbnail ||
+            sites.instagramThumbBelongsToPage?.(
+              incoming.thumbnail,
+              pageHint,
+              incoming.thumbnailPageKey
+            ) ||
+            (/^https?:/i.test(String(incoming.thumbnail || "")) &&
+              !incoming.thumbnailPageKey));
         const previousTrusted =
           sameVideo &&
           (!sites.isTiktokUrl?.(pageHint) ||
             sites.tiktokThumbBelongsToPage?.(
+              previous.thumbnail,
+              pageHint,
+              previous.thumbnailPageKey
+            )) &&
+          (!instagramPage ||
+            sites.instagramThumbBelongsToPage?.(
               previous.thumbnail,
               pageHint,
               previous.thumbnailPageKey
@@ -453,12 +474,10 @@
                     incoming.thumbnailSource === "formats" && incomingTrusted
                 }
               ) || undefined
-            : (sites.isInstagramPostUrl?.(pageHint) ||
-                sites.isInstagramHostUrl?.(pageHint)) &&
-              sites.preferInstagramPreviewThumbnail
+            : instagramPage && sites.preferInstagramPreviewThumbnail
             ? sites.preferInstagramPreviewThumbnail(
-                sameVideo ? previous.thumbnail : "",
-                incoming.thumbnail
+                previousTrusted ? previous.thumbnail : "",
+                incomingTrusted ? incoming.thumbnail : ""
               ) || undefined
             : incoming.thumbnail ||
               (sameVideo ? previous.thumbnail : undefined);
@@ -480,7 +499,9 @@
           thumbnailPageKey: mergedThumb
             ? incoming.thumbnailPageKey ||
               previous.thumbnailPageKey ||
-              (sites.tiktokPreviewPageKey?.(pageHint) || undefined)
+              sites.tiktokPreviewPageKey?.(pageHint) ||
+              sites.instagramPreviewPageKey?.(pageHint) ||
+              undefined
             : undefined,
           thumbnailSource: mergedThumb
             ? incoming.thumbnailSource || previous.thumbnailSource
@@ -571,10 +592,22 @@
 
         let top = list[0];
         const topKey = pageKey(top.pageUrl || top.url || "");
-        const tiktokPage = !!(deps.UVDSites || {}).isTiktokUrl?.(url);
+        const sitesForPage = deps.UVDSites || {};
+        const tiktokPage = !!sitesForPage.isTiktokUrl?.(url);
+        const instagramPageHint = !!(
+          sitesForPage.isInstagramPostUrl?.(url) ||
+          sitesForPage.isInstagramHostUrl?.(url)
+        );
         const samePage = tiktokPage
           ? !!(topKey && curKey && topKey === curKey)
-          : !topKey || !curKey || topKey === curKey;
+          : instagramPageHint
+            ? !!(
+                topKey &&
+                curKey &&
+                (topKey === curKey ||
+                  sitesForPage.sameInstagramIdentity?.(topKey, curKey))
+              )
+            : !topKey || !curKey || topKey === curKey;
         if (samePage && cached[0]) {
           top = mergeStableItem(cached[0], top);
         }
@@ -612,6 +645,24 @@
         const instagramPage = !!(
           sites.isInstagramPostUrl?.(url) || sites.isInstagramHostUrl?.(url)
         );
+        const localIgTrusted =
+          !instagramPage ||
+          sites.instagramThumbBelongsToPage?.(
+            local.thumbnail,
+            url,
+            local.thumbnailPageKey
+          ) ||
+          (/^https?:/i.test(String(local.thumbnail || "")) &&
+            !local.thumbnailPageKey);
+        const topIgTrusted =
+          !instagramPage ||
+          sites.instagramThumbBelongsToPage?.(
+            top.thumbnail,
+            url,
+            top.thumbnailPageKey
+          ) ||
+          (/^https?:/i.test(String(top.thumbnail || "")) &&
+            !top.thumbnailPageKey);
         const thumb = samePage
           ? tiktokPage && sites.preferTiktokPreviewThumbnail
             ? sites.preferTiktokPreviewThumbnail(
@@ -624,8 +675,8 @@
               ) || undefined
             : instagramPage && sites.preferInstagramPreviewThumbnail
               ? sites.preferInstagramPreviewThumbnail(
-                  localTrusted ? local.thumbnail : "",
-                  topTrusted ? top.thumbnail : ""
+                  localTrusted && localIgTrusted ? local.thumbnail : "",
+                  topTrusted && topIgTrusted ? top.thumbnail : ""
                 ) || undefined
               : top.thumbnail || local.thumbnail
           : localTrusted
@@ -671,6 +722,7 @@
               ? top.thumbnailPageKey ||
                 local.thumbnailPageKey ||
                 sites.tiktokPreviewPageKey?.(url) ||
+                sites.instagramPreviewPageKey?.(url) ||
                 undefined
               : undefined,
             thumbnailSource: thumb

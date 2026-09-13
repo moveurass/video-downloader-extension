@@ -117,8 +117,67 @@
         return /^ig:/i.test(pageKeyOf(url));
       }
 
+      function instagramIdentityId(value) {
+        if (typeof deps.instagramIdentityId === "function") {
+          const id = deps.instagramIdentityId(value);
+          if (id) return id;
+        }
+        const raw = String(value || "").trim();
+        if (!raw) return "";
+        const fromUrl = raw.match(
+          /\/(?:share\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i
+        );
+        if (fromUrl) return fromUrl[1];
+        const keyed = raw.match(/^ig:(?:p|reel|reels|tv):([^/?#]+)$/i);
+        return keyed ? keyed[1] : "";
+      }
+
+      function instagramIdentitiesEqual(left, right) {
+        if (typeof deps.sameInstagramIdentity === "function") {
+          return !!deps.sameInstagramIdentity(left, right);
+        }
+        const aRaw = String(left || "").trim();
+        const bRaw = String(right || "").trim();
+        if (!aRaw || !bRaw) return false;
+        if (aRaw === bRaw) return true;
+        const a = instagramIdentityId(aRaw);
+        const b = instagramIdentityId(bRaw);
+        return !!(a && b && a === b);
+      }
+
+      function instagramItemKey(item, pageUrl) {
+        return pageKeyOf(
+          item?.pageUrl ||
+            pageUrl ||
+            item?.url ||
+            (typeof getCurrentTabUrl === "function" ? getCurrentTabUrl() : "") ||
+            ""
+        );
+      }
+
+      function dropForeignInstagramThumb(item, pageUrl) {
+        if (!item || !isInstagramItem(item, pageUrl)) return item;
+        const expected = instagramItemKey(item, pageUrl);
+        const bound = String(item.thumbnailPageKey || "");
+        const thumb = String(item.thumbnail || "");
+        if (!thumb) return item;
+        const belongs =
+          !!expected &&
+          !!bound &&
+          instagramIdentitiesEqual(bound, expected);
+        if (belongs) return item;
+        if (thumb.startsWith("data:image/") || bound) {
+          item.thumbnail = undefined;
+          item.thumbnailPageKey = undefined;
+          item.thumbnailSource = undefined;
+        }
+        return item;
+      }
+
       // Instagram EXTRACT swaps permalink → play-CDN. That must not count as
       // a new card: a full render() wipes a just-hydrated data-URL cover.
+      // A new shortcode / reel / post is a different card even if the play
+      // CDN host looks similar.
       function identitiesMatch(cardId, nextId, item, currentTabUrl) {
         if (!cardId || cardId === nextId) return true;
         const key = pageKeyOf(item?.pageUrl || currentTabUrl || "");
@@ -127,11 +186,12 @@
         }
         const cardParts = String(cardId).split("\n");
         const nextParts = String(nextId).split("\n");
-        return (
-          cardParts[0] === key &&
-          nextParts[0] === key &&
-          cardParts[1] === nextParts[1]
-        );
+        const cardKey = cardParts[0];
+        const nextKey = nextParts[0];
+        const sameIg =
+          instagramIdentitiesEqual(cardKey, key) &&
+          instagramIdentitiesEqual(nextKey, key);
+        return sameIg && cardParts[1] === nextParts[1];
       }
 
       function replaceThumbWithFallback(img) {
@@ -187,7 +247,14 @@
         const cardKey = String(target.dataset?.mediaIdentity || "").split(
           "\n"
         )[0];
-        if (liveKey && cardKey && liveKey !== cardKey) return item;
+        if (
+          liveKey &&
+          cardKey &&
+          liveKey !== cardKey &&
+          !instagramIdentitiesEqual(liveKey, cardKey)
+        ) {
+          return item;
+        }
         const src = liveDataThumbSrc(target);
         if (!src) return item;
         item.thumbnail = src;
@@ -197,13 +264,28 @@
 
       function persistHydratedThumb(item, dataUrl, pageKey) {
         if (!item || !dataUrl) return;
+        const itemKey = instagramItemKey(item);
+        if (
+          isInstagramItem(item) &&
+          pageKey &&
+          itemKey &&
+          !instagramIdentitiesEqual(pageKey, itemKey)
+        ) {
+          return;
+        }
         item.thumbnail = dataUrl;
         if (pageKey) item.thumbnailPageKey = pageKey;
         const live =
           typeof getAllItems === "function" ? getAllItems()[0] : null;
         if (!live || live === item) return;
         const liveKey = pageKeyOf(live.pageUrl || live.url || "");
-        if (pageKey && liveKey && pageKey !== liveKey) return;
+        if (
+          pageKey &&
+          liveKey &&
+          (pageKey !== liveKey && !instagramIdentitiesEqual(pageKey, liveKey))
+        ) {
+          return;
+        }
         live.thumbnail = dataUrl;
         if (pageKey) live.thumbnailPageKey = pageKey;
       }
@@ -299,6 +381,7 @@
       function scheduleThumbHydration(items) {
         if (typeof deps.fetchThumbDataUrl !== "function") return;
         const item = items?.[0];
+        dropForeignInstagramThumb(item);
         adoptLiveHydratedThumb(item);
         const url = String(item?.thumbnail || "");
         if (url.startsWith("data:image/")) {
@@ -306,12 +389,19 @@
           return;
         }
         if (isInstagramItem(item) && liveDataThumbSrc()) {
-          persistHydratedThumb(
-            item,
-            liveDataThumbSrc(),
-            pageKeyOf(item?.pageUrl || item?.url || "")
-          );
-          return;
+          const liveSrc = liveDataThumbSrc();
+          const itemKey = instagramItemKey(item);
+          const cardKey = String(liveCard()?.dataset?.mediaIdentity || "").split(
+            "\n"
+          )[0];
+          if (
+            itemKey &&
+            cardKey &&
+            instagramIdentitiesEqual(itemKey, cardKey)
+          ) {
+            persistHydratedThumb(item, liveSrc, itemKey);
+            return;
+          }
         }
         if (!needsRemoteThumbHydration(url)) return;
         const generation = ++hydrateGeneration;
@@ -408,7 +498,7 @@
           return;
         }
 
-        const item = adoptLiveHydratedThumb(items[0]);
+        const item = adoptLiveHydratedThumb(dropForeignInstagramThumb(items[0]));
         const card = document.createElement("article");
         card.className = "card";
         if (card.dataset) {
@@ -592,7 +682,6 @@
         const item = allItems[0];
         const card = listEl.querySelector?.(".card");
         if (!item || !card?.dataset) return false;
-        adoptLiveHydratedThumb(item, card);
         const identity = mediaIdentity(item, currentTabUrl);
         if (
           card.dataset.mediaIdentity &&
@@ -603,8 +692,10 @@
             currentTabUrl
           )
         ) {
+          dropForeignInstagramThumb(item, currentTabUrl);
           return false;
         }
+        adoptLiveHydratedThumb(item, card);
         card.dataset.mediaIdentity = identity;
 
         const name = displayName(item);
@@ -648,9 +739,14 @@
         const thumb = card.querySelector(".thumb");
         const image = card.querySelector(".thumb-img");
         const currentSrc = image?.getAttribute?.("src") || "";
+        const itemKey = instagramItemKey(item, currentTabUrl);
+        const cardKey = String(card.dataset.mediaIdentity || "").split("\n")[0];
         const keepInstagramData =
           isInstagramItem(item, currentTabUrl) &&
-          currentSrc.startsWith("data:image/");
+          currentSrc.startsWith("data:image/") &&
+          instagramIdentitiesEqual(itemKey, cardKey) &&
+          (!item.thumbnailPageKey ||
+            instagramIdentitiesEqual(item.thumbnailPageKey, itemKey));
         if (keepInstagramData) {
           persistHydratedThumb(
             item,

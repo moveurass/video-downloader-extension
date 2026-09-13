@@ -197,6 +197,32 @@ async function main() {
     "ig:reel:Clip_One"
   );
   equal(
+    store.thumbnailMatchesPageKey(
+      "data:image/jpeg;base64,SUdDT1ZFUg==",
+      "ig:reel:NEXTREEL99"
+    ),
+    false,
+    "unscoped Instagram data-URL cover does not match another shortcode"
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "data:image/jpeg;base64,SUdDT1ZFUg==",
+      "ig:reel:DABC123xyz",
+      "ig:reel:DABC123xyz"
+    ),
+    true,
+    "stamped Instagram data-URL cover matches its shortcode"
+  );
+  equal(
+    store.thumbnailMatchesPageKey(
+      "data:image/jpeg;base64,SUdDT1ZFUg==",
+      "ig:reel:NEXTREEL99",
+      "ig:reel:DABC123xyz"
+    ),
+    false,
+    "reel A stamp does not match reel B pageKey"
+  );
+  equal(
     store.pageIdentityKey("https://missav.example/dm14/v/snos-309"),
     "missav.example:code:SNOS-309"
   );
@@ -277,6 +303,36 @@ async function main() {
     ttItems[0]?.filename,
     "스파이크 연습 #volleyball #queen.mp4",
     "caption is the download filename"
+  );
+
+  tabs.set(52, {
+    id: 52,
+    url: "https://www.instagram.com/reel/DABC123xyz/",
+    title: "Reel A"
+  });
+  store.setTabMeta(52, {
+    lastUrl: "https://www.instagram.com/reel/DABC123xyz/",
+    pageKey: "ig:reel:DABC123xyz",
+    title: "Reel A",
+    thumbnail: "data:image/jpeg;base64,SUdDT1ZFUg==",
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  });
+  equal(
+    store.getTabMeta(52).thumbnail,
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "same Instagram reel keeps its hydrated cover"
+  );
+  store.setTabMeta(52, {
+    lastUrl: "https://www.instagram.com/reel/NEXTREEL99/",
+    pageKey: "ig:reel:NEXTREEL99",
+    title: "Reel B",
+    thumbnail: "data:image/jpeg;base64,SUdDT1ZFUg==",
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  });
+  equal(
+    store.getTabMeta(52).thumbnail,
+    undefined,
+    "Instagram shortcode change wipes the previous reel's cover"
   );
 
   const provisionalYoutubeUrl =
