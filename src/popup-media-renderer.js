@@ -81,6 +81,39 @@
         }\n${item?.url || ""}`;
       }
 
+      function isInstagramItem(item, pageUrl) {
+        const url =
+          pageUrl ||
+          item?.pageUrl ||
+          item?.url ||
+          (typeof getCurrentTabUrl === "function" ? getCurrentTabUrl() : "") ||
+          "";
+        if (typeof isInstagramPostUrl === "function" && isInstagramPostUrl(url)) {
+          return true;
+        }
+        if (typeof isInstagramHost === "function" && isInstagramHost(url)) {
+          return true;
+        }
+        return /^ig:/i.test(pageKeyOf(url));
+      }
+
+      // Instagram EXTRACT swaps permalink → play-CDN. That must not count as
+      // a new card: a full render() wipes a just-hydrated data-URL cover.
+      function identitiesMatch(cardId, nextId, item, currentTabUrl) {
+        if (!cardId || cardId === nextId) return true;
+        const key = pageKeyOf(item?.pageUrl || currentTabUrl || "");
+        if (!/^ig:/i.test(key) && !isInstagramItem(item, currentTabUrl)) {
+          return false;
+        }
+        const cardParts = String(cardId).split("\n");
+        const nextParts = String(nextId).split("\n");
+        return (
+          cardParts[0] === key &&
+          nextParts[0] === key &&
+          cardParts[1] === nextParts[1]
+        );
+      }
+
       function replaceThumbWithFallback(img) {
         if (!img?.replaceWith || !document?.createElement) return;
         img.replaceWith(
@@ -111,6 +144,48 @@
           thumb.innerHTML = thumbHtml({ thumbnail: dataUrl });
           bindThumbFallback(target);
         }
+      }
+
+      function liveDataThumbSrc(card) {
+        const target = card || liveCard();
+        const src =
+          target?.querySelector?.(".thumb-img")?.getAttribute?.("src") || "";
+        return String(src).startsWith("data:image/") ? src : "";
+      }
+
+      function adoptLiveHydratedThumb(item, card) {
+        if (!item || !isInstagramItem(item)) return item;
+        const incoming = String(item.thumbnail || "");
+        if (incoming.startsWith("data:image/")) return item;
+        const target = card || liveCard();
+        if (!target) return item;
+        const liveKey = pageKeyOf(
+          item.pageUrl ||
+            item.url ||
+            (typeof getCurrentTabUrl === "function" ? getCurrentTabUrl() : "")
+        );
+        const cardKey = String(target.dataset?.mediaIdentity || "").split(
+          "\n"
+        )[0];
+        if (liveKey && cardKey && liveKey !== cardKey) return item;
+        const src = liveDataThumbSrc(target);
+        if (!src) return item;
+        item.thumbnail = src;
+        if (liveKey) item.thumbnailPageKey = liveKey;
+        return item;
+      }
+
+      function persistHydratedThumb(item, dataUrl, pageKey) {
+        if (!item || !dataUrl) return;
+        item.thumbnail = dataUrl;
+        if (pageKey) item.thumbnailPageKey = pageKey;
+        const live =
+          typeof getAllItems === "function" ? getAllItems()[0] : null;
+        if (!live || live === item) return;
+        const liveKey = pageKeyOf(live.pageUrl || live.url || "");
+        if (pageKey && liveKey && pageKey !== liveKey) return;
+        live.thumbnail = dataUrl;
+        if (pageKey) live.thumbnailPageKey = pageKey;
       }
 
       function bindThumbFallback(card, item) {
@@ -192,8 +267,7 @@
                 videoId: pageKey
               });
               if (!dataUrl || !thumbStillCurrent(item, gen)) return;
-              item.thumbnail = dataUrl;
-              if (pageKey) item.thumbnailPageKey = pageKey;
+              persistHydratedThumb(item, dataUrl, pageKey);
               applyThumbSrc(liveCard(), dataUrl);
             } catch {
               /* pending img stays empty until a later hydrate */
@@ -204,6 +278,21 @@
 
       function scheduleThumbHydration(items) {
         if (typeof deps.fetchThumbDataUrl !== "function") return;
+        const item = items?.[0];
+        adoptLiveHydratedThumb(item);
+        const url = String(item?.thumbnail || "");
+        if (url.startsWith("data:image/")) {
+          applyThumbSrc(liveCard(), url);
+          return;
+        }
+        if (isInstagramItem(item) && liveDataThumbSrc()) {
+          persistHydratedThumb(
+            item,
+            liveDataThumbSrc(),
+            pageKeyOf(item?.pageUrl || item?.url || "")
+          );
+          return;
+        }
         const generation = ++hydrateGeneration;
         Promise.resolve()
           .then(() => hydrateRemoteThumbnails(items, generation))
@@ -298,7 +387,7 @@
           return;
         }
 
-        const item = items[0];
+        const item = adoptLiveHydratedThumb(items[0]);
         const card = document.createElement("article");
         card.className = "card";
         if (card.dataset) {
@@ -482,10 +571,16 @@
         const item = allItems[0];
         const card = listEl.querySelector?.(".card");
         if (!item || !card?.dataset) return false;
+        adoptLiveHydratedThumb(item, card);
         const identity = mediaIdentity(item, currentTabUrl);
         if (
           card.dataset.mediaIdentity &&
-          card.dataset.mediaIdentity !== identity
+          !identitiesMatch(
+            card.dataset.mediaIdentity,
+            identity,
+            item,
+            currentTabUrl
+          )
         ) {
           return false;
         }
@@ -531,11 +626,23 @@
 
         const thumb = card.querySelector(".thumb");
         const image = card.querySelector(".thumb-img");
-        if (item.thumbnail) {
+        const currentSrc = image?.getAttribute?.("src") || "";
+        const keepInstagramData =
+          isInstagramItem(item, currentTabUrl) &&
+          currentSrc.startsWith("data:image/");
+        if (keepInstagramData) {
+          persistHydratedThumb(
+            item,
+            currentSrc,
+            pageKeyOf(item.pageUrl || item.url || currentTabUrl)
+          );
+          if (typeof image.removeAttribute === "function") {
+            image.removeAttribute("data-thumb-url");
+          }
+        } else if (item.thumbnail) {
           const thumbUrl = String(item.thumbnail);
           const isDataThumb = thumbUrl.startsWith("data:image/");
           if (image) {
-            const currentSrc = image.getAttribute("src") || "";
             if (isDataThumb) {
               if (currentSrc !== thumbUrl) {
                 image.setAttribute("src", thumbUrl);

@@ -627,6 +627,21 @@
     return cdnHit || list[0];
   }
 
+  function preferInstagramPreviewThumbnail(current, incoming) {
+    const cur = String(current || "").trim();
+    const next = String(incoming || "").trim();
+    if (isInstagramAvatarThumbUrl(next)) {
+      return isInstagramAvatarThumbUrl(cur) ? "" : cur;
+    }
+    if (cur.startsWith("data:image/") && !isInstagramAvatarThumbUrl(cur)) {
+      if (!next || /^https?:/i.test(next) || isInstagramAvatarThumbUrl(next)) {
+        return cur;
+      }
+    }
+    if (next.startsWith("data:image/")) return next;
+    return next || (isInstagramAvatarThumbUrl(cur) ? "" : cur);
+  }
+
   function pickInstagramCoverFromPageData(data) {
     const found = [];
     function walk(obj, depth) {
@@ -1056,6 +1071,7 @@
     sameInstagramPost,
     instagramPreviewPageKey,
     isInstagramAvatarThumbUrl,
+    preferInstagramPreviewThumbnail,
     pickInstagramCoverFromCandidates,
     pickInstagramCoverFromPageData,
     isInstagramPostUrl,

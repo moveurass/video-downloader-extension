@@ -1539,6 +1539,154 @@ async function main() {
     "on-page Instagram cover is parked on data-thumb-url for FETCH_THUMB"
   );
 
+  const igHydrated = "data:image/jpeg;base64,SUdDT1ZFUg==";
+  let staySrc = igHydrated;
+  let staySrcWrites = 0;
+  let stayDataThumb = "";
+  let stayInner = "";
+  const stayImg = {
+    getAttribute: (name) => {
+      if (name === "src") return staySrc;
+      if (name === "data-thumb-url") return stayDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") {
+        staySrc = value;
+        staySrcWrites += 1;
+      }
+      if (name === "data-thumb-url") stayDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") {
+        staySrc = "";
+        staySrcWrites += 1;
+      }
+      if (name === "data-thumb-url") stayDataThumb = "";
+    }
+  };
+  const stayThumb = {
+    get innerHTML() {
+      return stayInner;
+    },
+    set innerHTML(value) {
+      stayInner = value;
+    }
+  };
+  const stayCard = {
+    dataset: {
+      mediaIdentity: `ig:reel:DABC123xyz\nmedia\n${igPlayCdn}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? stayImg
+        : selector === ".thumb"
+          ? stayThumb
+          : selector === ".name"
+            ? { textContent: "송민구(@minkoosong)", title: "송민구(@minkoosong)" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let stayItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: igHydrated,
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  }];
+  const stayRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? stayCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "ig:reel:DABC123xyz",
+    isInstagramPostUrl: (url) => /instagram\.com\/reel\//i.test(url || ""),
+    isInstagramHost: (url) => /instagram\.com/i.test(url || ""),
+    displayName: (item) => item.title,
+    downloadFilename: () => "instagram.mp4",
+    siteLabel: () => "Instagram",
+    thumbHtml: (item) =>
+      item?.thumbnail
+        ? `<img class="thumb-img" src="${item.thumbnail}" alt="" />`
+        : `<span class="thumb-fallback">🎬</span>`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => stayItems,
+    setAllItems: (items) => {
+      stayItems = items;
+    },
+    getCurrentTabUrl: () => igPermalink,
+    fetchThumbDataUrl: async () => {
+      throw new Error("hydrate must not run after a stable Instagram data URL");
+    }
+  });
+  stayItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: ""
+  }];
+  check(
+    stayRenderer.patch(),
+    true,
+    "same Instagram reel still patches after PAGE_META clears the thumb"
+  );
+  check(staySrc, igHydrated, "data-URL cover stays after an empty same-reel patch");
+  check(
+    stayItems[0].thumbnail,
+    igHydrated,
+    "empty PAGE_META writes the painted data URL back onto the item"
+  );
+  check(stayInner.includes("🎬"), false, "empty patch must not rebuild a 🎬 fallback");
+
+  stayItems = [{
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/other.mp4",
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: igCover
+  }];
+  const writesBeforeCdn = staySrcWrites;
+  check(
+    stayRenderer.patch(),
+    true,
+    "play-CDN url swap on the same shortcode still patches in place"
+  );
+  check(
+    staySrc,
+    igHydrated,
+    "data-URL cover stays after a same-reel CDN thumbnail patch"
+  );
+  check(staySrcWrites, writesBeforeCdn, "CDN patch does not rewrite a good data-URL src");
+  check(
+    stayItems[0].thumbnail,
+    igHydrated,
+    "CDN PAGE_META must not replace a hydrated Instagram data URL"
+  );
+
+  check(
+    MediaLoader.preferPageThumbnail(
+      igHydrated,
+      igCover,
+      igPermalink
+    ),
+    igHydrated,
+    "PAGE_META CDN cover must not replace a hydrated Instagram data URL"
+  );
+  check(
+    MediaLoader.preferPageThumbnail(
+      igHydrated,
+      "",
+      igPermalink
+    ),
+    igHydrated,
+    "empty PAGE_META must not drop a hydrated Instagram data URL"
+  );
+
   console.log(`popup media loader: ${assertions} assertions passed`);
 }
 

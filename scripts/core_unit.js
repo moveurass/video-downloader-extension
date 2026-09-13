@@ -641,6 +641,29 @@ assert.equal(
   Sites.instagramPreviewPageKey("https://www.instagram.com/reel/DABC123xyz/"),
   "ig:reel:DABC123xyz"
 );
+assert.equal(
+  Sites.preferInstagramPreviewThumbnail(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+  ),
+  "data:image/jpeg;base64,SUdDT1ZFUg==",
+  "hydrated Instagram cover is not replaced by a later CDN URL"
+);
+assert.equal(
+  Sites.preferInstagramPreviewThumbnail(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    ""
+  ),
+  "data:image/jpeg;base64,SUdDT1ZFUg==",
+  "hydrated Instagram cover is not cleared by an empty PAGE_META thumb"
+);
+assert.equal(
+  Sites.preferInstagramPreviewThumbnail(
+    "",
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+  ),
+  "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+);
 
 const ttAvatar =
   "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";

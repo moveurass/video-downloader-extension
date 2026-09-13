@@ -94,6 +94,15 @@
           }) || undefined
         );
       }
+      if (
+        sites?.preferInstagramPreviewThumbnail &&
+        (sites.isInstagramPostUrl?.(pageUrl) || sites.isInstagramHostUrl?.(pageUrl))
+      ) {
+        return (
+          sites.preferInstagramPreviewThumbnail(safeCurrent, safeIncoming) ||
+          undefined
+        );
+      }
       return safeIncoming || safeCurrent || undefined;
     }
 
@@ -648,7 +657,7 @@
           setQualitiesLoading(false);
         }
         if (isSuperseded(requestId, tab)) return;
-        render();
+        if (!(typeof patchMedia === "function" && patchMedia())) render();
         const painted = getAllItems()[0];
         const paintedThumb = String(painted?.thumbnail || "");
         if (
