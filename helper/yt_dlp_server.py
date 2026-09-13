@@ -1039,14 +1039,26 @@ def image_bytes_to_data_url(data: bytes, ctype: str = "") -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def default_image_referer(image_url: str) -> str:
+    """First-party Referer for CDN covers that hotlink-block the extension origin."""
+    lowered = (image_url or "").lower()
+    if (
+        "cdninstagram.com" in lowered
+        or "fbcdn.net" in lowered
+        or "instagram.com" in lowered
+    ):
+        return "https://www.instagram.com/"
+    return "https://www.tiktok.com/"
+
+
 def download_image_bytes(image_url: str, referer: str = "") -> tuple[bytes, str] | None:
-    """Fetch a cover/thumbnail with a TikTok-friendly Referer. Returns (bytes, content-type)."""
+    """Fetch a cover/thumbnail with a first-party Referer. Returns (bytes, content-type)."""
     if not image_url or not image_url.startswith("http"):
         return None
     hdrs = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "image/avif,image/webp,image/*,*/*;q=0.8",
-        "Referer": referer or "https://www.tiktok.com/",
+        "Referer": referer or default_image_referer(image_url),
     }
     try:
         req = Request(image_url, headers=hdrs, method="GET")

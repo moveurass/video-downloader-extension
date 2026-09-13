@@ -141,6 +141,12 @@
     // Explore/FYP tabs are still first-party TikTok, so page-credentialed
     // FETCH_THUMB_PAGE must be allowed for those hosts.
     if (isTiktokUrl(pageUrl) && isTikTokImageCdnHost(imageHost)) return true;
+    // Instagram covers live on Meta image CDNs (cdninstagram.com / fbcdn.net),
+    // not on instagram.com. Same-site checks fail; page-credentialed
+    // FETCH_THUMB_PAGE must still be allowed from an Instagram tab.
+    if (isInstagramHostUrl(pageUrl) && isInstagramImageCdnHost(imageHost)) {
+      return true;
+    }
     return isKnownCodeHost(pageHost) && isKnownVideoCdnHost(imageHost);
   }
 
@@ -542,6 +548,14 @@
     return cur;
   }
 
+  function isInstagramImageCdnHost(host) {
+    const h = String(host || "")
+      .replace(/^www\./i, "")
+      .toLowerCase();
+    if (!h) return false;
+    return /(?:^|\.)cdninstagram\.com$/i.test(h) || /(?:^|\.)fbcdn\.net$/i.test(h);
+  }
+
   function isInstagramHostUrl(url) {
     const host = hostOf(url);
     if (!host || /cdninstagram|fbcdn\.net|instagram\.fs/i.test(host)) return false;
@@ -551,6 +565,128 @@
       host === "instagr.am" ||
       host.endsWith(".instagr.am")
     );
+  }
+
+  function instagramPostId(url) {
+    const match = String(url || "").match(
+      /\/(?:share\/)?(?:p|reel|reels|tv)\/([A-Za-z0-9_-]+)/i
+    );
+    return match ? match[1] : "";
+  }
+
+  function sameInstagramPost(left, right) {
+    const a = instagramPostId(left);
+    const b = instagramPostId(right);
+    return !!(a && b && a === b);
+  }
+
+  function instagramPreviewPageKey(url) {
+    try {
+      const path = new URL(url).pathname || "";
+      const match = path.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+      if (match) return `ig:${match[1]}:${match[2]}`;
+    } catch {
+      /* fall through */
+    }
+    const match = String(url || "").match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+    return match ? `ig:${match[1]}:${match[2]}` : "";
+  }
+
+  function isInstagramAvatarThumbUrl(url) {
+    const value = String(url || "").trim();
+    if (!value || value.startsWith("data:")) return false;
+    const hay = value.toLowerCase();
+    return /profile_pic|profile-pic|\/s150x150\/|\/s320x320\/|t51\.2885-19/i.test(
+      hay
+    );
+  }
+
+  const INSTAGRAM_COVER_KEYS = new Set([
+    "display_url",
+    "displayurl",
+    "display_src",
+    "displaysrc",
+    "thumbnail_src",
+    "thumbnailsrc",
+    "thumbnail_url",
+    "thumbnailurl"
+  ]);
+
+  function pickInstagramCoverFromCandidates(candidates) {
+    const list = (Array.isArray(candidates) ? candidates : [])
+      .map((entry) => (typeof entry === "string" ? entry : String(entry?.url || "")))
+      .filter((url) => /^https?:/i.test(url) && !isInstagramAvatarThumbUrl(url));
+    if (!list.length) return "";
+    const cdnHit = list.find((url) => {
+      try {
+        return isInstagramImageCdnHost(new URL(url).hostname);
+      } catch {
+        return false;
+      }
+    });
+    return cdnHit || list[0];
+  }
+
+  function preferInstagramPreviewThumbnail(current, incoming) {
+    const cur = String(current || "").trim();
+    const next = String(incoming || "").trim();
+    if (isInstagramAvatarThumbUrl(next)) {
+      return isInstagramAvatarThumbUrl(cur) ? "" : cur;
+    }
+    if (cur.startsWith("data:image/") && !isInstagramAvatarThumbUrl(cur)) {
+      if (!next || /^https?:/i.test(next) || isInstagramAvatarThumbUrl(next)) {
+        return cur;
+      }
+    }
+    if (next.startsWith("data:image/")) return next;
+    return next || (isInstagramAvatarThumbUrl(cur) ? "" : cur);
+  }
+
+  function pickInstagramCoverFromPageData(data) {
+    const found = [];
+    function walk(obj, depth) {
+      if (!obj || depth > 28) return;
+      if (typeof obj === "string") return;
+      if (Array.isArray(obj)) {
+        for (const entry of obj.slice(0, 120)) walk(entry, depth + 1);
+        return;
+      }
+      if (typeof obj !== "object") return;
+      for (const [key, value] of Object.entries(obj)) {
+        const kl = String(key || "").toLowerCase();
+        if (kl === "profile_pic_url" || kl === "profile_pic_url_hd") continue;
+        if (INSTAGRAM_COVER_KEYS.has(kl) && typeof value === "string") {
+          found.push(value);
+          continue;
+        }
+        if (
+          (kl === "image_versions2" || kl === "imageversions2") &&
+          value &&
+          typeof value === "object"
+        ) {
+          const versions = value.candidates || value.Candidates || [];
+          if (Array.isArray(versions)) {
+            for (const candidate of versions.slice(0, 8)) {
+              if (candidate && typeof candidate.url === "string") {
+                found.push(candidate.url);
+              }
+            }
+          }
+          continue;
+        }
+        if (kl === "display_resources" && Array.isArray(value)) {
+          for (const resource of value.slice(0, 8)) {
+            if (resource && typeof resource.src === "string") {
+              found.push(resource.src);
+            }
+          }
+          continue;
+        }
+        walk(value, depth + 1);
+      }
+    }
+    walk(data, 0);
+    return pickInstagramCoverFromCandidates(found);
   }
 
   const INSTAGRAM_POST_PATH =
@@ -907,6 +1043,7 @@
     isKnownCodeHost,
     isKnownVideoCdnHost,
     isTikTokImageCdnHost,
+    isInstagramImageCdnHost,
     isTrustedThumbUrl,
     isYoutubeUrl,
     youtubeVideoId,
@@ -930,6 +1067,13 @@
     tiktokThumbBelongsToPage,
     tiktokPermalinkError,
     isInstagramHostUrl,
+    instagramPostId,
+    sameInstagramPost,
+    instagramPreviewPageKey,
+    isInstagramAvatarThumbUrl,
+    preferInstagramPreviewThumbnail,
+    pickInstagramCoverFromCandidates,
+    pickInstagramCoverFromPageData,
     isInstagramPostUrl,
     isInstagramUrl,
     isInstagramCdnUrl,

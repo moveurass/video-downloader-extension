@@ -586,6 +586,84 @@ assert.equal(Sites.isTrustedThumbUrl(
   "https://www.youtube.com/watch?v=abc",
   "https://p19-common-sign.tiktokcdn-us.com/cover"
 ), false, "non-TikTok pages must not page-fetch TikTok CDNs");
+assert.equal(Sites.isInstagramImageCdnHost("scontent.cdninstagram.com"), true);
+assert.equal(Sites.isInstagramImageCdnHost("scontent-gmp1-1.cdninstagram.com"), true);
+assert.equal(Sites.isInstagramImageCdnHost("instagram.fsic1-1.fna.fbcdn.net"), true);
+assert.equal(Sites.isInstagramImageCdnHost("evil-cdninstagram.com.example"), false);
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.instagram.com/reel/DABC123xyz/",
+  "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+), true, "Instagram reels may fetch cdninstagram.com covers");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.instagram.com/p/DABC123xyz/",
+  "https://scontent-gmp1-1.cdninstagram.com/v/t51.29350-15/cover.jpg"
+), true, "Instagram posts may fetch regional cdninstagram hosts");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.instagram.com/reel/DABC123xyz/",
+  "https://instagram.fsic1-1.fna.fbcdn.net/v/t51.2885-15/cover.jpg"
+), true, "Instagram reels may fetch fbcdn.net covers");
+assert.equal(Sites.isTrustedThumbUrl(
+  "https://www.youtube.com/watch?v=abc",
+  "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+), false, "non-Instagram pages must not page-fetch Instagram CDNs");
+const igAvatar =
+  "https://scontent.cdninstagram.com/v/t51.2885-19/s150x150/face.jpg";
+const igCover =
+  "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover.jpg";
+assert.equal(Sites.isInstagramAvatarThumbUrl(igAvatar), true, "s150x150 is a profile pic");
+assert.equal(Sites.isInstagramAvatarThumbUrl(igCover), false);
+assert.equal(
+  Sites.pickInstagramCoverFromCandidates([igAvatar, igCover]),
+  igCover,
+  "Instagram cover wins over profile pic"
+);
+assert.equal(
+  Sites.pickInstagramCoverFromPageData({
+    graphql: {
+      shortcode_media: {
+        profile_pic_url: igAvatar,
+        display_url: igCover
+      }
+    }
+  }),
+  igCover,
+  "page JSON display_url is the reel cover"
+);
+assert.equal(Sites.instagramPostId("https://www.instagram.com/reel/DABC123xyz/"), "DABC123xyz");
+assert.equal(
+  Sites.sameInstagramPost(
+    "https://www.instagram.com/reel/DABC123xyz/?igsh=1",
+    "https://www.instagram.com/reel/DABC123xyz/"
+  ),
+  true
+);
+assert.equal(
+  Sites.instagramPreviewPageKey("https://www.instagram.com/reel/DABC123xyz/"),
+  "ig:reel:DABC123xyz"
+);
+assert.equal(
+  Sites.preferInstagramPreviewThumbnail(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+  ),
+  "data:image/jpeg;base64,SUdDT1ZFUg==",
+  "hydrated Instagram cover is not replaced by a later CDN URL"
+);
+assert.equal(
+  Sites.preferInstagramPreviewThumbnail(
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    ""
+  ),
+  "data:image/jpeg;base64,SUdDT1ZFUg==",
+  "hydrated Instagram cover is not cleared by an empty PAGE_META thumb"
+);
+assert.equal(
+  Sites.preferInstagramPreviewThumbnail(
+    "",
+    "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+  ),
+  "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+);
 
 const ttAvatar =
   "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";

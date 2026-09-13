@@ -384,10 +384,11 @@
       document.querySelector('link[rel="image_src"]')?.href,
       document.querySelector("video[poster]")?.getAttribute("poster"),
       isTikTokVideoPage() ? extractTikTokCoverUrl() : "",
+      isInstagramPostPage() ? extractInstagramCoverUrl() : "",
       playerWrapCover(),
-      // TikTok video pages: skip generic large-img scrape. Profile
-      // headshots are often the biggest <img> on /@user/video/id.
-      ...(knownCode || isTikTokVideoPage()
+      // TikTok / Instagram video pages: skip generic large-img scrape.
+      // Profile headshots are often the biggest <img> on those permalinks.
+      ...(knownCode || isTikTokVideoPage() || isInstagramPostPage()
         ? []
         : [
             document.querySelector(".vjs-poster img, .plyr__poster, [class*='poster'] img")
@@ -417,7 +418,8 @@
       }
       if (
         typeof UVDSites !== "undefined" &&
-        UVDSites.isTiktokAvatarThumbUrl?.(u)
+        (UVDSites.isTiktokAvatarThumbUrl?.(u) ||
+          UVDSites.isInstagramAvatarThumbUrl?.(u))
       ) {
         continue;
       }
@@ -1003,6 +1005,56 @@
       return sites.pickTiktokCoverFromCandidates(found);
     }
     return found.find((url) => !/avatar|avt-|imprint/i.test(url || "")) || "";
+  }
+
+  function isInstagramPostPage(url) {
+    const value = url || location.href;
+    if (typeof UVDSites !== "undefined" && UVDSites.isInstagramPostUrl) {
+      return UVDSites.isInstagramPostUrl(value);
+    }
+    return /instagram\.com\/(?:share\/)?(?:p|reel|reels|tv)\/[A-Za-z0-9_-]+/i.test(
+      value
+    );
+  }
+
+  /**
+   * Cover from og:image / poster / page JSON (display_url, thumbnail_src).
+   * Instagram SPA reels often omit a usable og:image; formats/helper hydrate
+   * the CDN URL this returns.
+   */
+  function extractInstagramCoverUrl() {
+    if (!isInstagramPostPage()) return "";
+    const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+    const found = [];
+
+    document
+      .querySelectorAll(
+        'script[data-sjs], script[type="application/json"], script[type="application/ld+json"]'
+      )
+      .forEach((s) => {
+        const t = (s.textContent || "").trim();
+        if (t.length < 80 || t.length > 2_000_000) return;
+        if (!/display_url|thumbnail_src|image_versions2|cdninstagram|fbcdn/i.test(t)) {
+          return;
+        }
+        try {
+          if (t.startsWith("{") || t.startsWith("[")) {
+            const picked = sites?.pickInstagramCoverFromPageData?.(JSON.parse(t));
+            if (picked) found.push(picked);
+          }
+        } catch {
+          /* keyed JSON walk only */
+        }
+      });
+
+    const og = document.querySelector('meta[property="og:image"]')?.content;
+    if (og) found.push(og);
+    const poster = document.querySelector("video[poster]")?.getAttribute("poster");
+    if (poster) found.push(poster);
+    if (sites?.pickInstagramCoverFromCandidates) {
+      return sites.pickInstagramCoverFromCandidates(found);
+    }
+    return found.find((url) => !/profile_pic|s150x150|t51\.2885-19/i.test(url || "")) || "";
   }
 
   /**
@@ -1714,6 +1766,7 @@
     if (msg.type === "EXTRACT_INSTAGRAM") {
       const urls = extractInstagramPlayUrls();
       const permalink = extractInstagramPermalink();
+      const thumb = pageThumbnail() || "";
       if (urls.length) {
         const title = pageTitle();
         sendItems(
@@ -1726,6 +1779,7 @@
             type: "video",
             source: "instagram-page",
             site: "instagram",
+            thumbnail: thumb || undefined,
             pageUrl: permalink || location.href
           }))
         );
@@ -1735,7 +1789,8 @@
         urls,
         permalink,
         title: pageTitle(),
-        pageUrl: permalink || location.href
+        pageUrl: permalink || location.href,
+        thumbnail: thumb
       });
       return false;
     }

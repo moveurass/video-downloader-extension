@@ -219,6 +219,21 @@ def main() -> int:
             "data:image/jpeg;base64,"
         ),
     )
+    check(
+        "helper /thumb defaults Instagram CDN Referer to instagram.com",
+        helper_server.default_image_referer(
+            "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
+        )
+        == "https://www.instagram.com/"
+        and helper_server.default_image_referer(
+            "https://instagram.fsic1-1.fna.fbcdn.net/v/t51.2885-15/cover.jpg"
+        )
+        == "https://www.instagram.com/"
+        and helper_server.default_image_referer(
+            "https://p19-common-sign.tiktokcdn-us.com/cover"
+        )
+        == "https://www.tiktok.com/",
+    )
     outside = helper_server.path_in_out_dir("/etc/passwd")
     check("helper /thumb refuses paths outside the output tree", outside is None)
     check(

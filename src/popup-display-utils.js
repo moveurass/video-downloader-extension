@@ -148,9 +148,9 @@
         if (src.startsWith("data:image/")) {
           return `<img class="thumb-img" src="${escapeAttr(src)}" alt="" />`;
         }
-        // TikTok CDN covers 403 from the extension origin. Keep the URL
-        // for FETCH_THUMB hydration instead of painting a broken <img>
-        // that bindThumbFallback replaces with 🎬.
+        // TikTok / Instagram CDN covers 403 from the extension origin.
+        // Keep the URL for FETCH_THUMB hydration instead of painting a
+        // broken <img> that bindThumbFallback replaces with 🎬.
         if (/^https?:/i.test(src)) {
           return `<img class="thumb-img" data-thumb-url="${escapeAttr(src)}" alt="" />`;
         }
@@ -430,6 +430,13 @@
                     incoming.thumbnailSource === "formats" && incomingTrusted
                 }
               ) || undefined
+            : (sites.isInstagramPostUrl?.(pageHint) ||
+                sites.isInstagramHostUrl?.(pageHint)) &&
+              sites.preferInstagramPreviewThumbnail
+            ? sites.preferInstagramPreviewThumbnail(
+                sameVideo ? previous.thumbnail : "",
+                incoming.thumbnail
+              ) || undefined
             : incoming.thumbnail ||
               (sameVideo ? previous.thumbnail : undefined);
         return {
@@ -579,6 +586,9 @@
             local.thumbnailPageKey
           ) ||
           (!tiktokPage && !!local.thumbnail);
+        const instagramPage = !!(
+          sites.isInstagramPostUrl?.(url) || sites.isInstagramHostUrl?.(url)
+        );
         const thumb = samePage
           ? tiktokPage && sites.preferTiktokPreviewThumbnail
             ? sites.preferTiktokPreviewThumbnail(
@@ -589,7 +599,12 @@
                     top.thumbnailSource === "formats" && topTrusted
                 }
               ) || undefined
-            : top.thumbnail || local.thumbnail
+            : instagramPage && sites.preferInstagramPreviewThumbnail
+              ? sites.preferInstagramPreviewThumbnail(
+                  localTrusted ? local.thumbnail : "",
+                  topTrusted ? top.thumbnail : ""
+                ) || undefined
+              : top.thumbnail || local.thumbnail
           : localTrusted
             ? local.thumbnail
             : undefined;

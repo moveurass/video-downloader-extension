@@ -487,10 +487,14 @@
               } catch {
                 thumbHost = "";
               }
-              // TikTok CDN covers 403 from the extension origin and often
-              // from Explore page fetches. Helper /thumb (Referer) is the
-              // path that already writes the companion jpg.
-              if (sitesApi()?.isTikTokImageCdnHost?.(thumbHost)) {
+              // TikTok / Instagram CDN covers 403 from the extension origin
+              // (and IG FETCH_THUMB_PAGE used to fail same-site checks).
+              // Helper /thumb with a first-party Referer is the path that
+              // already writes the companion jpg.
+              if (
+                sitesApi()?.isTikTokImageCdnHost?.(thumbHost) ||
+                sitesApi()?.isInstagramImageCdnHost?.(thumbHost)
+              ) {
                 const fromHelper = await tryHelperThumb();
                 if (fromHelper) {
                   sendResponse({

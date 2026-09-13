@@ -1284,6 +1284,409 @@ async function main() {
     "after A → B navigation the card uses video B's formats cover"
   );
 
+  const igPermalink = "https://www.instagram.com/reel/DABC123xyz/";
+  const igPlayCdn =
+    "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4";
+  const igCover =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover.jpg";
+  const igTab = {
+    id: 21,
+    url: igPermalink,
+    title: "송민구(@minkoosong) • Instagram"
+  };
+  let igItems = [];
+  let igTabUrl = null;
+  let igTabId = null;
+  const igHydrateCalls = [];
+  const igElements = {
+    quickBox: { classList: classList() },
+    btnThisPage: { textContent: "" },
+    quickHint: { textContent: "" },
+    linkInput: { value: "", title: "" }
+  };
+  const igLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [igTab],
+        get: async () => igTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type === "GET_PAGE_META") {
+            return {
+              title: "송민구(@minkoosong)",
+              thumbnail: "",
+              pageUrl: igPermalink,
+              lastUrl: igPermalink
+            };
+          }
+          if (message.type === "EXTRACT_INSTAGRAM") {
+            return { ok: true, urls: [igPlayCdn], thumbnail: "" };
+          }
+          return { ok: true };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: igPlayCdn,
+                pageUrl: igPermalink,
+                title: "송민구(@minkoosong)",
+                pageTitle: "송민구(@minkoosong)",
+                thumbnail: "",
+                source: "instagram-page",
+                site: "instagram",
+                type: "video"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => igElements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items) =>
+      (items || []).map((item) => ({ ...item })),
+    pageKey: (url) => {
+      const match = String(url || "").match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
+      return match ? `ig:${match[1]}:${match[2]}` : String(url || "").replace(/[?#].*$/, "");
+    },
+    isInstagramUrl: (url) => /instagram\.com\/(?:p|reel)\//i.test(url || ""),
+    isTiktokUrl: () => false,
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: (url) => /instagram\.com\/(?:p|reel)\//i.test(url || ""),
+    isHlsItem: () => false,
+    cleanTitleText: (value) => value,
+    isUglyName: PopupMedia.isUglyName,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    patchMedia: () => false,
+    hydrateRemoteThumbnails: async (items) => {
+      igHydrateCalls.push(
+        (items || []).map((item) => String(item?.thumbnail || ""))
+      );
+    },
+    loadAvailableQualities: async (item) => {
+      igItems = [{
+        ...item,
+        thumbnail: igCover,
+        thumbnailSource: "formats",
+        title: "송민구(@minkoosong)"
+      }];
+    },
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => igItems,
+    setAllItems: (items) => {
+      igItems = items;
+    },
+    getCurrentTabId: () => igTabId,
+    setCurrentTabId: (value) => {
+      igTabId = value;
+    },
+    getCurrentTabUrl: () => igTabUrl,
+    setCurrentTabUrl: (value) => {
+      igTabUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {}
+  });
+  await igLoader.loadMedia();
+  check(igTabUrl, igPermalink, "on-page Instagram loader stays on the reel permalink");
+  check(
+    igItems[0].thumbnail,
+    igCover,
+    "on-page Instagram reel card gets the formats cover without pasting"
+  );
+  check(
+    igHydrateCalls.some((batch) => batch.includes(igCover)),
+    true,
+    "on-page Instagram formats cover is handed to FETCH_THUMB hydrate"
+  );
+
+  check(
+    MediaRenderer.needsRemoteThumbHydration(igCover),
+    true,
+    "Instagram CDN covers need FETCH_THUMB hydration"
+  );
+
+  const igHydrateItem = {
+    thumbnail: igCover,
+    pageUrl: igPermalink
+  };
+  let igHydratedSrc = igHydrateItem.thumbnail;
+  const igHydrateImg = {
+    getAttribute: (name) => (name === "src" ? igHydratedSrc : ""),
+    setAttribute: (name, value) => {
+      if (name === "src") igHydratedSrc = value;
+    },
+    removeAttribute: () => {}
+  };
+  const igHydrateCard = {
+    querySelector: (selector) =>
+      selector === ".thumb-img" ? igHydrateImg : null
+  };
+  const igHydrateRenderer = MediaRenderer.createRenderer({
+    listEl: { querySelector: (selector) => (selector === ".card" ? igHydrateCard : null) },
+    document: {},
+    fetchThumbDataUrl: async (url, referer) => {
+      check(url, igCover, "Instagram hydrate fetches the CDN cover");
+      check(referer, igPermalink, "Instagram hydrate sends the reel as referer");
+      return "data:image/jpeg;base64,SUdDT1ZFUg==";
+    }
+  });
+  await igHydrateRenderer.hydrateRemoteThumbnails([igHydrateItem]);
+  check(
+    igHydrateItem.thumbnail,
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "Instagram hydrate stores a data URL on the card item"
+  );
+  check(
+    igHydratedSrc,
+    "data:image/jpeg;base64,SUdDT1ZFUg==",
+    "Instagram hydrate patches the visible img"
+  );
+
+  let igPatchSrc = "";
+  let igPatchSrcWrites = 0;
+  let igDataThumb = "";
+  const igPatchImg = {
+    getAttribute: (name) => {
+      if (name === "src") return igPatchSrc;
+      if (name === "data-thumb-url") return igDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") {
+        igPatchSrc = value;
+        igPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") igDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") {
+        igPatchSrc = "";
+        igPatchSrcWrites += 1;
+      }
+      if (name === "data-thumb-url") igDataThumb = "";
+    }
+  };
+  const igPatchThumb = { innerHTML: "" };
+  const igPatchCard = {
+    dataset: {
+      mediaIdentity: `ig:reel:DABC123xyz\nmedia\n${igPlayCdn}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? igPatchImg
+        : selector === ".thumb"
+          ? igPatchThumb
+          : selector === ".name"
+            ? { textContent: "", title: "" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let igPatchItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: igCover
+  }];
+  const igPatchRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? igPatchCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "ig:reel:DABC123xyz",
+    displayName: (item) => item.title,
+    downloadFilename: () => "instagram.mp4",
+    siteLabel: () => "Instagram",
+    thumbHtml: (item) =>
+      `<img class="thumb-img" data-thumb-url="${item.thumbnail}" alt="" />`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => igPatchItems,
+    setAllItems: (items) => {
+      igPatchItems = items;
+    },
+    getCurrentTabUrl: () => igPermalink
+  });
+  check(igPatchRenderer.patch(), true, "on-page Instagram card patches in place");
+  check(
+    igPatchSrcWrites,
+    0,
+    "on-page PAGE_META must not paint an Instagram CDN cover as img.src"
+  );
+  check(
+    igDataThumb,
+    igCover,
+    "on-page Instagram cover is parked on data-thumb-url for FETCH_THUMB"
+  );
+
+  const igHydrated = "data:image/jpeg;base64,SUdDT1ZFUg==";
+  let staySrc = igHydrated;
+  let staySrcWrites = 0;
+  let stayDataThumb = "";
+  let stayInner = "";
+  const stayImg = {
+    getAttribute: (name) => {
+      if (name === "src") return staySrc;
+      if (name === "data-thumb-url") return stayDataThumb;
+      return "";
+    },
+    setAttribute: (name, value) => {
+      if (name === "src") {
+        staySrc = value;
+        staySrcWrites += 1;
+      }
+      if (name === "data-thumb-url") stayDataThumb = value;
+    },
+    removeAttribute: (name) => {
+      if (name === "src") {
+        staySrc = "";
+        staySrcWrites += 1;
+      }
+      if (name === "data-thumb-url") stayDataThumb = "";
+    }
+  };
+  const stayThumb = {
+    get innerHTML() {
+      return stayInner;
+    },
+    set innerHTML(value) {
+      stayInner = value;
+    }
+  };
+  const stayCard = {
+    dataset: {
+      mediaIdentity: `ig:reel:DABC123xyz\nmedia\n${igPlayCdn}`
+    },
+    querySelector: (selector) =>
+      selector === ".thumb-img"
+        ? stayImg
+        : selector === ".thumb"
+          ? stayThumb
+          : selector === ".name"
+            ? { textContent: "송민구(@minkoosong)", title: "송민구(@minkoosong)" }
+            : selector === ".meta-grid"
+              ? { innerHTML: "meta" }
+              : selector === ".filename-value"
+                ? { textContent: "" }
+                : selector === ".btn-dl"
+                  ? { disabled: true, textContent: "" }
+                  : null
+  };
+  let stayItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: igHydrated,
+    thumbnailPageKey: "ig:reel:DABC123xyz"
+  }];
+  const stayRenderer = MediaRenderer.createRenderer({
+    listEl: {
+      querySelector: (selector) => (selector === ".card" ? stayCard : null)
+    },
+    document: {},
+    ensureSiteItems: (items) => items,
+    pageKey: () => "ig:reel:DABC123xyz",
+    isInstagramPostUrl: (url) => /instagram\.com\/reel\//i.test(url || ""),
+    isInstagramHost: (url) => /instagram\.com/i.test(url || ""),
+    displayName: (item) => item.title,
+    downloadFilename: () => "instagram.mp4",
+    siteLabel: () => "Instagram",
+    thumbHtml: (item) =>
+      item?.thumbnail
+        ? `<img class="thumb-img" src="${item.thumbnail}" alt="" />`
+        : `<span class="thumb-fallback">🎬</span>`,
+    metaRowsHtml: () => "meta",
+    getAllItems: () => stayItems,
+    setAllItems: (items) => {
+      stayItems = items;
+    },
+    getCurrentTabUrl: () => igPermalink,
+    fetchThumbDataUrl: async () => {
+      throw new Error("hydrate must not run after a stable Instagram data URL");
+    }
+  });
+  stayItems = [{
+    url: igPlayCdn,
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: ""
+  }];
+  check(
+    stayRenderer.patch(),
+    true,
+    "same Instagram reel still patches after PAGE_META clears the thumb"
+  );
+  check(staySrc, igHydrated, "data-URL cover stays after an empty same-reel patch");
+  check(
+    stayItems[0].thumbnail,
+    igHydrated,
+    "empty PAGE_META writes the painted data URL back onto the item"
+  );
+  check(stayInner.includes("🎬"), false, "empty patch must not rebuild a 🎬 fallback");
+
+  stayItems = [{
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/other.mp4",
+    pageUrl: igPermalink,
+    title: "송민구(@minkoosong)",
+    thumbnail: igCover
+  }];
+  const writesBeforeCdn = staySrcWrites;
+  check(
+    stayRenderer.patch(),
+    true,
+    "play-CDN url swap on the same shortcode still patches in place"
+  );
+  check(
+    staySrc,
+    igHydrated,
+    "data-URL cover stays after a same-reel CDN thumbnail patch"
+  );
+  check(staySrcWrites, writesBeforeCdn, "CDN patch does not rewrite a good data-URL src");
+  check(
+    stayItems[0].thumbnail,
+    igHydrated,
+    "CDN PAGE_META must not replace a hydrated Instagram data URL"
+  );
+
+  check(
+    MediaLoader.preferPageThumbnail(
+      igHydrated,
+      igCover,
+      igPermalink
+    ),
+    igHydrated,
+    "PAGE_META CDN cover must not replace a hydrated Instagram data URL"
+  );
+  check(
+    MediaLoader.preferPageThumbnail(
+      igHydrated,
+      "",
+      igPermalink
+    ),
+    igHydrated,
+    "empty PAGE_META must not drop a hydrated Instagram data URL"
+  );
+
   console.log(`popup media loader: ${assertions} assertions passed`);
 }
 

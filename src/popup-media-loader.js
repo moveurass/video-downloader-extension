@@ -76,6 +76,7 @@
           : "";
       }
       if (sites?.isTiktokAvatarThumbUrl?.(value)) return "";
+      if (sites?.isInstagramAvatarThumbUrl?.(value)) return "";
       return value;
     }
 
@@ -91,6 +92,15 @@
           sites.preferTiktokPreviewThumbnail(safeCurrent, safeIncoming, {
             fromFormats: !!safeIncoming
           }) || undefined
+        );
+      }
+      if (
+        sites?.preferInstagramPreviewThumbnail &&
+        (sites.isInstagramPostUrl?.(pageUrl) || sites.isInstagramHostUrl?.(pageUrl))
+      ) {
+        return (
+          sites.preferInstagramPreviewThumbnail(safeCurrent, safeIncoming) ||
+          undefined
         );
       }
       return safeIncoming || safeCurrent || undefined;
@@ -647,7 +657,7 @@
           setQualitiesLoading(false);
         }
         if (isSuperseded(requestId, tab)) return;
-        render();
+        if (!(typeof patchMedia === "function" && patchMedia())) render();
         const painted = getAllItems()[0];
         const paintedThumb = String(painted?.thumbnail || "");
         if (
@@ -655,8 +665,9 @@
           /^https?:/i.test(paintedThumb) &&
           typeof hydrateRemoteThumbnails === "function"
         ) {
-          // On-page TikTok: formats/og covers are CDN URLs. Paste cards
-          // hydrate via render(); the PAGE_META patch path needs this too.
+          // On-page TikTok / Instagram: formats/og covers are CDN URLs.
+          // Paste cards hydrate via render(); the PAGE_META patch path
+          // needs this too.
           void hydrateRemoteThumbnails([painted]);
         }
 

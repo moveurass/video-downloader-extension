@@ -890,6 +890,88 @@ function main() {
     "Explore/FYP residue cover does not stick onto a permalink card"
   );
 
+  const igPermalink = "https://www.instagram.com/reel/DABC123xyz/";
+  const igCover =
+    "https://scontent.cdninstagram.com/v/t51.2885-15/e35/cover.jpg";
+  const igHydrated = "data:image/jpeg;base64,SUdDT1ZFUg==";
+  let igTabUrl = igPermalink;
+  const igUtils = DisplayUtils.createUtils({
+    $: () => null,
+    document: {
+      body: { appendChild() {} },
+      createElement() {
+        return {};
+      }
+    },
+    UVDSites: Sites,
+    UVDPopupMedia: {
+      cleanTitleText: (raw) => raw,
+      displayName: () => "n",
+      downloadFilename: () => "f.mp4",
+      isUglyName: () => false
+    },
+    Naming: {
+      extractProductCode: () => "",
+      cleanPageTitle: (title) => title,
+      bindTitleToPage: (_url, title) => title,
+      buildFilename: () => "f.mp4",
+      isKnownCodeVideoPage: () => false
+    },
+    UVD: {
+      parseUrlsFromText: (text) => String(text).match(/https?:\/\/\S+/g) || [],
+      isGenericSaveName: () => false
+    },
+    isSitePage: (url) => Sites.isDownloadableSiteVideo(url),
+    isKnownDownloadablePage: (url) => Sites.isDownloadableSiteVideo(url),
+    getCurrentTabUrl: () => igTabUrl,
+    getAllItems: () => [],
+    getUvdSettings: () => ({}),
+    getSelectedQuality: () => "best",
+    pageHost: { textContent: "" }
+  });
+  igUtils.ensureSiteItems(
+    [{
+      url: igPermalink,
+      pageUrl: igPermalink,
+      title: "송민구(@minkoosong)",
+      thumbnail: igHydrated,
+      thumbnailPageKey: "ig:reel:DABC123xyz",
+      isSiteDownload: true
+    }],
+    { url: igPermalink, title: "송민구(@minkoosong)" }
+  );
+  const afterEmptyMeta = igUtils.ensureSiteItems(
+    [{
+      url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+      pageUrl: igPermalink,
+      title: "송민구(@minkoosong)",
+      thumbnail: "",
+      isSiteDownload: true
+    }],
+    { url: igPermalink, title: "송민구(@minkoosong)" }
+  );
+  check(
+    afterEmptyMeta[0].thumbnail,
+    igHydrated,
+    "ensureSiteItems keeps a hydrated Instagram data URL when PAGE_META is empty"
+  );
+  const afterCdnMeta = igUtils.ensureSiteItems(
+    [{
+      url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+      pageUrl: igPermalink,
+      title: "송민구(@minkoosong)",
+      thumbnail: igCover,
+      thumbnailSource: "formats",
+      isSiteDownload: true
+    }],
+    { url: igPermalink, title: "송민구(@minkoosong)" }
+  );
+  check(
+    afterCdnMeta[0].thumbnail,
+    igHydrated,
+    "ensureSiteItems keeps a hydrated Instagram data URL when formats returns a CDN"
+  );
+
   console.log(`popup display utils unit: ${assertions} assertions passed`);
 }
 
