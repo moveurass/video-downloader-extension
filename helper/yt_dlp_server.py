@@ -34,9 +34,23 @@ from urllib.parse import parse_qs, urlencode, urlparse, urljoin, urlunparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 try:
-    from .name_utils import clean_name, is_generic_name, unique_output_path
+    from .name_utils import (
+        clean_name,
+        instagram_author_handle,
+        instagram_readable_title,
+        is_generic_name,
+        is_instagram_identity_title,
+        unique_output_path,
+    )
 except ImportError:
-    from name_utils import clean_name, is_generic_name, unique_output_path
+    from name_utils import (
+        clean_name,
+        instagram_author_handle,
+        instagram_readable_title,
+        is_generic_name,
+        is_instagram_identity_title,
+        unique_output_path,
+    )
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("UVD_PORT", "8787"))
@@ -998,10 +1012,19 @@ def download_url_to_file(
 
 def supplied_title_hint(payload: dict) -> str:
     """Prefer a real page/video title over a filename or opaque identifier."""
+    page_url = str(payload.get("pageUrl") or payload.get("url") or "")
+    instagram = is_instagram_download(
+        str(payload.get("site") or ""),
+        page_url,
+        str(payload.get("url") or ""),
+    )
     for key in ("outputStem", "title", "filename"):
         candidate = str(payload.get(key) or "").strip()
-        if candidate and not is_generic_name(candidate):
-            return candidate
+        if not candidate or is_generic_name(candidate):
+            continue
+        if instagram and is_instagram_identity_title(candidate):
+            continue
+        return candidate
     return ""
 
 
@@ -1254,9 +1277,15 @@ def try_instagram_direct_download(job_id: str, payload: dict, outtmpl_base: str)
         return False
     title_hint = supplied_title_hint(payload) or outtmpl_base
     shortcode = instagram_shortcode(page_url) or instagram_shortcode(media_hint)
-    title = title_hint if title_hint and not is_generic_name(title_hint) else ""
+    title = instagram_readable_title(
+        title=title_hint,
+        page_url=page_url,
+        display_id=shortcode,
+    )
     if not title:
-        title = f"instagram_{shortcode}" if shortcode else "instagram_video"
+        title = instagram_author_handle(page_url) or (
+            f"instagram_{shortcode}" if shortcode else "instagram_video"
+        )
     safe = clean_name(title) or "instagram_video"
     TMP_ROOT.mkdir(parents=True, exist_ok=True)
     work = TMP_ROOT / f"ig-{job_id}.part"
@@ -2616,6 +2645,14 @@ def run_download(job_id: str, payload: dict) -> None:
         # which strips non-ASCII and makes unreadable names like "SSIS_001.mp4".
         if not title_hint:
             c.append("--windows-filenames")
+            if is_instagram:
+                # Instagram title is often "Video by X"; first caption line is better.
+                c.extend(
+                    [
+                        "--parse-metadata",
+                        r"description:(?s)^(?P<title>[^\r\n]+)",
+                    ]
+                )
         if referer:
             c.extend(["--add-header", f"Referer:{referer}"])
             try:
@@ -3841,13 +3878,30 @@ class Handler(BaseHTTPRequestHandler):
             )
             audio_tracks, subtitle_tracks = collect_track_choices(info)
 
+            extractor_title = primary.get("title") or info.get("title") or ""
+            extractor_description = (
+                primary.get("description") or info.get("description") or ""
+            )
+            formats_title = extractor_title
+            if is_ig:
+                formats_title = instagram_readable_title(
+                    title=extractor_title,
+                    description=extractor_description,
+                    page_url=url,
+                    display_id=str(
+                        primary.get("display_id") or primary.get("id") or ""
+                    ),
+                ) or extractor_title
             send_json(
                 self,
                 200,
                 {
                     "ok": True,
                     "url": url,
-                    "title": primary.get("title") or info.get("title") or "",
+                    "title": formats_title,
+                    "description": extractor_description,
+                    "id": primary.get("display_id") or primary.get("id") or "",
+                    "display_id": primary.get("display_id") or "",
                     "duration": duration if duration >= 1 else 0,
                     "estimatedSize": int(overall_size) if overall_size else 0,
                     "thumbnail": thumb or "",

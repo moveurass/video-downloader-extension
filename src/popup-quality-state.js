@@ -527,21 +527,45 @@
               patch.estimatedSize = response.estimatedSize;
               patch._sizeApprox = true;
             }
-            if (
-              response.title &&
-              (!patch.title ||
-                /^(YouTube|TikTok|Instagram)/i.test(patch.title) ||
-                sites?.isTiktokSiteShellTitle?.(patch.title) ||
-                sites?.isInstagramSiteShellTitle?.(patch.title) ||
-                /^@[\w.-]+$/.test(String(patch.title || "").trim()) ||
-                /^.+\(@[\w.]+\)$/.test(String(patch.title || "").trim()))
-            ) {
-              patch.title = response.title;
-              patch.pageTitle = response.title;
-              patch.displayName = response.title;
+            const pageHint = patch.pageUrl || pageUrl;
+            const helperTitle =
+              sites?.isInstagramPostUrl?.(pageHint) &&
+              sites.pickInstagramHelperTitle
+                ? sites.pickInstagramHelperTitle(
+                    {
+                      title: response.title,
+                      description: response.description,
+                      caption: response.caption,
+                      webpage_url: response.url || probedUrl || pageHint,
+                      id: response.id,
+                      display_id: response.display_id
+                    },
+                    pageHint
+                  )
+                : "";
+            const incomingTitle = sites?.isInstagramPostUrl?.(pageHint)
+              ? helperTitle
+              : helperTitle || response.title || "";
+            const currentTitle = String(patch.title || "").trim();
+            const currentIsWeak =
+              !currentTitle ||
+              /^(YouTube|TikTok|Instagram)/i.test(currentTitle) ||
+              sites?.isTiktokSiteShellTitle?.(currentTitle) ||
+              sites?.isInstagramSiteShellTitle?.(currentTitle) ||
+              sites?.isInstagramIdentityTitle?.(currentTitle) ||
+              /^@[\w.-]+$/.test(currentTitle) ||
+              /^.+\s*\(@[\w.]+\)$/.test(currentTitle);
+            const incomingIsWeak =
+              !incomingTitle ||
+              sites?.isInstagramIdentityTitle?.(incomingTitle) ||
+              sites?.isInstagramSiteShellTitle?.(incomingTitle) ||
+              sites?.isTiktokSiteShellTitle?.(incomingTitle);
+            if (incomingTitle && currentIsWeak && !incomingIsWeak) {
+              patch.title = incomingTitle;
+              patch.pageTitle = incomingTitle;
+              patch.displayName = incomingTitle;
             }
             if (response.thumbnail) {
-              const pageHint = patch.pageUrl || pageUrl;
               if (
                 sites?.isTiktokUrl?.(pageHint) &&
                 sites.preferTiktokPreviewThumbnail

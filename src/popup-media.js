@@ -154,6 +154,8 @@
       /^.+\s+on\s+tiktok$/i.test(value) ||
       /^(?:Instagram(?:\s*(?:영상|video|reels?|post))?)$/i.test(value) ||
       /^.+\s+on\s+instagram$/i.test(value) ||
+      /^.+\s*\(@[\w.]+\)$/.test(value) ||
+      /^(?:video|reel|reels|post)\s+by\s+/i.test(value) ||
       /^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(value) ||
       /^[a-f0-9]{12,}$/i.test(value);
   }

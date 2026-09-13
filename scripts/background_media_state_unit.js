@@ -419,6 +419,46 @@ async function main() {
     "reel B filename is not reel A's caption"
   );
 
+  const igIdentityPermalink =
+    "https://www.instagram.com/minkoosong/reel/DABC123xyz/";
+  tabs.set(54, {
+    id: 54,
+    url: igIdentityPermalink,
+    title: "송민구(@minkoosong) • Instagram"
+  });
+  const igIdentityPlaceholder = store.makeSitePlaceholder({
+    id: 54,
+    url: igIdentityPermalink,
+    title: "송민구(@minkoosong) • Instagram"
+  });
+  equal(
+    igIdentityPlaceholder.title,
+    "@minkoosong",
+    "Name(@handle) tab title is not used as the Instagram caption"
+  );
+  store.addMedia(54, {
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    pageUrl: igIdentityPermalink,
+    title: "오늘 스파이크 연습 #volleyball",
+    pageTitle: "오늘 스파이크 연습 #volleyball",
+    site: "instagram",
+    source: "instagram-page",
+    type: "video"
+  });
+  const igLifted = await store.getMediaForTabAsync(54, {
+    pageUrl: igIdentityPermalink
+  });
+  equal(
+    igLifted[0]?.title,
+    "오늘 스파이크 연습 #volleyball",
+    "page caption lifts onto a handle-only Instagram placeholder"
+  );
+  equal(
+    igLifted[0]?.filename,
+    "오늘 스파이크 연습 #volleyball.mp4",
+    "lifted caption becomes the download filename"
+  );
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({

@@ -634,6 +634,81 @@ async function main() {
     "replacement Instagram cover is stamped with the new shortcode"
   );
 
+  const igCaptionLift = makeHarness();
+  igCaptionLift.setCurrentTabUrl(igPermalink);
+  igCaptionLift.setAllItems([{
+    title: "송민구(@minkoosong)",
+    url: igPermalink,
+    pageUrl: igPermalink,
+    isSiteDownload: true
+  }]);
+  igCaptionLift.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    title: "Video by minkoosong",
+    description: "오늘 스파이크 연습 #volleyball\n둘째 줄",
+    url: igPermalink,
+    display_id: "DABC123xyz"
+  });
+  await igCaptionLift.controller.loadAvailableQualities(
+    igCaptionLift.getAllItems()[0]
+  );
+  check(
+    igCaptionLift.getAllItems()[0].title,
+    "오늘 스파이크 연습 #volleyball",
+    "yt-dlp description lifts onto a Name(@handle) Instagram placeholder"
+  );
+
+  const igKeepCaption = makeHarness();
+  igKeepCaption.setCurrentTabUrl(igPermalink);
+  igKeepCaption.setAllItems([{
+    title: "오늘 스파이크 연습 #volleyball",
+    url: igPermalink,
+    pageUrl: igPermalink,
+    isSiteDownload: true
+  }]);
+  igKeepCaption.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    title: "송민구(@minkoosong)",
+    description: "송민구(@minkoosong)",
+    url: igPermalink,
+    display_id: "DABC123xyz"
+  });
+  await igKeepCaption.controller.loadAvailableQualities(
+    igKeepCaption.getAllItems()[0]
+  );
+  check(
+    igKeepCaption.getAllItems()[0].title,
+    "오늘 스파이크 연습 #volleyball",
+    "identity helper titles do not replace a real Instagram caption"
+  );
+
+  const igForeignHelper = makeHarness();
+  igForeignHelper.setCurrentTabUrl(igPermalink);
+  igForeignHelper.setAllItems([{
+    title: "@minkoosong",
+    url: igPermalink,
+    pageUrl: igPermalink,
+    isSiteDownload: true
+  }]);
+  igForeignHelper.runtimeResponses.push({
+    ok: true,
+    qualities: [{ id: "best", label: "최고" }],
+    title: "다른 릴스 캡션은 쓰면 안 됨",
+    description: "다른 릴스 캡션은 쓰면 안 됨",
+    url: "https://www.instagram.com/reel/NEXTREEL99/",
+    display_id: "NEXTREEL99"
+  });
+  await igForeignHelper.controller.loadAvailableQualities(
+    igForeignHelper.getAllItems()[0]
+  );
+  check(
+    igForeignHelper.getAllItems()[0].title,
+    "@minkoosong",
+    "helper caption for another shortcode is not lifted onto this reel"
+  );
+
   console.log(`popup quality state unit: ${assertions} assertions passed`);
 }
 

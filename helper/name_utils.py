@@ -18,6 +18,82 @@ CODE_STOP_WORDS = {
 }
 
 
+def is_instagram_identity_title(raw: str) -> bool:
+    """Uploader-only Instagram names that should not lock a download filename."""
+    stem = Path(str(raw or "").replace("\\", "/")).stem.strip()
+    if not stem:
+        return True
+    if is_generic_name(stem):
+        return True
+    if re.fullmatch(r"@[\w.]{1,30}", stem):
+        return True
+    if re.fullmatch(r".+\s*\(@[\w.]{1,30}\)", stem):
+        return True
+    if re.fullmatch(r"(?:video|reel|reels|post)\s+by\s+@?[\w.]+", stem, flags=re.I):
+        return True
+    return bool(re.fullmatch(r"instagram[_-][A-Za-z0-9_-]+", stem, flags=re.I))
+
+
+def first_meaningful_instagram_caption(raw: str) -> str:
+    """First usable caption line, skipping identity / auto-alt text."""
+    text = str(raw or "").replace("\r", "\n").replace("\\n", "\n").strip()
+    quoted = re.search(r'\bon\s+instagram:\s*[“"\'](.+?)[”"\']\s*$', text, flags=re.I)
+    if quoted:
+        text = quoted.group(1).strip()
+    else:
+        dated = re.search(r':\s*[“"\'](.+?)[”"\']\s*$', text)
+        if dated and re.search(r"likes?|comments?", text, flags=re.I):
+            text = dated.group(1).strip()
+    for line in text.split("\n"):
+        line = line.strip().strip('"“”')
+        if not line:
+            continue
+        if is_instagram_identity_title(line):
+            continue
+        if re.match(r"^(?:photo|video|image)\s+by\s+", line, flags=re.I):
+            continue
+        if re.match(r"^may be (?:an image|a video|a cartoon)", line, flags=re.I):
+            continue
+        if re.fullmatch(r"(?:[#@][\w.]+(?:\s+[#@][\w.]+)*)", line) and len(line) < 24:
+            continue
+        return line
+    return ""
+
+
+def instagram_author_handle(url: str) -> str:
+    match = re.search(
+        r"(?:instagram\.com|instagr\.am)/([A-Za-z0-9._]{1,30})/(?:reel|reels|p|tv)/",
+        url or "",
+        flags=re.I,
+    )
+    if not match:
+        return ""
+    handle = match.group(1)
+    if handle.lower() in {"share", "p", "reel", "reels", "tv", "stories", "explore", "accounts"}:
+        return ""
+    return f"@{handle}"
+
+
+def instagram_readable_title(
+    title: str = "",
+    description: str = "",
+    caption: str = "",
+    page_url: str = "",
+    display_id: str = "",
+) -> str:
+    """Prefer a real caption over Video-by / Name(@handle) / Instagram_<id>."""
+    for candidate in (caption, description, title):
+        line = first_meaningful_instagram_caption(candidate)
+        if line and not is_instagram_identity_title(line):
+            return clean_name(line)
+    handle = instagram_author_handle(page_url)
+    if handle:
+        return clean_name(handle)
+    if display_id and not is_generic_name(display_id):
+        return ""
+    return ""
+
+
 def is_generic_name(raw: str) -> bool:
     """Whether a supplied name is an ID/placeholder rather than a video title."""
     stem = Path(str(raw or "").replace("\\", "/")).stem.strip()
@@ -100,8 +176,13 @@ def clean_name(raw: str) -> str:
             name = f"{prefix.upper()}-{number} {rest}".strip()
     name = re.sub(r"[\u2010-\u2015\u2212|·•]+", " ", name)
     name = re.sub(r"\s+-\s+", " ", name)
-    name = re.sub(r"[_\s-]*(best|all|unknown)$", "", name, flags=re.I)
-    name = re.sub(r"[_\s-]*(best|all)[_\s-]*", " ", name, flags=re.I)
+    name = re.sub(
+        r"(?:(?<=[\s_-])|(?<=^))(?:best|all|unknown)$",
+        "",
+        name,
+        flags=re.I,
+    )
+    name = re.sub(r"[\s_-]+(?:best|all)[\s_-]+", " ", name, flags=re.I)
     name = "".join(char if char not in '<>:"/\\|?*' else " " for char in name)
     name = " ".join(name.split()).strip(" ._-")[:72]
     if not name or len(name) < 2 or name in {".", ".."}:

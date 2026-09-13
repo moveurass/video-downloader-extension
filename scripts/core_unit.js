@@ -846,6 +846,158 @@ assert.equal(
   "@minkoosong",
   "empty Instagram caption falls back to @handle, not the site label"
 );
+assert.equal(
+  Sites.formatInstagramItemTitle({
+    caption: "오늘 스파이크 연습 #volleyball",
+    username: "minkoosong",
+    fullName: "송민구"
+  }),
+  "오늘 스파이크 연습 #volleyball",
+  "caption wins over fullName / @handle"
+);
+assert.equal(
+  Sites.firstMeaningfulInstagramCaption(
+    "오늘 스파이크 연습 #volleyball\n둘째 줄은 파일명에 안 씀"
+  ),
+  "오늘 스파이크 연습 #volleyball",
+  "filename uses the first meaningful caption line"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      data: {
+        xdt_shortcode_media: {
+          shortcode: "DABC123xyz",
+          edge_media_to_caption: {
+            edges: [
+              { node: { text: "오늘 스파이크 연습 #volleyball\n더 많은 내용은 프로필" } }
+            ]
+          },
+          owner: { username: "minkoosong", full_name: "송민구" }
+        }
+      }
+    },
+    qaInstagram
+  ),
+  "오늘 스파이크 연습 #volleyball",
+  "logged-in xdt_shortcode_media caption is keyed to the shortcode"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      data: {
+        xdt_api__v1__media__shortcode__web_info: {
+          items: [
+            {
+              code: "DABC123xyz",
+              caption_text: "오늘 스파이크 연습 #volleyball",
+              user: { username: "minkoosong", full_name: "송민구" },
+              product_type: "clips",
+              media_type: 2
+            }
+          ]
+        }
+      }
+    },
+    qaInstagram
+  ),
+  "오늘 스파이크 연습 #volleyball",
+  "web_info items[].caption_text matches the current shortcode"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      require: [
+        {
+          __bbox: {
+            result: {
+              data: {
+                xdt_api__v1__clips__home__connection_v2: {
+                  edges: [
+                    {
+                      node: {
+                        media: {
+                          code: "NEXTREEL99",
+                          caption: { text: "다른 릴스 캡션은 쓰면 안 됨" },
+                          user: { username: "otheruser" },
+                          media_type: 2
+                        }
+                      }
+                    },
+                    {
+                      node: {
+                        media: {
+                          code: "DABC123xyz",
+                          caption: { text: "오늘 스파이크 연습 #volleyball" },
+                          user: { username: "minkoosong", full_name: "송민구" },
+                          media_type: 2
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    qaInstagram
+  ),
+  "오늘 스파이크 연습 #volleyball",
+  "clips home GraphQL still keys caption to this shortcode"
+);
+assert.equal(Sites.isInstagramIdentityTitle("송민구(@minkoosong)"), true);
+assert.equal(Sites.isInstagramIdentityTitle("@minkoosong"), true);
+assert.equal(Sites.isInstagramIdentityTitle("Video by minkoosong"), true);
+assert.equal(Sites.isInstagramIdentityTitle("Instagram_DABC123xyz"), true);
+assert.equal(Sites.isInstagramIdentityTitle("오늘 스파이크 연습 #volleyball"), false);
+assert.equal(
+  Sites.pickInstagramHelperTitle(
+    {
+      title: "Video by minkoosong",
+      description: "오늘 스파이크 연습 #volleyball\n둘째 줄",
+      webpage_url: qaInstagram
+    },
+    qaInstagram
+  ),
+  "오늘 스파이크 연습 #volleyball",
+  "yt-dlp description lifts onto a Video-by helper title"
+);
+assert.equal(
+  Sites.pickInstagramHelperTitle(
+    {
+      title: "송민구(@minkoosong)",
+      description: "오늘 스파이크 연습 #volleyball",
+      webpage_url: qaInstagram
+    },
+    qaInstagram
+  ),
+  "오늘 스파이크 연습 #volleyball",
+  "yt-dlp caption lifts onto a Name(@handle) placeholder"
+);
+assert.equal(
+  Sites.pickInstagramHelperTitle(
+    {
+      title: "다른 릴스 캡션은 쓰면 안 됨",
+      description: "다른 릴스 캡션은 쓰면 안 됨",
+      webpage_url: "https://www.instagram.com/reel/NEXTREEL99/"
+    },
+    qaInstagram
+  ),
+  "",
+  "helper caption for another shortcode is not applied"
+);
+assert.equal(UVD.isGenericSaveName("송민구(@minkoosong)"), true);
+assert.equal(Naming.isUglyBase("송민구(@minkoosong)"), true);
+assert.equal(
+  PopupMedia.downloadFilename(
+    { title: "송민구(@minkoosong)", pageUrl: qaInstagramOwner },
+    { Naming, UVD }
+  ),
+  "@minkoosong.mp4",
+  "Name(@handle) is not saved; @handle is the last-resort filename"
+);
 assert.equal(Sites.instagramAuthorHandle(qaInstagramOwner), "@minkoosong");
 assert.equal(Sites.instagramAuthorHandle(qaInstagram), "");
 assert.equal(Sites.isInstagramSiteShellTitle("Instagram"), true);

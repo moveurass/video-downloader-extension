@@ -298,6 +298,10 @@ const Naming = (() => {
     if (/^.+\s+on\s+(?:youtube|tiktok|instagram|facebook)$/i.test(b)) {
       return true;
     }
+    if (/^.+\s*\(@[A-Za-z0-9._]{1,30}\)$/.test(b)) return true;
+    if (/^(?:video|reel|reels|post)\s+by\s+@?[A-Za-z0-9._]+$/i.test(b)) {
+      return true;
+    }
     if (/^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(b)) {
       return true;
     }

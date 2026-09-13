@@ -15,7 +15,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "helper"))
-from name_utils import clean_name, is_generic_name, unique_output_path  # noqa: E402
+from name_utils import (  # noqa: E402
+    clean_name,
+    instagram_readable_title,
+    is_generic_name,
+    is_instagram_identity_title,
+    unique_output_path,
+)
 import yt_dlp_server as helper_server  # noqa: E402
 
 OK = 0
@@ -55,11 +61,43 @@ def main() -> int:
         clean_name("iPhone 15 review.mp4") == "iPhone 15 review",
     )
     check("clean_name normalizes explicit code", clean_name("[ssis-001] title.mp4") == "SSIS-001 title")
+    check(
+        "clean_name keeps volleyball hashtag",
+        clean_name("오늘 스파이크 연습 #volleyball.mp4")
+        == "오늘 스파이크 연습 #volleyball",
+    )
     check("generic helper hint rejected", is_generic_name("YouTube_dQw4w9WgXcQ.mp4"))
     check("TikTok shell helper hint rejected", is_generic_name("TikTok 영상.mp4"))
     check("TikTok caption helper hint accepted", not is_generic_name("스파이크 연습 #volleyball.mp4"))
     check("Instagram shell helper hint rejected", is_generic_name("Instagram 영상.mp4"))
     check("Instagram caption helper hint accepted", not is_generic_name("오늘 스파이크 연습 #volleyball.mp4"))
+    check("Instagram Name(@handle) is identity", is_instagram_identity_title("송민구(@minkoosong)"))
+    check("Instagram Video-by is identity", is_instagram_identity_title("Video by minkoosong"))
+    check(
+        "Instagram caption is not identity",
+        not is_instagram_identity_title("오늘 스파이크 연습 #volleyball"),
+    )
+    check(
+        "helper readable title prefers description over Video-by",
+        instagram_readable_title(
+            title="Video by minkoosong",
+            description="오늘 스파이크 연습 #volleyball\n둘째 줄",
+            page_url="https://www.instagram.com/minkoosong/reel/DABC123xyz/",
+        )
+        == "오늘 스파이크 연습 #volleyball",
+    )
+    check(
+        "helper identity hint is not used as Instagram output stem",
+        helper_server.supplied_title_hint(
+            {
+                "title": "송민구(@minkoosong)",
+                "filename": "송민구(@minkoosong).mp4",
+                "pageUrl": "https://www.instagram.com/minkoosong/reel/DABC123xyz/",
+                "site": "instagram",
+            }
+        )
+        == "",
+    )
     check("host id helper hint rejected", is_generic_name("host_829104.mp4"))
     check("hash helper hint rejected", is_generic_name("9f8e7d6c5b4a3210.webm"))
     check("human helper title accepted", not is_generic_name("A human video title.mp4"))

@@ -325,19 +325,29 @@
       }
       if (deps.needsHelper(url, url) || message.forceYtDlp) {
         let data = null;
-        const cached = message.refresh ? null : deps.cache.get(url);
+        const pageUrl = message.pageUrl || "";
+        const instagramPermalink =
+          (typeof deps.isInstagramPostUrl === "function" &&
+            deps.isInstagramPostUrl(pageUrl) &&
+            pageUrl) ||
+          (/instagram\.com\/(?:share\/)?(?:p|reel|reels|tv)\//i.test(pageUrl)
+            ? pageUrl
+            : "");
+        const probeUrl = instagramPermalink || url;
+        const cached = message.refresh ? null : deps.cache.get(probeUrl);
         if (cached && Date.now() - cached.at < deps.cacheTtl) data = cached.data;
         if (!data) {
           const [cookieHeader, cookiesList] = await Promise.all([
-            deps.getCookieHeader(url),
-            deps.collectCookies(url)
+            deps.getCookieHeader(probeUrl),
+            deps.collectCookies(probeUrl)
           ]);
-          data = await deps.YtDlp.listFormats(url, {
+          data = await deps.YtDlp.listFormats(probeUrl, {
             cookieHeader: cookieHeader || undefined,
             cookiesList: cookiesList?.length ? cookiesList : undefined,
-            site: deps.siteKind(url, url) || undefined
+            site: deps.siteKind(probeUrl, pageUrl || probeUrl) || undefined,
+            pageUrl: pageUrl || probeUrl
           });
-          deps.cache.set(url, { data, at: Date.now() });
+          deps.cache.set(probeUrl, { data, at: Date.now() });
           if (deps.cache.size > 60) deps.cache.delete(deps.cache.keys().next().value);
         }
         return {
@@ -345,6 +355,10 @@
           qualities: data.qualities || [],
           heights: data.heights || [],
           title: data.title || "",
+          description: data.description || "",
+          id: data.id || data.display_id || "",
+          display_id: data.display_id || data.id || "",
+          url: data.url || url,
           duration: data.duration || 0,
           estimatedSize: data.estimatedSize || 0,
           thumbnail: data.thumbnail || "",
