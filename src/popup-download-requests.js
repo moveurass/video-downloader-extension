@@ -262,8 +262,7 @@
             return id ? `YouTube_${id}` : "YouTube";
           }
           if (isInstagramUrl(link)) {
-            const m = link.match(/\/(p|reel|reels|tv)\/([^/?#]+)/i);
-            return m ? `Instagram_${m[2]}` : "Instagram";
+            return sites?.instagramAuthorHandle?.(link) || "";
           }
           if (isXUrl(link)) {
             const m = link.match(/status\/(\d+)/i);

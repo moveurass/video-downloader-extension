@@ -126,6 +126,7 @@
       youtubeThumbnailForUrl,
       isTiktokUrl,
       tiktokAuthorHandle: tiktokAuthorHandleFromDeps,
+      instagramAuthorHandle: instagramAuthorHandleFromDeps,
       isInstagramPostUrl,
       isXUrl,
       isFacebookUrl,
@@ -267,6 +268,22 @@
       return match ? `@${match[1]}` : "";
     }
 
+    function instagramAuthorHandle(url) {
+      if (typeof instagramAuthorHandleFromDeps === "function") {
+        return instagramAuthorHandleFromDeps(url) || "";
+      }
+      const match = String(url || "").match(
+        /(?:instagram\.com|instagr\.am)\/([A-Za-z0-9._]{1,30})\/(?:reel|reels|p|tv)\//i
+      );
+      if (
+        match &&
+        !/^(share|p|reel|reels|tv|stories|explore|accounts)$/i.test(match[1])
+      ) {
+        return `@${match[1]}`;
+      }
+      return "";
+    }
+
     function usableProvisionalTitle(rawTitle) {
       const title =
         Naming.cleanPageTitle(rawTitle || "") ||
@@ -373,6 +390,7 @@
         provisionalTabTitle ||
         code ||
         (kind === "tiktok" ? tiktokAuthorHandle(pageUrl) : "") ||
+        (kind === "instagram" ? instagramAuthorHandle(pageUrl) : "") ||
         siteDefaultTitle(kind);
       const thumbnail =
         (meta?.thumbnail &&
@@ -588,7 +606,10 @@
         title = Naming.bindTitleToPage?.(pageRef, "") || "";
       }
       if (!title && pageRef) {
-        title = tiktokAuthorHandle(pageRef) || "";
+        title =
+          tiktokAuthorHandle(pageRef) ||
+          instagramAuthorHandle(pageRef) ||
+          "";
       }
 
       const host = meta?.host || item.host || "";

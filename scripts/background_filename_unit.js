@@ -312,6 +312,34 @@ async function main() {
   equal(Naming.isUglyBase("username on TikTok"), true);
   equal(UVD.isGenericSaveName("TikTok 영상"), true);
 
+  const instagramPermalink = "https://www.instagram.com/reel/DABC123xyz/";
+  equal(
+    manager.lockSaveName({
+      title: "오늘 스파이크 연습 #volleyball",
+      pageUrl: instagramPermalink
+    }),
+    "오늘 스파이크 연습 #volleyball.mp4",
+    "Instagram caption becomes the locked download name"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "Instagram",
+      pageUrl: instagramPermalink
+    }),
+    "",
+    "Instagram site-shell titles are not locked over the extractor"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "Instagram 영상",
+      pageUrl: instagramPermalink
+    }),
+    "",
+    "Instagram 영상 placeholders are not locked as filenames"
+  );
+  equal(Naming.isUglyBase("username on Instagram"), true);
+  equal(UVD.isGenericSaveName("Instagram 영상"), true);
+
   console.log(`background_filename_unit: ${assertions} assertions passed`);
 }
 

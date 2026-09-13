@@ -776,6 +776,138 @@ assert.equal(
   "https://scontent.cdninstagram.com/v/t51.2885-15/cover.jpg"
 );
 
+const qaInstagram = "https://www.instagram.com/reel/DABC123xyz/";
+const qaInstagramOwner =
+  "https://www.instagram.com/minkoosong/reel/DABC123xyz/";
+const igPageData = {
+  graphql: {
+    shortcode_media: {
+      shortcode: "DABC123xyz",
+      display_url: igCover,
+      edge_media_to_caption: {
+        edges: [{ node: { text: "오늘 스파이크 연습 #volleyball" } }]
+      },
+      owner: { username: "minkoosong", full_name: "송민구" }
+    }
+  },
+  items: [
+    {
+      code: "NEXTREEL99",
+      caption: { text: "다른 릴스 캡션은 쓰면 안 됨" },
+      user: { username: "otheruser" },
+      media_type: 2
+    }
+  ]
+};
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(igPageData, qaInstagram),
+  "오늘 스파이크 연습 #volleyball",
+  "permalink caption comes from matching shortcode_media"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    igPageData,
+    "https://www.instagram.com/reel/NEXTREEL99/"
+  ),
+  "다른 릴스 캡션은 쓰면 안 됨",
+  "title walk still keys off the requested shortcode"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      items: [
+        {
+          code: "NEXTREEL99",
+          caption: { text: "다른 릴스 캡션은 쓰면 안 됨" },
+          user: { username: "otheruser" },
+          media_type: 2
+        }
+      ]
+    },
+    qaInstagram
+  ),
+  "",
+  "another reel's caption is ignored when it is not this shortcode"
+);
+assert.equal(
+  Sites.pickInstagramTitleFromPageData(
+    {
+      items: [
+        {
+          code: "DABC123xyz",
+          caption: { text: "" },
+          user: { username: "minkoosong" },
+          media_type: 2
+        }
+      ]
+    },
+    qaInstagram
+  ),
+  "@minkoosong",
+  "empty Instagram caption falls back to @handle, not the site label"
+);
+assert.equal(Sites.instagramAuthorHandle(qaInstagramOwner), "@minkoosong");
+assert.equal(Sites.instagramAuthorHandle(qaInstagram), "");
+assert.equal(Sites.isInstagramSiteShellTitle("Instagram"), true);
+assert.equal(Sites.isInstagramSiteShellTitle("Instagram 영상"), true);
+assert.equal(Sites.isInstagramSiteShellTitle("username on Instagram"), true);
+assert.equal(Sites.isInstagramSiteShellTitle("오늘 스파이크 연습"), false);
+assert.equal(
+  Sites.parseInstagramOgCaption(
+    'minkoosong on Instagram: "오늘 스파이크 연습 #volleyball"'
+  ),
+  "오늘 스파이크 연습 #volleyball"
+);
+const igShellItem = Sites.buildSiteItem({
+  url: qaInstagramOwner,
+  title: "Instagram"
+});
+assert.equal(
+  igShellItem.title,
+  "@minkoosong",
+  "placeholder uses @handle instead of the Instagram site shell"
+);
+const igBareShell = Sites.buildSiteItem({
+  url: qaInstagram,
+  title: "Instagram"
+});
+assert.equal(
+  igBareShell.title,
+  "Instagram 영상",
+  "permalink without a handle still uses the site default until caption arrives"
+);
+assert.equal(
+  PopupMedia.displayName(
+    {
+      title: "오늘 스파이크 연습 #volleyball",
+      pageUrl: qaInstagram
+    },
+    { Naming }
+  ),
+  "오늘 스파이크 연습 #volleyball"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    {
+      title: "오늘 스파이크 연습 #volleyball",
+      pageUrl: qaInstagram
+    },
+    { Naming, UVD }
+  ),
+  "오늘 스파이크 연습 #volleyball.mp4"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    { title: "Instagram", pageUrl: qaInstagramOwner },
+    { Naming, UVD }
+  ),
+  "@minkoosong.mp4",
+  "site-shell card title is not saved; @handle is used instead"
+);
+assert.equal(Naming.isUglyBase("username on Instagram"), true);
+assert.equal(UVD.isGenericSaveName("Instagram"), true);
+assert.equal(UVD.isGenericSaveName("Instagram 영상"), true);
+
 const ttAvatar =
   "https://p16-sign.tiktokcdn.com/tos-alisg-avt-0068/face~tplv-tiktokx-cropcenter:1080:1080.jpeg";
 const ttOriginCover =
@@ -1172,7 +1304,13 @@ assert.equal(
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink("https://instagram.com/reel/ABC_123/"),
-  "Instagram_ABC_123"
+  ""
+);
+assert.equal(
+  downloadRequests.fnameBaseFromLink(
+    "https://www.instagram.com/minkoosong/reel/DABC123xyz/"
+  ),
+  "@minkoosong"
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink("https://x.com/name/status/987654321"),

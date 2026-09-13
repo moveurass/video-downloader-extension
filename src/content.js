@@ -290,6 +290,10 @@
       return tiktokPageTitle();
     }
 
+    if (isInstagramPostPage()) {
+      return instagramPageTitle();
+    }
+
     const og =
       document.querySelector('meta[property="og:title"]')?.content ||
       document.querySelector('meta[name="twitter:title"]')?.content;
@@ -1127,6 +1131,159 @@
     if (fromOg && !isTiktokShellTitle(fromOg)) return fromOg;
     const fromDoc = cleanPageTitle(document.title || "");
     if (fromDoc && !isTiktokShellTitle(fromDoc)) return fromDoc;
+    return "";
+  }
+
+  function isInstagramShellTitle(value) {
+    if (typeof UVDSites !== "undefined" && UVDSites.isInstagramSiteShellTitle) {
+      return UVDSites.isInstagramSiteShellTitle(value);
+    }
+    const s = String(value || "").trim();
+    return (
+      /^(?:instagram(?:\s*(?:영상|video|reels?|post))?|영상|동영상|video|reels?)$/i.test(
+        s
+      ) || /^.+\s+on\s+instagram$/i.test(s)
+    );
+  }
+
+  function instagramCurrentPageUrl() {
+    if (
+      typeof UVDSites !== "undefined" &&
+      UVDSites.isInstagramPostUrl?.(location.href)
+    ) {
+      return location.href;
+    }
+    return extractInstagramPermalink() || location.href;
+  }
+
+  function extractInstagramItemIdentity() {
+    if (!isInstagramPostPage()) return null;
+    const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+    if (!sites?.pickInstagramItemIdentityFromPageData) return null;
+    const pageUrl = instagramCurrentPageUrl();
+    let found = null;
+    document
+      .querySelectorAll(
+        'script[data-sjs], script[type="application/json"], script[type="application/ld+json"]'
+      )
+      .forEach((s) => {
+        const t = (s.textContent || "").trim();
+        if (t.length < 80 || t.length > 2_000_000) return;
+        if (
+          !/shortcode|edge_media_to_caption|caption|username|VideoObject|display_url/i.test(
+            t
+          )
+        ) {
+          return;
+        }
+        try {
+          if (!(t.startsWith("{") || t.startsWith("["))) return;
+          const ident = sites.pickInstagramItemIdentityFromPageData(
+            JSON.parse(t),
+            pageUrl
+          );
+          if (!ident) return;
+          if (!found || (ident.caption && !found.caption)) found = ident;
+        } catch {
+          /* keyed JSON walk only */
+        }
+      });
+    return found;
+  }
+
+  function extractInstagramDomCaption() {
+    const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+    if (instagramOgMatchesCurrentPage() && sites?.parseInstagramOgCaption) {
+      for (const raw of [
+        document.querySelector('meta[property="og:description"]')?.content,
+        document.querySelector('meta[name="description"]')?.content
+      ]) {
+        const parsed = cleanPageTitle(sites.parseInstagramOgCaption(raw || "") || "");
+        if (parsed && !isInstagramShellTitle(parsed)) return parsed;
+      }
+    }
+    const selectors = [
+      "article h1",
+      "article ul li h1",
+      '[role="dialog"] h1',
+      "h1 span"
+    ];
+    for (const selector of selectors) {
+      const text = document.querySelector(selector)?.textContent?.trim() || "";
+      const cleaned = cleanPageTitle(text);
+      if (
+        cleaned &&
+        !isInstagramShellTitle(cleaned) &&
+        !/^@?[A-Za-z0-9._]{1,30}$/.test(cleaned)
+      ) {
+        return cleaned;
+      }
+    }
+    return "";
+  }
+
+  function extractInstagramDomHandle() {
+    const reserved = /^(share|p|reel|reels|tv|stories|explore|accounts)$/i;
+    const anchors = document.querySelectorAll(
+      'header a[href^="/"], a[role="link"][href^="/"]'
+    );
+    for (const anchor of anchors) {
+      const href = String(anchor.getAttribute("href") || "");
+      const match = href.match(/^\/([A-Za-z0-9._]{1,30})\/?$/);
+      if (match && !reserved.test(match[1])) return `@${match[1]}`;
+    }
+    const title = String(document.title || "");
+    const fromTitle = title.match(/@([A-Za-z0-9._]{1,30})/);
+    if (fromTitle) return `@${fromTitle[1]}`;
+    return "";
+  }
+
+  function instagramOgMatchesCurrentPage() {
+    if (typeof UVDSites === "undefined" || !UVDSites.sameInstagramIdentity) {
+      return false;
+    }
+    const ogUrl = document.querySelector('meta[property="og:url"]')?.content || "";
+    return UVDSites.sameInstagramIdentity(ogUrl, instagramCurrentPageUrl());
+  }
+
+  /**
+   * Caption from page JSON matching this shortcode, then the live caption
+   * node, then @handle. og:title lags on Reels swipe (same class of
+   * staleness as sticky covers), so it is used only when og:url is this reel.
+   */
+  function instagramPageTitle() {
+    const ident = extractInstagramItemIdentity();
+    const jsonCaption = cleanPageTitle(ident?.caption || "");
+    if (jsonCaption && !isInstagramShellTitle(jsonCaption)) return jsonCaption;
+
+    const domCaption = extractInstagramDomCaption();
+    if (domCaption) return domCaption;
+
+    const jsonHandle = String(ident?.username || "")
+      .replace(/^@/, "")
+      .trim();
+    if (jsonHandle) return `@${jsonHandle}`;
+
+    const domHandle = extractInstagramDomHandle();
+    if (domHandle) return domHandle;
+
+    if (typeof UVDSites !== "undefined" && UVDSites.instagramAuthorHandle) {
+      const fromUrl = UVDSites.instagramAuthorHandle(instagramCurrentPageUrl());
+      if (fromUrl) return fromUrl;
+    }
+
+    if (instagramOgMatchesCurrentPage()) {
+      const og =
+        document.querySelector('meta[property="og:title"]')?.content ||
+        document.querySelector('meta[name="twitter:title"]')?.content ||
+        "";
+      const parsed =
+        typeof UVDSites !== "undefined" && UVDSites.parseInstagramOgCaption
+          ? UVDSites.parseInstagramOgCaption(og)
+          : "";
+      const fromOg = cleanPageTitle(parsed || og);
+      if (fromOg && !isInstagramShellTitle(fromOg)) return fromOg;
+    }
     return "";
   }
 

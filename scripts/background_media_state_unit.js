@@ -335,6 +335,90 @@ async function main() {
     "Instagram shortcode change wipes the previous reel's cover"
   );
 
+  const igOwnerPermalink =
+    "https://www.instagram.com/minkoosong/reel/DABC123xyz/";
+  tabs.set(53, {
+    id: 53,
+    url: igOwnerPermalink,
+    title: "Instagram"
+  });
+  const igPlaceholder = store.makeSitePlaceholder({
+    id: 53,
+    url: igOwnerPermalink,
+    title: "Instagram"
+  });
+  equal(
+    igPlaceholder.title,
+    "@minkoosong",
+    "Instagram placeholder uses @handle instead of the site shell"
+  );
+  store.setTabMeta(53, {
+    lastUrl: igOwnerPermalink,
+    pageKey: "ig:reel:DABC123xyz",
+    title: "Instagram",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(53).title,
+    undefined,
+    "Instagram site-shell PAGE_META titles are not trusted"
+  );
+  store.addMedia(53, {
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/play.mp4",
+    pageUrl: igOwnerPermalink,
+    title: "오늘 스파이크 연습 #volleyball",
+    pageTitle: "오늘 스파이크 연습 #volleyball",
+    site: "instagram",
+    source: "instagram-page",
+    type: "video"
+  });
+  const igItems = await store.getMediaForTabAsync(53, {
+    pageUrl: igOwnerPermalink
+  });
+  equal(
+    igItems[0]?.title,
+    "오늘 스파이크 연습 #volleyball",
+    "Instagram permalink caption survives enrichItem"
+  );
+  equal(
+    igItems[0]?.filename,
+    "오늘 스파이크 연습 #volleyball.mp4",
+    "Instagram caption is the download filename"
+  );
+  store.setTabMeta(53, {
+    lastUrl: "https://www.instagram.com/reel/NEXTREEL99/",
+    pageKey: "ig:reel:NEXTREEL99",
+    title: "Instagram",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(53).title,
+    undefined,
+    "swipe to the next reel drops the previous caption"
+  );
+  store.addMedia(53, {
+    url: "https://scontent.cdninstagram.com/o1/v/t16/f2/m86/other.mp4",
+    pageUrl: "https://www.instagram.com/reel/NEXTREEL99/",
+    title: "다른 릴스 캡션은 쓰면 안 됨",
+    pageTitle: "다른 릴스 캡션은 쓰면 안 됨",
+    site: "instagram",
+    source: "instagram-page",
+    type: "video"
+  });
+  const igNext = await store.getMediaForTabAsync(53, {
+    pageUrl: "https://www.instagram.com/reel/NEXTREEL99/"
+  });
+  equal(
+    igNext[0]?.title,
+    "다른 릴스 캡션은 쓰면 안 됨",
+    "reel B uses its own caption after the identity change"
+  );
+  equal(
+    igNext[0]?.filename,
+    "다른 릴스 캡션은 쓰면 안 됨.mp4",
+    "reel B filename is not reel A's caption"
+  );
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({

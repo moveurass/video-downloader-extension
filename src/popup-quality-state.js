@@ -532,7 +532,9 @@
               (!patch.title ||
                 /^(YouTube|TikTok|Instagram)/i.test(patch.title) ||
                 sites?.isTiktokSiteShellTitle?.(patch.title) ||
-                /^@[\w.-]+$/.test(String(patch.title || "").trim()))
+                sites?.isInstagramSiteShellTitle?.(patch.title) ||
+                /^@[\w.-]+$/.test(String(patch.title || "").trim()) ||
+                /^.+\(@[\w.]+\)$/.test(String(patch.title || "").trim()))
             ) {
               patch.title = response.title;
               patch.pageTitle = response.title;
