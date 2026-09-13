@@ -1135,15 +1135,109 @@
   }
 
   function isInstagramShellTitle(value) {
-    if (typeof UVDSites !== "undefined" && UVDSites.isInstagramSiteShellTitle) {
-      return UVDSites.isInstagramSiteShellTitle(value);
+    if (typeof UVDSites !== "undefined") {
+      if (UVDSites.isInstagramIdentityTitle?.(value)) return true;
+      if (UVDSites.isInstagramSiteShellTitle?.(value)) return true;
     }
     const s = String(value || "").trim();
     return (
       /^(?:instagram(?:\s*(?:영상|video|reels?|post))?|영상|동영상|video|reels?)$/i.test(
         s
-      ) || /^.+\s+on\s+instagram$/i.test(s)
+      ) ||
+      /^.+\s+on\s+instagram$/i.test(s) ||
+      /^.+\s*\(@[A-Za-z0-9._]{1,30}\)$/.test(s) ||
+      /^@[A-Za-z0-9._]{1,30}$/.test(s)
     );
+  }
+
+  function firstInstagramCaptionLine(raw) {
+    if (typeof UVDSites !== "undefined" && UVDSites.firstMeaningfulInstagramCaption) {
+      return UVDSites.firstMeaningfulInstagramCaption(raw);
+    }
+    return String(raw || "")
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .find((line) => line && !isInstagramShellTitle(line)) || "";
+  }
+
+  function extractBalancedJsonObject(source, start) {
+    if (!source || source[start] !== "{") return "";
+    let depth = 0;
+    let inStr = false;
+    let esc = false;
+    const limit = Math.min(source.length, start + 2_000_000);
+    for (let i = start; i < limit; i++) {
+      const ch = source[i];
+      if (inStr) {
+        if (esc) {
+          esc = false;
+          continue;
+        }
+        if (ch === "\\") {
+          esc = true;
+          continue;
+        }
+        if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') {
+        inStr = true;
+        continue;
+      }
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) return source.slice(start, i + 1);
+      }
+    }
+    return "";
+  }
+
+  function collectInstagramJsonTexts() {
+    const texts = [];
+    const seen = new Set();
+    const push = (raw) => {
+      const t = String(raw || "").trim();
+      if (t.length < 80 || t.length > 2_000_000) return;
+      if (seen.has(t)) return;
+      seen.add(t);
+      texts.push(t);
+    };
+    document
+      .querySelectorAll(
+        'script[data-sjs], script[type="application/json"], script[type="application/ld+json"]'
+      )
+      .forEach((s) => push(s.textContent || ""));
+    document.querySelectorAll("script").forEach((s) => {
+      const type = String(s.getAttribute("type") || "").toLowerCase();
+      if (type && !/javascript|ecmascript/i.test(type)) return;
+      const t = s.textContent || "";
+      if (t.length < 80 || t.length > 2_000_000) return;
+      if (
+        !/_sharedData|__additionalDataLoaded|shortcode|caption_text|edge_media_to_caption/i.test(
+          t
+        )
+      ) {
+        return;
+      }
+      const sharedAt = t.search(/_sharedData\s*=\s*\{/);
+      if (sharedAt >= 0) {
+        const brace = t.indexOf("{", sharedAt);
+        const json = extractBalancedJsonObject(t, brace);
+        if (json) push(json);
+      }
+      let idx = 0;
+      while (idx < t.length) {
+        const hit = t.indexOf("__additionalDataLoaded", idx);
+        if (hit < 0) break;
+        const brace = t.indexOf("{", hit);
+        if (brace < 0) break;
+        const json = extractBalancedJsonObject(t, brace);
+        if (json) push(json);
+        idx = brace + 1;
+      }
+    });
+    return texts;
   }
 
   function instagramCurrentPageUrl() {
@@ -1162,32 +1256,26 @@
     if (!sites?.pickInstagramItemIdentityFromPageData) return null;
     const pageUrl = instagramCurrentPageUrl();
     let found = null;
-    document
-      .querySelectorAll(
-        'script[data-sjs], script[type="application/json"], script[type="application/ld+json"]'
-      )
-      .forEach((s) => {
-        const t = (s.textContent || "").trim();
-        if (t.length < 80 || t.length > 2_000_000) return;
-        if (
-          !/shortcode|edge_media_to_caption|caption|username|VideoObject|display_url/i.test(
-            t
-          )
-        ) {
-          return;
-        }
-        try {
-          if (!(t.startsWith("{") || t.startsWith("["))) return;
-          const ident = sites.pickInstagramItemIdentityFromPageData(
-            JSON.parse(t),
-            pageUrl
-          );
-          if (!ident) return;
-          if (!found || (ident.caption && !found.caption)) found = ident;
-        } catch {
-          /* keyed JSON walk only */
-        }
-      });
+    for (const t of collectInstagramJsonTexts()) {
+      if (
+        !/shortcode|edge_media_to_caption|caption_text|caption|"code"|username|VideoObject|display_url|xdt_shortcode|xdt_api__/i.test(
+          t
+        )
+      ) {
+        continue;
+      }
+      try {
+        if (!(t.startsWith("{") || t.startsWith("["))) continue;
+        const ident = sites.pickInstagramItemIdentityFromPageData(
+          JSON.parse(t),
+          pageUrl
+        );
+        if (!ident) continue;
+        if (!found || (ident.caption && !found.caption)) found = ident;
+      } catch {
+        /* keyed JSON walk only */
+      }
+    }
     return found;
   }
 
@@ -1198,7 +1286,11 @@
         document.querySelector('meta[property="og:description"]')?.content,
         document.querySelector('meta[name="description"]')?.content
       ]) {
-        const parsed = cleanPageTitle(sites.parseInstagramOgCaption(raw || "") || "");
+        const parsed = cleanPageTitle(
+          firstInstagramCaptionLine(
+            sites.parseInstagramOgCaption(raw || "") || ""
+          )
+        );
         if (parsed && !isInstagramShellTitle(parsed)) return parsed;
       }
     }
@@ -1206,11 +1298,15 @@
       "article h1",
       "article ul li h1",
       '[role="dialog"] h1',
-      "h1 span"
+      '[role="dialog"] ul li h1',
+      '[role="dialog"] h1 span',
+      "h1 span",
+      'h1 span[dir="auto"]',
+      'h1[dir="auto"]'
     ];
     for (const selector of selectors) {
       const text = document.querySelector(selector)?.textContent?.trim() || "";
-      const cleaned = cleanPageTitle(text);
+      const cleaned = cleanPageTitle(firstInstagramCaptionLine(text));
       if (
         cleaned &&
         !isInstagramShellTitle(cleaned) &&
@@ -1218,6 +1314,24 @@
       ) {
         return cleaned;
       }
+    }
+    for (const heading of document.querySelectorAll("h1")) {
+      const cleaned = cleanPageTitle(
+        firstInstagramCaptionLine(heading.textContent || "")
+      );
+      if (cleaned && !isInstagramShellTitle(cleaned)) return cleaned;
+    }
+    return "";
+  }
+
+  function extractInstagramAccessibilityCaption() {
+    const nodes = document.querySelectorAll(
+      "article img[alt], [role='dialog'] img[alt], video[aria-label], [role='dialog'] video[aria-label]"
+    );
+    for (const node of nodes) {
+      const raw = node.getAttribute("alt") || node.getAttribute("aria-label") || "";
+      const cleaned = cleanPageTitle(firstInstagramCaptionLine(raw));
+      if (cleaned && !isInstagramShellTitle(cleaned)) return cleaned;
     }
     return "";
   }
@@ -1248,16 +1362,21 @@
 
   /**
    * Caption from page JSON matching this shortcode, then the live caption
-   * node, then @handle. og:title lags on Reels swipe (same class of
-   * staleness as sticky covers), so it is used only when og:url is this reel.
+   * node / accessibility text, then @handle. og:title lags on Reels swipe
+   * (same class of staleness as sticky covers) and is often only
+   * `DisplayName(@handle)`, so it is used only when og:url is this reel
+   * and the text is not an identity title.
    */
   function instagramPageTitle() {
     const ident = extractInstagramItemIdentity();
-    const jsonCaption = cleanPageTitle(ident?.caption || "");
+    const jsonCaption = cleanPageTitle(firstInstagramCaptionLine(ident?.caption || ""));
     if (jsonCaption && !isInstagramShellTitle(jsonCaption)) return jsonCaption;
 
     const domCaption = extractInstagramDomCaption();
     if (domCaption) return domCaption;
+
+    const a11yCaption = extractInstagramAccessibilityCaption();
+    if (a11yCaption) return a11yCaption;
 
     const jsonHandle = String(ident?.username || "")
       .replace(/^@/, "")

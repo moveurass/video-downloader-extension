@@ -833,6 +833,11 @@ const UVD = (() => {
     ) {
       return true;
     }
+    // Instagram uploader identity: "송민구(@minkoosong)" / "Video by user"
+    if (/^.+\s*\(@[A-Za-z0-9._]{1,30}\)$/.test(s)) return true;
+    if (/^(?:video|reel|reels|post)\s+by\s+@?[A-Za-z0-9._]+$/i.test(s)) {
+      return true;
+    }
     if (
       /^(chunk|segment|seg|init|index|master|manifest|stream|source|src|host|cdn|asset)[_-]?[A-Za-z0-9_-]*$/i.test(
         s

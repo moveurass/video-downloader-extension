@@ -65,6 +65,8 @@ const {
   isInstagramPostUrl,
   isInstagramUrl,
   instagramAuthorHandle,
+  isInstagramIdentityTitle,
+  isInstagramSiteShellTitle,
   sameInstagramIdentity,
   instagramIdentityId,
   isInstagramCdnUrl,
@@ -207,6 +209,8 @@ const mediaStore = UVDBackgroundMediaState.createStore({
   isTiktokUrl,
   tiktokAuthorHandle,
   instagramAuthorHandle,
+  isInstagramIdentityTitle,
+  isInstagramSiteShellTitle,
   isInstagramPostUrl,
   sameInstagramIdentity,
   instagramIdentityId,
@@ -505,7 +509,8 @@ const handleQualityMessage = UVDQualityMessages.createHandler({
   getCookieHeader: siteHelperRunner.getCookieHeader,
   collectCookies: siteHelperRunner.collectCookies,
   segmentMeasure: (tabId, ...urls) => getSegmentMeasure(tabId, ...urls),
-  siteKind
+  siteKind,
+  isInstagramPostUrl
 });
 const handleBackgroundDownloadMessage =
   UVDBackgroundDownloadMessages.createHandler({

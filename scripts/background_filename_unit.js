@@ -337,8 +337,30 @@ async function main() {
     "",
     "Instagram 영상 placeholders are not locked as filenames"
   );
+  equal(
+    manager.lockSaveName({
+      title: "송민구(@minkoosong)",
+      pageUrl: instagramPermalink
+    }),
+    "",
+    "Name(@handle) identity titles are not locked over the extractor"
+  );
+  equal(
+    manager.lockSaveName({
+      title: "Video by minkoosong",
+      pageUrl: instagramPermalink
+    }),
+    "",
+    "Video-by helper titles are not locked over the extractor"
+  );
+  equal(
+    manager.ytdlpFilenameHint("송민구(@minkoosong).mp4", "송민구(@minkoosong)"),
+    undefined,
+    "identity titles are not forced onto yt-dlp"
+  );
   equal(Naming.isUglyBase("username on Instagram"), true);
   equal(UVD.isGenericSaveName("Instagram 영상"), true);
+  equal(UVD.isGenericSaveName("송민구(@minkoosong)"), true);
 
   console.log(`background_filename_unit: ${assertions} assertions passed`);
 }

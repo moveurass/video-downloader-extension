@@ -127,6 +127,8 @@
       isTiktokUrl,
       tiktokAuthorHandle: tiktokAuthorHandleFromDeps,
       instagramAuthorHandle: instagramAuthorHandleFromDeps,
+      isInstagramIdentityTitle: isInstagramIdentityTitleFromDeps,
+      isInstagramSiteShellTitle: isInstagramSiteShellTitleFromDeps,
       isInstagramPostUrl,
       isXUrl,
       isFacebookUrl,
@@ -284,6 +286,20 @@
       return "";
     }
 
+    function isInstagramIdentityLike(title) {
+      if (typeof isInstagramIdentityTitleFromDeps === "function") {
+        return isInstagramIdentityTitleFromDeps(title);
+      }
+      if (typeof isInstagramSiteShellTitleFromDeps === "function") {
+        if (isInstagramSiteShellTitleFromDeps(title)) return true;
+      }
+      const s = String(title || "").trim();
+      return (
+        /^.+\s*\(@[A-Za-z0-9._]{1,30}\)$/.test(s) ||
+        /^(?:video|reel|reels|post)\s+by\s+/i.test(s)
+      );
+    }
+
     function usableProvisionalTitle(rawTitle) {
       const title =
         Naming.cleanPageTitle(rawTitle || "") ||
@@ -295,6 +311,11 @@
           title
         )
       ) {
+        return "";
+      }
+      // `송민구(@minkoosong)` looks human but is only "whose video".
+      // Keep bare @handle as a last-resort provisional name.
+      if (isInstagramIdentityLike(title) && !/^@[A-Za-z0-9._]+$/.test(title)) {
         return "";
       }
       return title;
@@ -1145,13 +1166,16 @@
       let caption = "";
       for (const item of items || []) {
         for (const raw of [item?.title, item?.pageTitle]) {
-          const title = usableProvisionalTitle(raw);
+          const title = usableProvisionalTitle(raw) || String(raw || "").trim();
           if (!title) continue;
           if (/^@[\w.]+$/.test(title)) {
             if (!handle) handle = title;
             continue;
           }
-          if (title.length > caption.length) caption = title;
+          if (isInstagramIdentityLike(title)) continue;
+          const usable = usableProvisionalTitle(title);
+          if (!usable) continue;
+          if (usable.length > caption.length) caption = usable;
         }
       }
       return caption || handle;
@@ -1162,12 +1186,19 @@
       const fromItems = titleFromMediaItems(items);
       if (!fromItems) return placeholder;
       const current = usableProvisionalTitle(placeholder.title) || "";
-      const currentIsHandle = /^@[\w.]+$/.test(current);
-      const incomingIsHandle = /^@[\w.]+$/.test(fromItems);
+      const currentIsIdentity =
+        !current ||
+        /^@[\w.]+$/.test(current) ||
+        isInstagramIdentityLike(current);
+      const incomingIsIdentity =
+        /^@[\w.]+$/.test(fromItems) || isInstagramIdentityLike(fromItems);
+      if (incomingIsIdentity && current && !currentIsIdentity) {
+        return placeholder;
+      }
       if (
         !current ||
-        currentIsHandle ||
-        (!incomingIsHandle && fromItems.length >= current.length)
+        currentIsIdentity ||
+        (!incomingIsIdentity && fromItems.length >= current.length)
       ) {
         return enrichItem(tabId, {
           ...placeholder,

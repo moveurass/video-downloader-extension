@@ -931,7 +931,57 @@
     }
     if (/^.+\s+on\s+instagram$/i.test(s)) return true;
     if (/^(?:reel|reels|post|video)\s+by\s+/i.test(s)) return true;
+    if (/^instagram[_-][A-Za-z0-9_-]+$/i.test(s)) return true;
     return /^watch\s+this\s+(?:reel|post)\s+on\s+instagram$/i.test(s);
+  }
+
+  function isInstagramAutoAltCaption(value) {
+    const s = String(value || "").trim();
+    if (!s) return true;
+    if (/^(?:photo|video|image)\s+by\s+/i.test(s)) return true;
+    return /^may be (?:an image|a video|a cartoon)/i.test(s);
+  }
+
+  /**
+   * Uploader identity that looks like a human title but is only "whose video":
+   * `송민구(@minkoosong)`, `@minkoosong`, `Video by minkoosong`.
+   */
+  function isInstagramIdentityTitle(value) {
+    const s = String(value || "")
+      .replace(/\.(mp4|webm|mkv|mp3|m4a)$/i, "")
+      .trim();
+    if (!s) return true;
+    if (isInstagramSiteShellTitle(s)) return true;
+    if (isInstagramAutoAltCaption(s)) return true;
+    if (/^@[A-Za-z0-9._]{1,30}$/.test(s)) return true;
+    if (/^.+\s*\(@[A-Za-z0-9._]{1,30}\)$/.test(s)) return true;
+    return /^(?:video|reel|reels|post)\s+by\s+@?[A-Za-z0-9._]+$/i.test(s);
+  }
+
+  function firstMeaningfulInstagramCaption(raw) {
+    const text = String(raw || "")
+      .replace(/\r/g, "\n")
+      .replace(/\\n/g, "\n");
+    const parsed = parseInstagramOgCaption(text);
+    const source = parsed || text;
+    const lines = source
+      .split(/\n+/)
+      .map((line) =>
+        String(line || "")
+          .replace(/^["“]|["”]$/g, "")
+          .trim()
+      )
+      .filter(Boolean);
+    for (const line of lines) {
+      if (isInstagramIdentityTitle(line) || isInstagramAutoAltCaption(line)) {
+        continue;
+      }
+      if (/^(?:[#@][\w.]+(?:\s+[#@][\w.]+)*)$/.test(line) && line.length < 24) {
+        continue;
+      }
+      return line;
+    }
+    return "";
   }
 
   function parseInstagramOgCaption(raw) {
@@ -945,32 +995,59 @@
         .replace(/^["“]|["”]$/g, "")
         .trim();
     }
+    const dated = s.match(/:\s*[“"'](.+?)[”"']\s*$/);
+    if (dated && /likes?|comments?|\bon\s+[A-Z][a-z]+/i.test(s)) {
+      return String(dated[1] || "").trim();
+    }
     return "";
+  }
+
+  function acceptInstagramCaptionValue(value) {
+    if (typeof value !== "string") return "";
+    const line = firstMeaningfulInstagramCaption(value);
+    return line && !isInstagramIdentityTitle(line) ? line : "";
   }
 
   function instagramCaptionText(obj) {
     if (!obj || typeof obj !== "object") return "";
-    const edges = obj.edge_media_to_caption?.edges;
+    const edges =
+      obj.edge_media_to_caption?.edges ||
+      obj.edge_media_to_caption?.Edges ||
+      obj.caption?.edges;
     if (Array.isArray(edges)) {
-      const text = edges[0]?.node?.text;
-      if (typeof text === "string" && text.trim()) return text.trim();
-    }
-    const caption = obj.caption;
-    if (typeof caption === "string" && caption.trim()) return caption.trim();
-    if (caption && typeof caption === "object") {
-      for (const key of ["text", "caption"]) {
-        const value = caption[key];
-        if (typeof value === "string" && value.trim()) return value.trim();
+      for (const edge of edges.slice(0, 8)) {
+        const text = edge?.node?.text || edge?.text;
+        const accepted = acceptInstagramCaptionValue(text);
+        if (accepted) return accepted;
       }
     }
-    const type = String(obj["@type"] || obj.type || "");
-    if (/VideoObject|ImageObject|SocialMediaPosting/i.test(type)) {
-      for (const key of ["name", "description", "headline"]) {
+    for (const key of ["caption_text", "accessibility_caption", "clips_caption"]) {
+      const accepted = acceptInstagramCaptionValue(obj[key]);
+      if (accepted) return accepted;
+    }
+    const caption = obj.caption;
+    if (typeof caption === "string") {
+      const accepted = acceptInstagramCaptionValue(caption);
+      if (accepted) return accepted;
+    }
+    if (caption && typeof caption === "object") {
+      for (const key of ["text", "caption", "caption_text"]) {
+        const accepted = acceptInstagramCaptionValue(caption[key]);
+        if (accepted) return accepted;
+      }
+    }
+    const type = String(obj["@type"] || obj.type || obj.__typename || "");
+    if (
+      /VideoObject|ImageObject|SocialMediaPosting|XDTGraph(Video|Image|Sidecar)|Graph(Video|Image|Sidecar)/i.test(
+        type
+      )
+    ) {
+      for (const key of ["name", "description", "headline", "title"]) {
         const value = obj[key];
-        if (typeof value === "string" && value.trim()) {
-          const parsed = parseInstagramOgCaption(value) || value.trim();
-          if (parsed && !isInstagramSiteShellTitle(parsed)) return parsed;
-        }
+        if (typeof value !== "string" || !value.trim()) continue;
+        const parsed = parseInstagramOgCaption(value) || value.trim();
+        const accepted = acceptInstagramCaptionValue(parsed);
+        if (accepted) return accepted;
       }
     }
     return "";
@@ -1017,14 +1094,49 @@
   }
 
   function formatInstagramItemTitle(item = {}) {
-    const caption = String(item.caption || "").trim();
-    if (caption && !isInstagramSiteShellTitle(caption)) return caption;
+    const caption = firstMeaningfulInstagramCaption(item.caption || "");
     const handle = String(item.username || "")
       .replace(/^@/, "")
       .trim();
+    if (caption && !isInstagramIdentityTitle(caption)) {
+      if (handle && caption.length < 4) return `@${handle} - ${caption}`;
+      return caption;
+    }
     if (handle) return `@${handle}`;
     const fullName = String(item.fullName || "").trim();
-    if (fullName && !isInstagramSiteShellTitle(fullName)) return fullName;
+    if (fullName && !isInstagramIdentityTitle(fullName)) return fullName;
+    return "";
+  }
+
+  function instagramHelperMetaId(meta = {}) {
+    const fromUrl =
+      instagramPostId(meta.webpage_url || meta.url || meta.pageUrl || "") ||
+      instagramIdentityId(meta.webpage_url || meta.url || meta.pageUrl || "");
+    if (fromUrl) return fromUrl;
+    for (const key of ["display_id", "shortcode", "code", "id"]) {
+      const value = String(meta[key] || "").trim();
+      if (/^[A-Za-z0-9_-]{5,64}$/.test(value) && !/^\d{5,}$/.test(value)) {
+        return value;
+      }
+    }
+    return "";
+  }
+
+  /**
+   * Prefer yt-dlp description/caption over identity-only titles
+   * (`Video by X`, `송민구(@minkoosong)`, `Instagram_<id>`).
+   * A helper id that does not match this permalink is ignored.
+   */
+  function pickInstagramHelperTitle(meta = {}, pageUrl = "") {
+    const wantId = instagramPostId(pageUrl) || instagramIdentityId(pageUrl);
+    const metaId = instagramHelperMetaId(meta);
+    if (wantId && metaId && !sameInstagramIdentity(metaId, wantId)) return "";
+    const caption = firstMeaningfulInstagramCaption(
+      meta.caption || meta.description || ""
+    );
+    if (caption && !isInstagramIdentityTitle(caption)) return caption;
+    const title = firstMeaningfulInstagramCaption(meta.title || "");
+    if (title && !isInstagramIdentityTitle(title)) return title;
     return "";
   }
 
@@ -1033,9 +1145,16 @@
     const code = instagramMediaShortcode(obj);
     const type = String(obj["@type"] || obj.type || obj.__typename || "");
     const jsonLd = /VideoObject|ImageObject|SocialMediaPosting/i.test(type);
-    if (!code && !jsonLd) return false;
-    const hasCaption = !!instagramCaptionText(obj) || !!obj.edge_media_to_caption;
-    const hasOwner = !!(obj.owner || obj.user || obj.username);
+    const graphType =
+      /XDTGraph(Video|Image|Sidecar)|Graph(Video|Image|Sidecar)|XDTClip/i.test(
+        type
+      );
+    if (!code && !jsonLd && !graphType) return false;
+    const hasCaption =
+      !!instagramCaptionText(obj) ||
+      !!obj.edge_media_to_caption ||
+      typeof obj.caption_text === "string";
+    const hasOwner = !!(obj.owner || obj.user || obj.username || obj.author);
     const hasMedia = !!(
       obj.display_url ||
       obj.video_url ||
@@ -1044,9 +1163,15 @@
       obj.media_type ||
       obj.is_video ||
       obj.product_type ||
-      jsonLd
+      obj.clips_metadata ||
+      jsonLd ||
+      graphType
     );
-    return hasCaption || (hasOwner && hasMedia) || (jsonLd && (hasCaption || hasOwner));
+    return (
+      hasCaption ||
+      (hasOwner && hasMedia) ||
+      ((jsonLd || graphType) && (hasCaption || hasOwner))
+    );
   }
 
   function collectInstagramItemIdentities(obj, out, depth) {
@@ -1059,11 +1184,13 @@
     }
     if (typeof obj !== "object") return;
     if (isInstagramMediaLike(obj)) {
+      const type = String(obj["@type"] || obj.type || "");
       out.push({
         shortcode: instagramMediaShortcode(obj),
         caption: instagramCaptionText(obj),
         username: instagramOwnerUsername(obj),
-        fullName: instagramOwnerFullName(obj)
+        fullName: instagramOwnerFullName(obj),
+        jsonLd: /VideoObject|ImageObject|SocialMediaPosting/i.test(type)
       });
     }
     for (const value of Object.values(obj)) {
@@ -1086,7 +1213,8 @@
             sameInstagramIdentity(item.shortcode, wantId))
       );
       if (keyed) return keyed;
-      if (found.length === 1 && !found[0].shortcode) return found[0];
+      const unkeyed = found.filter((item) => !item.shortcode);
+      if (unkeyed.length === 1 && unkeyed[0].jsonLd) return unkeyed[0];
       return null;
     }
     return found.length === 1 ? found[0] : null;
@@ -1502,8 +1630,12 @@
     instagramThumbBelongsToPage,
     instagramAuthorHandle,
     isInstagramSiteShellTitle,
+    isInstagramIdentityTitle,
+    isInstagramAutoAltCaption,
+    firstMeaningfulInstagramCaption,
     parseInstagramOgCaption,
     formatInstagramItemTitle,
+    pickInstagramHelperTitle,
     pickInstagramItemIdentityFromPageData,
     pickInstagramTitleFromPageData,
     isInstagramAvatarThumbUrl,
