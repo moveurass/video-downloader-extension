@@ -631,12 +631,24 @@
           : localTrusted
             ? local.thumbnail
             : undefined;
+        const preferUsableTitle = (primary, secondary) => {
+          const usable = (value) => {
+            const cleaned =
+              deps.Naming.cleanPageTitle?.(value || "") ||
+              String(value || "").trim();
+            if (!cleaned) return "";
+            if (deps.UVDPopupMedia.isUglyName?.(cleaned)) return "";
+            if (deps.UVD.isGenericSaveName?.(cleaned)) return "";
+            return cleaned;
+          };
+          return usable(primary) || usable(secondary) || primary || secondary;
+        };
         const title = samePage
-          ? top.title || local.title
-          : local.title || top.title;
+          ? preferUsableTitle(top.title, local.title)
+          : preferUsableTitle(local.title, top.title);
         const pageTitle = samePage
-          ? top.pageTitle || local.pageTitle
-          : local.pageTitle || top.pageTitle;
+          ? preferUsableTitle(top.pageTitle, local.pageTitle)
+          : preferUsableTitle(local.pageTitle, top.pageTitle);
 
         const result = [
           {
@@ -649,8 +661,8 @@
             title,
             pageTitle,
             displayName: samePage
-              ? top.displayName || local.displayName
-              : local.displayName,
+              ? preferUsableTitle(top.displayName, local.displayName)
+              : preferUsableTitle(local.displayName, top.displayName),
             filename: samePage
               ? top.filename || local.filename
               : local.filename,

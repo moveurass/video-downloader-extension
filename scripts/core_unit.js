@@ -766,6 +766,139 @@ assert.equal(
   ttOriginCover,
   "page JSON with avatar + covers picks originCover, never the profile photo"
 );
+const ttPageData = {
+  __DEFAULT_SCOPE__: {
+    "webapp.video-detail": {
+      itemInfo: {
+        itemStruct: {
+          id: "7674902153491664150",
+          desc: "스파이크 연습 #volleyball #queen",
+          author: {
+            avatarThumb: ttAvatar,
+            uniqueId: "volleyballqueen86",
+            nickname: "Volleyball Queen"
+          },
+          video: {
+            cover: ttVideoCover,
+            originCover: ttOriginCover,
+            dynamicCover: ttDynamicCover
+          }
+        }
+      }
+    },
+    "webapp.recommend-list": {
+      items: [
+        {
+          id: "1111111111111111111",
+          desc: "Explore filler caption that must not win",
+          author: { uniqueId: "otheruser" },
+          video: { cover: ttVideoCover }
+        }
+      ]
+    }
+  }
+};
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    ttPageData,
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  "스파이크 연습 #volleyball #queen",
+  "permalink caption comes from matching itemStruct.desc"
+);
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    ttPageData,
+    "https://www.tiktok.com/@other/video/1111111111111111111"
+  ),
+  "Explore filler caption that must not win",
+  "title walk still keys off the requested video id"
+);
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    {
+      __DEFAULT_SCOPE__: {
+        "webapp.recommend-list": {
+          items: [
+            {
+              id: "1111111111111111111",
+              desc: "Explore filler caption that must not win",
+              author: { uniqueId: "otheruser" },
+              video: { cover: ttVideoCover }
+            }
+          ]
+        }
+      }
+    },
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150"
+  ),
+  "",
+  "Explore/FYP filler desc is ignored when it is not this video"
+);
+assert.equal(
+  Sites.pickTiktokTitleFromPageData(
+    {
+      ItemModule: {
+        "7674902153491664150": {
+          id: "7674902153491664150",
+          desc: "",
+          author: "volleyballqueen86",
+          nickname: "Volleyball Queen",
+          video: { cover: ttVideoCover }
+        }
+      }
+    },
+    qaTikTok
+  ),
+  "@volleyballqueen86",
+  "empty caption falls back to @handle, not the site label"
+);
+assert.equal(Sites.tiktokAuthorHandle(qaTikTok), "@volleyballqueen86");
+assert.equal(Sites.isTiktokSiteShellTitle("TikTok"), true);
+assert.equal(Sites.isTiktokSiteShellTitle("TikTok 영상"), true);
+assert.equal(Sites.isTiktokSiteShellTitle("username on TikTok"), true);
+assert.equal(Sites.isTiktokSiteShellTitle("스파이크 연습 #volleyball"), false);
+const ttShellItem = Sites.buildSiteItem({
+  url: qaTikTok,
+  title: "TikTok"
+});
+assert.equal(
+  ttShellItem.title,
+  "@volleyballqueen86",
+  "placeholder uses @handle instead of the TikTok site shell"
+);
+assert.equal(
+  PopupMedia.displayName(
+    {
+      title: "스파이크 연습 #volleyball #queen",
+      pageUrl: qaTikTok
+    },
+    { Naming }
+  ),
+  "스파이크 연습 #volleyball #queen"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    {
+      title: "스파이크 연습 #volleyball #queen",
+      pageUrl: qaTikTok
+    },
+    { Naming, UVD }
+  ),
+  "스파이크 연습 #volleyball #queen.mp4"
+);
+assert.equal(
+  PopupMedia.downloadFilename(
+    { title: "TikTok", pageUrl: qaTikTok },
+    { Naming, UVD }
+  ),
+  "@volleyballqueen86.mp4",
+  "site-shell card title is not saved; @handle is used instead"
+);
+assert.equal(Naming.isUglyBase("username on TikTok"), true);
+assert.equal(Naming.isUglyBase("스파이크 연습 #volleyball"), false);
+assert.equal(UVD.isGenericSaveName("TikTok"), true);
+assert.equal(UVD.isGenericSaveName("TikTok 영상"), true);
 assert.equal(
   Sites.preferTiktokPreviewThumbnail(ttAvatar, ttOriginCover),
   ttOriginCover,
@@ -955,7 +1088,7 @@ assert.equal(
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink("https://tiktok.com/@name/video/123456789"),
-  "TikTok_123456789"
+  "@name"
 );
 assert.equal(
   downloadRequests.preferDownloadTargetUrl(
@@ -973,7 +1106,7 @@ assert.equal(
 );
 assert.equal(
   downloadRequests.fnameBaseFromLink(qaTikTok),
-  "TikTok_7674902153491664150"
+  "@volleyballqueen86"
 );
 assert.equal(downloadRequests.isTiktokVideoUrl("https://www.tiktok.com/explore"), false);
 assert.equal(

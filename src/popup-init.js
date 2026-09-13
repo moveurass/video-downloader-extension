@@ -985,7 +985,10 @@
         }
         allItems = ensureSiteItems(allItems, {
           url: paste,
-          title: allItems[0]?.title || "TikTok"
+          title:
+            allItems[0]?.title ||
+            UVDSites.tiktokAuthorHandle?.(paste) ||
+            ""
         });
         render();
         const item = allItems[0];

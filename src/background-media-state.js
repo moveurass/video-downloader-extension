@@ -125,6 +125,7 @@
       youtubeVideoId: youtubeVideoIdFromSites,
       youtubeThumbnailForUrl,
       isTiktokUrl,
+      tiktokAuthorHandle: tiktokAuthorHandleFromDeps,
       isInstagramPostUrl,
       isXUrl,
       isFacebookUrl,
@@ -231,6 +232,14 @@
         : "";
     }
 
+    function tiktokAuthorHandle(url) {
+      if (typeof tiktokAuthorHandleFromDeps === "function") {
+        return tiktokAuthorHandleFromDeps(url) || "";
+      }
+      const match = String(url || "").match(/\/@([\w.-]+)\/(?:video|photo)\//i);
+      return match ? `@${match[1]}` : "";
+    }
+
     function usableProvisionalTitle(rawTitle) {
       const title =
         Naming.cleanPageTitle(rawTitle || "") ||
@@ -238,7 +247,9 @@
       if (
         !title ||
         Naming.isUglyBase?.(title) ||
-        /^(?:youtube|youtube 영상|영상|동영상|video)$/i.test(title)
+        /^(?:youtube|tiktok|instagram|facebook|bilibili|x|twitter)(?:\s*(?:영상|video))?$|^(?:영상|동영상|video)$/i.test(
+          title
+        )
       ) {
         return "";
       }
@@ -334,6 +345,7 @@
         trustedMetaTitle ||
         provisionalTabTitle ||
         code ||
+        (kind === "tiktok" ? tiktokAuthorHandle(pageUrl) : "") ||
         siteDefaultTitle(kind);
       const thumbnail =
         (meta?.thumbnail &&
@@ -547,6 +559,9 @@
       title = reconcileTitles(title, tabTitle, samePage, pageRef, knownCodePage, meta);
       if (!title && pageRef) {
         title = Naming.bindTitleToPage?.(pageRef, "") || "";
+      }
+      if (!title && pageRef) {
+        title = tiktokAuthorHandle(pageRef) || "";
       }
 
       const host = meta?.host || item.host || "";

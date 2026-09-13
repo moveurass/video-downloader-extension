@@ -295,6 +295,9 @@ const Naming = (() => {
     ) {
       return true;
     }
+    if (/^.+\s+on\s+(?:youtube|tiktok|instagram|facebook)$/i.test(b)) {
+      return true;
+    }
     if (/^(?:123av|missav|jable|avgle|netflav|supjav|njav|javdb|javlibrary|thisav|hanime)$/i.test(b)) {
       return true;
     }

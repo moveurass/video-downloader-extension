@@ -230,6 +230,55 @@ async function main() {
     "Explore/FYP landing media is not offered as a downloadable TikTok video"
   );
 
+  const ttPermalink =
+    "https://www.tiktok.com/@volleyballqueen86/video/7674902153491664150";
+  tabs.set(42, {
+    id: 42,
+    url: ttPermalink,
+    title: "TikTok"
+  });
+  const ttPlaceholder = store.makeSitePlaceholder({
+    id: 42,
+    url: ttPermalink,
+    title: "TikTok"
+  });
+  equal(
+    ttPlaceholder.title,
+    "@volleyballqueen86",
+    "TikTok placeholder uses @handle instead of the site shell"
+  );
+  store.setTabMeta(42, {
+    lastUrl: ttPermalink,
+    pageKey: "tt:7674902153491664150",
+    title: "TikTok",
+    identityConfirmed: true
+  });
+  equal(
+    store.getTabMeta(42).title,
+    undefined,
+    "site-shell PAGE_META titles are not trusted"
+  );
+  store.addMedia(42, {
+    url: "https://v16m.tiktokcdn.com/play.mp4",
+    pageUrl: ttPermalink,
+    title: "스파이크 연습 #volleyball #queen",
+    pageTitle: "스파이크 연습 #volleyball #queen",
+    site: "tiktok",
+    source: "tiktok-page",
+    type: "video"
+  });
+  const ttItems = await store.getMediaForTabAsync(42, { pageUrl: ttPermalink });
+  equal(
+    ttItems[0]?.title,
+    "스파이크 연습 #volleyball #queen",
+    "permalink caption survives enrichItem"
+  );
+  equal(
+    ttItems[0]?.filename,
+    "스파이크 연습 #volleyball #queen.mp4",
+    "caption is the download filename"
+  );
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({
