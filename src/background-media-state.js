@@ -1140,6 +1140,44 @@
       return map ? filterDisplayable(map) : [];
     }
 
+    function titleFromMediaItems(items) {
+      let handle = "";
+      let caption = "";
+      for (const item of items || []) {
+        for (const raw of [item?.title, item?.pageTitle]) {
+          const title = usableProvisionalTitle(raw);
+          if (!title) continue;
+          if (/^@[\w.]+$/.test(title)) {
+            if (!handle) handle = title;
+            continue;
+          }
+          if (title.length > caption.length) caption = title;
+        }
+      }
+      return caption || handle;
+    }
+
+    function instagramPlaceholderWithTitle(tabId, placeholder, items) {
+      if (!placeholder) return null;
+      const fromItems = titleFromMediaItems(items);
+      if (!fromItems) return placeholder;
+      const current = usableProvisionalTitle(placeholder.title) || "";
+      const currentIsHandle = /^@[\w.]+$/.test(current);
+      const incomingIsHandle = /^@[\w.]+$/.test(fromItems);
+      if (
+        !current ||
+        currentIsHandle ||
+        (!incomingIsHandle && fromItems.length >= current.length)
+      ) {
+        return enrichItem(tabId, {
+          ...placeholder,
+          title: fromItems,
+          pageTitle: fromItems
+        });
+      }
+      return placeholder;
+    }
+
     async function getMediaForTabAsync(tabId, hint = {}) {
       let items = getMediaForTab(tabId);
       const pageUrl = hint.pageUrl || "";
@@ -1155,7 +1193,13 @@
           url: pageUrl,
           title: titleHint
         });
-        if (placeholder) return [placeholder];
+        if (placeholder) {
+          return [
+            isInstagramPostUrl(pageUrl)
+              ? instagramPlaceholderWithTitle(tabId, placeholder, items)
+              : placeholder
+          ];
+        }
       }
       if (pageUrl && /^https?:/i.test(pageUrl) && isTiktokUrl(pageUrl)) {
         if (!isDownloadableHelperPage(pageUrl)) return [];
@@ -1190,7 +1234,12 @@
             url,
             title: tab.title || titleHint
           });
-          return placeholder ? [placeholder] : items;
+          if (!placeholder) return items;
+          return [
+            isInstagramPostUrl(url)
+              ? instagramPlaceholderWithTitle(tab.id, placeholder, items)
+              : placeholder
+          ];
         }
         if (isTiktokUrl(url)) {
           if (!isDownloadableHelperPage(url)) return [];
