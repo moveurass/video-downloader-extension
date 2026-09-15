@@ -96,6 +96,14 @@
       };
     }
 
+    function isInstagramPageUrl(rawUrl) {
+      return !!sitesApi()?.isInstagramHostUrl?.(rawUrl);
+    }
+
+    function isTiktokPageUrl(rawUrl) {
+      return !!sitesApi()?.isTiktokUrl?.(rawUrl);
+    }
+
     function youtubeThumbnailMatches(thumbnail, videoId) {
       if (!thumbnail || !videoId) return false;
       const actual = String(thumbnail).match(
@@ -270,9 +278,15 @@
             }
             if (!identityReady) {
               const currentYoutubeId = youtubeVideoId(currentTabUrl);
+              // Instagram/TikTok pages are identity-stamped end to end
+              // (thumbnailPageKey / ig key), so their captures may keep the
+              // provisional title while the stamp confirms the page — the
+              // YouTube-style blank here caused title/cover flapping.
               const provisionalSafe =
                 item.provisionalIdentitySafe === true &&
-                !!currentYoutubeId;
+                (!!currentYoutubeId ||
+                  isInstagramPageUrl(currentTabUrl) ||
+                  isTiktokPageUrl(currentTabUrl));
               const safeThumbnail = youtubeThumbnailMatches(
                 item.thumbnail,
                 currentYoutubeId

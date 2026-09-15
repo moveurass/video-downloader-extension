@@ -1642,21 +1642,27 @@
     if (changed) {
       lastNavigationIdentity = nextIdentity;
       REPORTED.clear();
-      const videoId = youtubeVideoId();
-      chrome.runtime
-        .sendMessage({
-          type: "PAGE_META",
-          pageMeta: {
-            title: "",
-            thumbnail: "",
-            host: location.hostname,
-            lastUrl: location.href,
-            pageUrl: location.href,
-            videoId: videoId || undefined,
-            identityConfirmed: false
-          }
-        })
-        .catch(() => {});
+      // Instagram keeps the previous reel's card visible until the rescan
+      // delivers the new identity-stamped caption/cover — blanking here
+      // caused title/cover flapping on every Reels swipe (og:/JSON arrive
+      // late). YouTube/known-code keep the wipe: their meta is immediate.
+      if (!isInstagramHost()) {
+        const videoId = youtubeVideoId();
+        chrome.runtime
+          .sendMessage({
+            type: "PAGE_META",
+            pageMeta: {
+              title: "",
+              thumbnail: "",
+              host: location.hostname,
+              lastUrl: location.href,
+              pageUrl: location.href,
+              videoId: videoId || undefined,
+              identityConfirmed: false
+            }
+          })
+          .catch(() => {});
+      }
     }
     if (!changed && !forceRefresh) return;
     for (const delay of [0, 300, 1000]) {
@@ -2371,7 +2377,7 @@
   if (isInstagramHost()) {
     scanPage();
     setTimeout(scanPage, 1500);
-    const notifySpa = () =>
+    let notifySpa = () =>
       setTimeout(() => refreshAfterSpaNavigation(false), 0);
     for (const method of ["pushState", "replaceState"]) {
       const orig = history[method];
@@ -2385,6 +2391,21 @@
     window.addEventListener("popstate", () => {
       setTimeout(() => refreshAfterSpaNavigation(true), 0);
     });
+    // The new reel's caption/cover JSON can land well after the swipe —
+    // keep retrying past the standard 0/300/1000ms rounds.
+    const igLateRescan = () => {
+      for (const delay of [2500, 5000]) {
+        setTimeout(() => {
+          REPORTED.clear();
+          scanPage();
+        }, delay);
+      }
+    };
+    const origNotify = notifySpa;
+    notifySpa = () => {
+      origNotify();
+      igLateRescan();
+    };
     return;
   }
 
