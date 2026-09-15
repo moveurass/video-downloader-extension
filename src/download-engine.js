@@ -299,9 +299,15 @@
   /**
    * Chrome's default "uniquify" adds " (1)" even when the file is gone and
    * only a download-history row remains. Overwrite when nothing exists on
-   * disk; uniquify only for a real in-progress or completed file.
+   * disk; uniquify only for a real in-progress or completed file — or one
+   * the helper saved (those never appear in chrome.downloads, so a plain
+   * overwrite here would clobber them).
    */
-  async function chooseDownloadConflictAction(chromeObj, filename) {
+  async function chooseDownloadConflictAction(
+    chromeObj,
+    filename,
+    helperHasFile = null
+  ) {
     const relative = String(filename || "")
       .replace(/\\/g, "/")
       .replace(/^\/+/, "");
@@ -323,7 +329,12 @@
           path === leaf
         );
       });
-      return hit ? "uniquify" : "overwrite";
+      if (hit) return "uniquify";
+      if (typeof helperHasFile === "function") {
+        const helperHit = await helperHasFile(leaf).catch(() => false);
+        if (helperHit) return "uniquify";
+      }
+      return "overwrite";
     } catch {
       return "overwrite";
     }

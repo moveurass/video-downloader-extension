@@ -385,7 +385,19 @@ const {
   relDownloadPath: filenameRelDownloadPath,
   startKeepAlive,
   stopKeepAlive,
-  chooseDownloadConflictAction: UVDDownloadEngine.chooseDownloadConflictAction
+  chooseDownloadConflictAction: UVDDownloadEngine.chooseDownloadConflictAction,
+  helperHasFile: async (filename) => {
+    try {
+      const settings = await UVD.getSettings();
+      const listing = await YtDlp.listFiles(settings?.subfolder || "");
+      const leaf = String(filename || "").toLowerCase();
+      return (listing.files || []).some(
+        (file) => String(file.name || "").toLowerCase() === leaf
+      );
+    } catch {
+      return false;
+    }
+  }
 });
 UVDBackgroundHousekeeping.createController({
   chrome,

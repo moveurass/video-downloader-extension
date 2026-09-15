@@ -137,7 +137,10 @@ exit 1
               }
               if (msg.path && typeof msg.path === "string") {
                 try {
-                  const revealed = await deps.YtDlp.revealPath(msg.path);
+                  const revealed = await deps.YtDlp.revealPath(
+                    msg.path,
+                    String(msg.subfolder || "")
+                  );
                   if (revealed?.revealed) {
                     done({ via: "helper" });
                     return;
@@ -168,7 +171,7 @@ exit 1
           return { handled: true, keepChannel: true };
         }
         case "FILES_LIST": {
-          deps.YtDlp.listFiles()
+          deps.YtDlp.listFiles(String(msg.subfolder || ""))
             .then((r) => sendResponse(r))
             .catch((e) =>
               sendResponse({ ok: false, files: [], error: String(e?.message || e) })
@@ -176,7 +179,10 @@ exit 1
           return { handled: true, keepChannel: true };
         }
         case "FILES_TRASH": {
-          deps.YtDlp.trashFiles(Array.isArray(msg.paths) ? msg.paths : [])
+          deps.YtDlp.trashFiles(
+            Array.isArray(msg.paths) ? msg.paths : [],
+            String(msg.subfolder || "")
+          )
             .then((r) => sendResponse(r))
             .catch((e) =>
               sendResponse({ ok: false, trashed: 0, error: String(e?.message || e) })
@@ -234,7 +240,6 @@ exit 1
                     null,
                     runGeneration
                   );
-                  deps.stopKeepAlive(keep);
                 })
                 .catch((err) => {
                   (deps.settleTrackedJob || deps.finishDownloadJob)(
@@ -243,6 +248,8 @@ exit 1
                     err,
                     runGeneration
                   );
+                })
+                .finally(() => {
                   deps.stopKeepAlive(keep);
                 });
             }

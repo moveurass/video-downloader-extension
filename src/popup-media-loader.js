@@ -466,7 +466,7 @@
             pageUrl: currentTabUrl,
             // Browser tab titles can lag behind a YouTube pushState URL.
             title:
-              (youtubeId || knownCodePage) && suppressProvisionalTitle
+              (youtubeId || knownCodePage || isTiktokUrl(currentTabUrl) || isInstagramUrl(currentTabUrl)) && suppressProvisionalTitle
                 ? ""
                 : tab.title || ""
           });
@@ -514,7 +514,7 @@
             };
           });
         const siteTab =
-          (youtubeId || knownCodePage) && suppressProvisionalTitle
+          (youtubeId || knownCodePage || isTiktokUrl(currentTabUrl) || isInstagramUrl(currentTabUrl)) && suppressProvisionalTitle
             ? { ...tab, title: "" }
             : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));
@@ -725,9 +725,6 @@
         }
       }
 
-      // Read getters too so dependency contracts stay symmetric and testable.
-      void getAvailableQualities;
-      void getQualitiesLoading;
 
       return {
         resolveActiveTab,

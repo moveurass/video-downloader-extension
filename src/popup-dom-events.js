@@ -172,6 +172,11 @@
               }`,
               "ok"
             );
+            // Imported settings must win over the form's stale snapshot —
+            // reload so every panel re-reads them.
+            if (counts.settings) {
+              setTimeout(() => location.reload(), 900);
+            }
           } else {
             toast(res?.error || "백업 가져오기 실패", "error");
           }

@@ -417,7 +417,9 @@
             : "";
         return {
           url: pasteUrl || currentTabUrl,
-          title: allItems[0]?.title || ""
+          // A pasted permalink is a different video from the tab — never
+          // seed it with the currently displayed card's caption.
+          title: pasteUrl ? "" : allItems[0]?.title || ""
         };
       }
 

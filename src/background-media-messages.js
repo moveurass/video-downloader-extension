@@ -596,13 +596,6 @@
                 });
                 return;
               }
-              if (typeof deps.YtDlp?.fetchThumb === "function") {
-                sendResponse({
-                  ok: false,
-                  error: res ? `HTTP ${res.status}` : "fetch failed"
-                });
-                return;
-              }
               sendResponse({
                 ok: false,
                 error: res ? `HTTP ${res.status}` : "fetch failed"

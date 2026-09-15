@@ -78,14 +78,22 @@
 
     async function startChromeDownload(url, filename) {
       const fname = sanitizeDownloadFilename(filename);
-      const conflictAction = await chooseDownloadConflictAction(chrome, fname);
+      const conflictAction = await chooseDownloadConflictAction(
+        chrome,
+        fname,
+        deps.helperHasFile
+      );
       try {
         return await requestChromeDownload(url, fname, conflictAction);
       } catch (err) {
         // Retry once with a plain safe name (invalid path / restricted chars)
         if (/invalid|filename|path|name/i.test(String(err?.message || err)) && fname.includes("/")) {
           const leaf = safeDownloadName(fname.split("/").pop());
-          const leafAction = await chooseDownloadConflictAction(chrome, leaf);
+          const leafAction = await chooseDownloadConflictAction(
+            chrome,
+            leaf,
+            deps.helperHasFile
+          );
           return requestChromeDownload(url, leaf, leafAction);
         }
         throw err instanceof Error ? err : new Error(String(err));
