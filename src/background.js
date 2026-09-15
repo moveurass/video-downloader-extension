@@ -11,6 +11,7 @@ importScripts(
   "background-media-utils.js",
   "background-companion-thumbnail.js",
   "background-housekeeping.js",
+  "background-duplicate-guard.js",
   "background-keyboard-commands.js",
   "message-privileges.js",
   "background-runtime-messages.js",
@@ -294,10 +295,19 @@ mediaStore.bind();
 
 // ─── context menus ─────────────────────────────────────────
 
+const duplicateGuard = UVDBackgroundDuplicateGuard.createDuplicateGuard({
+  chrome,
+  UVD,
+  setTimeout,
+  console
+});
+duplicateGuard.bind();
+
 const contextMenuController = UVDBackgroundContextMenus.createController({
   chrome,
   UVD,
   Naming,
+  duplicateGuard,
   addMedia,
   getTabMap,
   resolveFilename,
@@ -350,6 +360,7 @@ UVDBackgroundKeyboardCommands.createController({
   chrome,
   UVD,
   Naming,
+  duplicateGuard,
   buildSaveFilename: filenameBuildSaveFilename,
   getTabMeta: (...args) => mediaStore.getTabMeta(...args),
   runTrackedDownloadAsync,

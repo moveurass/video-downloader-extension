@@ -30,38 +30,49 @@
           currentWindow: true
         });
         if (!tab?.id || !tab.url) throw new Error("탭 없음");
-        const settings = await deps.UVD.getSettings();
-        const quality = force.preferQuality || "best";
-        const mediaMode = force.mediaMode || settings.mediaMode || "video";
-        const title =
-          deps.Naming.cleanPageTitle(tab.title || "") ||
-          tab.title ||
-          force.label ||
-          "영상";
-        const filename =
-          (await deps.buildSaveFilename({
-            title,
-            quality: quality === "best" ? "" : quality,
-            pageUrl: tab.url,
-            mediaMode
-          })) || "";
-        await deps.runTrackedDownloadAsync(
-          {
-            tabId: tab.id,
-            title,
-            pageUrl: tab.url,
-            filename,
-            mediaMode,
-            quality,
-            thumbnail: deps.getTabMeta(tab.id)?.thumbnail || ""
-          },
-          (jobId, runGeneration) =>
-            deps.downloadPageFromUi(tab.id, tab.url, quality, jobId, {
+        const start = async () => {
+          const settings = await deps.UVD.getSettings();
+          const quality = force.preferQuality || "best";
+          const mediaMode = force.mediaMode || settings.mediaMode || "video";
+          const title =
+            deps.Naming.cleanPageTitle(tab.title || "") ||
+            tab.title ||
+            force.label ||
+            "영상";
+          const filename =
+            (await deps.buildSaveFilename({
+              title,
+              quality: quality === "best" ? "" : quality,
+              pageUrl: tab.url,
+              mediaMode
+            })) || "";
+          await deps.runTrackedDownloadAsync(
+            {
+              tabId: tab.id,
+              title,
+              pageUrl: tab.url,
+              filename,
               mediaMode,
-              preferQuality: quality,
-              ...(runGeneration != null ? { runGeneration } : {})
+              quality,
+              thumbnail: deps.getTabMeta(tab.id)?.thumbnail || ""
+            },
+            (jobId, runGeneration) =>
+              deps.downloadPageFromUi(tab.id, tab.url, quality, jobId, {
+                mediaMode,
+                preferQuality: quality,
+                ...(runGeneration != null ? { runGeneration } : {})
+              })
+          );
+        };
+        // Keyboard shortcuts bypass the popup, so the duplicate modal never
+        // runs — the guard asks via notification instead ("그래도 받기").
+        const allowed = deps.duplicateGuard
+          ? await deps.duplicateGuard.allowOrAsk(tab.url, {
+              title: tab.title || "",
+              starter: start
             })
-        );
+          : true;
+        if (allowed) await start();
       } catch (error) {
         deps.console.warn("[UVD] command download", command, error);
         try {
