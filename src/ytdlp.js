@@ -511,12 +511,12 @@ const YtDlp = (() => {
    * downloads API cannot show files it never downloaded, so helper-saved
    * outputs go through here. Resolves (never throws) with {ok, revealed}.
    */
-  async function revealPath(path) {
+  async function revealPath(path, subfolder = "") {
     try {
       const res = await fetch(`${BASE}/reveal`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ path })
+        body: JSON.stringify({ path, subfolder })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: !!(res.ok && data.ok), revealed: !!data.revealed };
@@ -560,28 +560,36 @@ const YtDlp = (() => {
     }
   }
 
-  /** Storage manager: real files in the helper output tree (never throws). */  async function listFiles() {
+  /** Storage manager: real files in the helper output tree (never throws). */
+  async function listFiles(subfolder = "") {
     try {
       const res = await fetch(`${BASE}/files/list`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: "{}"
+        body: JSON.stringify({ subfolder })
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) return { ok: true, files: data.files || [] };
-      return { ok: false, files: [] };
-    } catch {
-      return { ok: false, files: [] };
+      return {
+        ok: false,
+        files: [],
+        error: data.error || `files/list HTTP ${res.status}`
+      };
+    } catch (e) {
+      return { ok: false, files: [], error: String(e?.message || e) };
     }
   }
 
   /** Move selected output-tree files to the OS trash (never throws). */
-  async function trashFiles(paths) {
+  async function trashFiles(paths, subfolder = "") {
     try {
       const res = await fetch(`${BASE}/files/trash`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ paths: Array.isArray(paths) ? paths : [] })
+        body: JSON.stringify({
+          paths: Array.isArray(paths) ? paths : [],
+          subfolder
+        })
       });
       const data = await res.json().catch(() => ({}));
       return {

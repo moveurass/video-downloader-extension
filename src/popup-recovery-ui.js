@@ -129,7 +129,8 @@
         await deps.sendMessage({
           type: "SHOW_DOWNLOAD",
           downloadId: downloadId ? Number(downloadId) : null,
-          path
+          path,
+          subfolder: deps.getSubfolder?.() || ""
         });
       }
     }

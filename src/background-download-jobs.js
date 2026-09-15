@@ -1015,6 +1015,10 @@
     function finishDownloadJob(jobId, result, error) {
       const job = activeDownloads.get(jobId);
       if (!job) return;
+      // A job may only finish once per generation — a second settle (from a
+      // late catch after a throw inside the settle path) must not re-append
+      // history or flip a finished row back to error.
+      if (job.status === "done" || job.status === "error") return;
       if (!error && result) {
         const size = Number(result.size) || 0;
         const method = String(result.method || result.source || "");

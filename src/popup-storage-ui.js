@@ -24,8 +24,16 @@
     }
 
     function createController(deps) {
-      const { $, document, sendMessage, getHistoryItems, toast, escapeHtml, escapeAttr } =
-        deps;
+      const {
+        $,
+        document,
+        sendMessage,
+        getHistoryItems,
+        getSubfolder,
+        toast,
+        escapeHtml,
+        escapeAttr
+      } = deps;
       let files = [];
       let loaded = false;
       let armed = false;
@@ -124,7 +132,10 @@
       async function load() {
         let response = null;
         try {
-          response = await sendMessage({ type: "FILES_LIST" });
+          response = await sendMessage({
+            type: "FILES_LIST",
+            subfolder: getSubfolder?.() || ""
+          });
         } catch {
           response = null; // helper down — hide quietly
         }
@@ -154,7 +165,11 @@
           updateButtons();
           return;
         }
-        const response = await sendMessage({ type: "FILES_TRASH", paths });
+        const response = await sendMessage({
+          type: "FILES_TRASH",
+          paths,
+          subfolder: getSubfolder?.() || ""
+        });
         armed = false;
         if (response?.trashed > 0) {
           toast(`${response.trashed}개를 휴지통으로 이동했습니다`, "ok");

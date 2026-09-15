@@ -16,6 +16,7 @@ Default: http://127.0.0.1:8787
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import re
@@ -73,6 +74,9 @@ jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
 # job_id -> running subprocess (not JSON-serializable; keep aside)
 process_map: dict[str, subprocess.Popen] = {}
+# Resume-key -> job id while a download is live: refuses a second yt-dlp
+# writing into the same work dir (double-click / retry races).
+active_work_keys: dict[str, str] = {}
 COOKIE_DIR = Path(os.environ.get("UVD_COOKIE_DIR", HOME / ".cache" / "uvd-helper"))
 COOKIE_DIR.mkdir(parents=True, exist_ok=True)
 PAIR_FILE = COOKIE_DIR / "pairing.json"
@@ -607,7 +611,14 @@ def is_tiktok_page(url: str) -> bool:
         return False
     if "tiktokcdn" in h or "byteicdn" in h or "byteoversea" in h:
         return False
-    return "tiktok.com" in h or h.endswith("tiktokv.com")
+    # Exact suffix match: a bare substring would accept lookalike hosts
+    # such as "eviltiktok.com".
+    return (
+        h == "tiktok.com"
+        or h.endswith(".tiktok.com")
+        or h == "tiktokv.com"
+        or h.endswith(".tiktokv.com")
+    )
 
 
 TIKTOK_NEED_PERMALINK = (
@@ -1361,10 +1372,36 @@ def ffprobe_path() -> str | None:
 
 
 def interpret_ffprobe(output: str, return_code: int) -> dict:
-    """Read duration/format out of `ffprobe -print_format json -show_format`."""
-    if return_code != 0:
-        return {"readable": False, "duration": 0.0}
-    text = output or "{}"
+    """
+    Read duration/format out of `ffprobe -print_format json -show_format`.
+    With -v error ffprobe exits nonzero on any recoverable decode error even
+    while printing valid format JSON — a duration it managed to read still
+    means the file is playable, so parse before trusting the exit code.
+    """
+    text = (output or "").strip()
+    if text:
+        parsed = _parse_probe_json(text)
+        if parsed is not None:
+            duration = parsed
+            return {"readable": duration > 0, "duration": duration}
+    return {"readable": False, "duration": 0.0}
+
+
+def _parse_probe_json(text: str):
+    try:
+        info = json.loads(text)
+    except Exception:
+        start = text.find("{")
+        if start < 0:
+            return None
+        try:
+            info = json.loads(text[start:])
+        except Exception:
+            return None
+    try:
+        return float(info.get("format", {}).get("duration") or 0.0)
+    except Exception:
+        return None
     try:
         info = json.loads(text)
     except Exception:
@@ -1420,33 +1457,51 @@ def verify_media_integrity(path: str | Path) -> dict:
     }
 
 
-def path_in_out_dir(path: str, out_root: Path | None = None) -> Path | None:
-    """Resolve a helper-owned file path, or None if it is outside OUT_DIR."""
-    root = (out_root or OUT_DIR).resolve()
+def path_in_out_dir(
+    path: str, out_root: Path | None = None, subfolder: str = ""
+) -> Path | None:
+    """Resolve a helper-owned file path, or None if it is outside the trees
+    the helper publishes into (OUT_DIR plus the configured subfolder dir)."""
+    roots = [Path(out_root or OUT_DIR).resolve()]
+    if subfolder:
+        extra = publish_dir_for(subfolder).resolve()
+        if extra not in roots:
+            roots.append(extra)
     try:
         resolved = Path(path).expanduser().resolve()
     except Exception:
         return None
-    if resolved != root and root not in resolved.parents:
+    for root in roots:
+        if resolved == root or root in resolved.parents:
+            break
+    else:
         return None
     if not resolved.is_file():
         return None
     return resolved
 
 
-def reveal_in_file_manager(path: str, out_root: Path | None = None) -> bool:
+def reveal_in_file_manager(
+    path: str, out_root: Path | None = None, subfolder: str = ""
+) -> bool:
     """
     Reveal a helper-saved file in the OS file manager. Chrome's downloads
     API cannot open files it did not download, so the popup asks us.
     Restricted to our own output tree — the endpoint must never become a
     generic "open arbitrary path" primitive.
     """
-    root = (out_root or OUT_DIR).resolve()
+    roots = [Path(out_root or OUT_DIR).resolve()]
+    if subfolder:
+        extra = publish_dir_for(subfolder).resolve()
+        if extra not in roots:
+            roots.append(extra)
     try:
         resolved = Path(path).expanduser().resolve()
     except Exception:
         return False
-    if resolved != root and root not in resolved.parents:
+    if not any(
+        resolved == root or root in resolved.parents for root in roots
+    ):
         return False
     if not resolved.exists():
         return False
@@ -1528,45 +1583,59 @@ def finder_list_dir(dir_path: Path) -> list[dict]:
     return entries
 
 
-def list_out_files(out_root: Path | None = None) -> list[dict]:
+def list_out_files(
+    out_root: Path | None = None, extra_roots: list[Path] | None = None
+) -> list[dict]:
     """
     Files actually on disk in the output tree — the popup storage manager's
     source of truth (history caps at 100 and is only a download record).
-    Walks OUT_DIR plus one level of subfolders; hidden working folders are
-    excluded. Sorted newest-first by the caller's choice later.
+    Walks OUT_DIR plus one level of subfolders (and any extra roots, e.g. a
+    configured subfolder dir outside OUT_DIR); hidden working folders are
+    excluded.
     """
-    root = Path(out_root or OUT_DIR).resolve()
+    roots = [Path(out_root or OUT_DIR).resolve()]
+    for extra in extra_roots or []:
+        resolved = Path(extra).resolve()
+        if resolved not in roots:
+            roots.append(resolved)
     hidden = {".uvd-tmp", ".uvd-trash"}
     files: list[dict] = []
-    try:
-        entries = list(root.iterdir())
-    except OSError:
-        # macOS TCC denies launchd-spawned python directory enumeration of
-        # ~/Downloads even though Finder already has access — route the
-        # listing through Finder (automation permission) instead. Subfolder
-        # depth is skipped in this mode.
-        return finder_list_dir(root)
-    subdirs = [entry for entry in entries if entry.is_dir() and entry.name not in hidden]
-    candidates = [entry for entry in entries if entry.is_file()]
-    for sub in subdirs:
+    for root in roots:
         try:
-            candidates.extend(p for p in sub.iterdir() if p.is_file())
+            entries = list(root.iterdir())
         except OSError:
+            # macOS TCC denies launchd-spawned python directory enumeration
+            # of ~/Downloads even though Finder already has access — route
+            # the listing through Finder (automation permission) instead.
+            # Subfolder depth is skipped in this mode.
+            for entry in finder_list_dir(root):
+                files.append(entry)
             continue
-    for path in candidates:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        files.append(
-            {
-                "path": str(path),
-                "name": path.name,
-                "size": stat.st_size,
-                "mtime": stat.st_mtime,
-                "rel": str(path.relative_to(root)),
-            }
-        )
+        subdirs = [
+            entry
+            for entry in entries
+            if entry.is_dir() and entry.name not in hidden
+        ]
+        candidates = [entry for entry in entries if entry.is_file()]
+        for sub in subdirs:
+            try:
+                candidates.extend(p for p in sub.iterdir() if p.is_file())
+            except OSError:
+                continue
+        for path in candidates:
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append(
+                {
+                    "path": str(path),
+                    "name": path.name,
+                    "size": stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "rel": str(path.relative_to(root)),
+                }
+            )
     return files
 
 
@@ -1577,12 +1646,18 @@ def _is_within_out_tree(path: Path, root: Path) -> bool:
 def finder_delete(path: Path) -> bool:
     """
     macOS: move a file to the Trash via Finder. Finder completes the move
-    asynchronously, so wait briefly for the source to disappear.
+    asynchronously, so wait briefly for the source to disappear. The path is
+    passed positionally (argv) so a filename containing quotes or
+    backslashes can never splice AppleScript into the command.
     """
     try:
-        script = f'tell application "Finder" to delete POSIX file "{path}"'
+        script = (
+            "on run argv\n"
+            'tell application "Finder" to delete POSIX file (item 1 of argv)\n'
+            "end run"
+        )
         subprocess.run(
-            ["osascript", "-e", script],
+            ["osascript", "-e", script, str(path)],
             capture_output=True,
             text=True,
             timeout=20,
@@ -1609,29 +1684,36 @@ class _AnchorCollector(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.anchors: list[dict] = []
-        self._current: dict | None = None
+        self._stack: list[dict] = []
+
+    @property
+    def _current(self):
+        return self._stack[-1] if self._stack else None
 
     def handle_starttag(self, tag, attrs):
         attr_map = dict(attrs)
         if tag == "a":
             href = (attr_map.get("href") or "").strip()
             if href:
-                self._current = {
+                # Card-style markup nests anchors; a stack keeps the outer
+                # (often the real) link alive while the inner one collects.
+                entry = {
                     "href": href,
                     "text": "",
                     "alt": "",
                     "rel": (attr_map.get("rel") or "").lower(),
                     "class": (attr_map.get("class") or "").lower(),
                 }
+                self._stack.append(entry)
+                self.anchors.append(entry)
         elif tag == "img" and self._current is not None:
             alt = (attr_map.get("alt") or "").strip()
             if alt and not self._current["alt"]:
                 self._current["alt"] = alt[:120]
 
     def handle_endtag(self, tag):
-        if tag == "a" and self._current is not None:
-            self.anchors.append(self._current)
-            self._current = None
+        if tag == "a" and self._stack:
+            self._stack.pop()
 
     def handle_data(self, data):
         if self._current is not None and len(self._current["text"]) < 200:
@@ -1678,17 +1760,29 @@ def crawl_list_page(url: str) -> dict:
         import gzip
 
         raw = gzip.decompress(raw)
-    html = raw.decode("utf-8", "replace")
+    charset = "utf-8"
+    try:
+        charset = resp.headers.get_content_charset() or "utf-8"
+    except Exception:
+        pass
+    html = raw.decode(charset, "replace")
     return parse_anchors(html, final_url)
 
 
-def trash_out_files(paths: list, out_root: Path | None = None) -> dict:
+def trash_out_files(
+    paths: list, out_root: Path | None = None, extra_roots: list[Path] | None = None
+) -> dict:
     """
     Move files to the OS trash (Finder on macOS) so 폴더 삭제 is recoverable.
-    Every path must resolve inside the output tree — same rule as /reveal.
-    Non-darwin platforms fall back to a hidden trash folder inside OUT_DIR.
+    Every path must resolve inside one of the managed output trees — same
+    rule as /reveal. Non-darwin platforms fall back to a hidden trash folder
+    inside that tree.
     """
-    root = Path(out_root or OUT_DIR).resolve()
+    roots = [Path(out_root or OUT_DIR).resolve()]
+    for extra in extra_roots or []:
+        resolved = Path(extra).resolve()
+        if resolved not in roots:
+            roots.append(resolved)
     results: list[dict] = []
     for raw in paths or []:
         try:
@@ -1696,7 +1790,15 @@ def trash_out_files(paths: list, out_root: Path | None = None) -> dict:
         except Exception:
             results.append({"path": str(raw), "ok": False, "error": "bad path"})
             continue
-        if not _is_within_out_tree(resolved, root) or not resolved.exists():
+        root = next(
+            (
+                r
+                for r in roots
+                if resolved == r or r in resolved.parents
+            ),
+            None,
+        )
+        if root is None or not resolved.exists():
             results.append({"path": str(raw), "ok": False, "error": "out of scope"})
             continue
         ok = False
@@ -2065,7 +2167,7 @@ def authorization_error(handler: BaseHTTPRequestHandler) -> str:
         return "helper not paired"
     if not token:
         return "missing token"
-    if token != expected_token:
+    if not hmac.compare_digest(token, expected_token):
         return "invalid token"
     return ""
 
@@ -2308,6 +2410,21 @@ def run_download(job_id: str, payload: dict) -> None:
     # The directory is keyed by resumeKey (not job id) so pause → resume lands
     # in the same place and --continue picks up the .part files.
     work_dir = TMP_ROOT / resume_key_for(payload, target)
+    work_key = str(work_dir)
+    with jobs_lock:
+        holder = active_work_keys.get(work_key)
+        if holder and holder != job_id and holder in process_map:
+            with jobs_lock:
+                jobs[job_id].update(
+                    {
+                        "status": "error",
+                        "message": "같은 영상을 이미 받는 중입니다 — 끝난 뒤 다시 시도해 주세요",
+                        "error": "같은 영상을 이미 받는 중입니다",
+                        "finishedAt": time.time(),
+                    }
+                )
+            return
+        active_work_keys[work_key] = job_id
     work_dir.mkdir(parents=True, exist_ok=True)
     publish_dir = publish_dir_for(payload.get("subfolder") or "")
     try:
@@ -3050,7 +3167,24 @@ def run_download(job_id: str, payload: dict) -> None:
                 source = Path(final_path)
                 if not is_media_output_path(source):
                     raise RuntimeError("refusing to publish a non-media output")
-                destination = unique_output_path(publish_dir, source.name)
+                # Reserve the destination exclusively (O_EXCL) so two jobs
+                # publishing near-simultaneously cannot os.rename over each
+                # other's finished download — unique_output_path's check is
+                # only advisory under that race.
+                destination = None
+                for _attempt in range(20):
+                    candidate = unique_output_path(publish_dir, source.name)
+                    try:
+                        fd = os.open(
+                            candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                        )
+                        os.close(fd)
+                        destination = candidate
+                        break
+                    except FileExistsError:
+                        continue
+                if destination is None:
+                    raise RuntimeError("no free output filename")
                 if source.resolve() != destination.resolve():
                     shutil.move(str(source), str(destination))
                 published_path = destination
@@ -3183,6 +3317,23 @@ def run_download(job_id: str, payload: dict) -> None:
                     }
                 )
     finally:
+        with jobs_lock:
+            for key, holder in list(active_work_keys.items()):
+                if holder == job_id:
+                    active_work_keys.pop(key, None)
+            # A launchd agent can run for weeks — expire old finished jobs so
+            # the in-memory table cannot grow without bound.
+            finished = [
+                jid
+                for jid, j in jobs.items()
+                if j.get("status") in ("done", "error", "cancelled")
+                and jid != job_id
+            ]
+            if len(finished) > 200:
+                finished.sort(key=lambda jid: jobs[jid].get("finishedAt") or 0)
+                for jid in finished[:-200]:
+                    jobs.pop(jid, None)
+                    process_map.pop(jid, None)
         # Session cookies must not linger on disk after the job ends
         if cookies_file:
             try:
@@ -3366,7 +3517,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/reveal" or self.path.startswith("/reveal?"):
             payload = read_json(self)
             target = str(payload.get("path") or "")
-            revealed = reveal_in_file_manager(target)
+            revealed = reveal_in_file_manager(
+                target, subfolder=str(payload.get("subfolder") or "")
+            )
             send_json(
                 self,
                 200 if revealed else 404,
@@ -3378,10 +3531,18 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
 
-        # Storage manager: list output-tree files / move selections to trash
+        # Storage manager: list output-tree files / move selections to trash.
+        # The extension passes its subfolder setting so a ~/Downloads/<sub>
+        # publish dir is managed alongside OUT_DIR.
         if self.path == "/files/list" or self.path.startswith("/files/list?"):
+            payload = read_json(self)
+            subfolder = str(payload.get("subfolder") or "")
             try:
-                files = list_out_files()
+                files = list_out_files(
+                    extra_roots=[publish_dir_for(subfolder)]
+                    if subfolder
+                    else None
+                )
                 send_json(self, 200, {"ok": True, "files": files})
             except OSError as e:
                 send_json(
@@ -3396,7 +3557,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/files/trash" or self.path.startswith("/files/trash?"):
             payload = read_json(self)
-            outcome = trash_out_files(payload.get("paths") or [])
+            subfolder = str(payload.get("subfolder") or "")
+            outcome = trash_out_files(
+                payload.get("paths") or [],
+                extra_roots=[publish_dir_for(subfolder)]
+                if subfolder
+                else None,
+            )
             send_json(
                 self,
                 200,
@@ -4189,7 +4356,7 @@ class Handler(BaseHTTPRequestHandler):
 def cleanup_stale_cookie_files() -> None:
     """Remove cookie files left over from previous runs (crashes, old versions)."""
     try:
-        for p in COOKIE_DIR.glob("*.txt"):
+        for p in COOKIE_DIR.glob("*_cookies_*.txt"):
             try:
                 p.unlink()
             except OSError:

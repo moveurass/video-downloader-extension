@@ -288,6 +288,7 @@
       const recoveryController = UVDPopupRecoveryUI.createController({
         jobs: uiJobs,
         sendMessage: (message) => chrome.runtime.sendMessage(message),
+        getSubfolder: () => uvdSettings?.subfolder || "",
         toast,
         userError,
         upsertUiJob,
@@ -402,6 +403,7 @@
         document,
         sendMessage: (message) => chrome.runtime.sendMessage(message),
         getHistoryItems: () => historyItems,
+        getSubfolder: () => uvdSettings?.subfolder || "",
         toast: (...args) => toast(...args),
         escapeHtml: (...args) => escapeHtml(...args),
         escapeAttr: (...args) => escapeAttr(...args)
@@ -987,10 +989,9 @@
         }
         allItems = ensureSiteItems(allItems, {
           url: paste,
-          title:
-            allItems[0]?.title ||
-            UVDSites.tiktokAuthorHandle?.(paste) ||
-            ""
+          // The paste is a different video — author handle only, never the
+          // current card's caption.
+          title: UVDSites.tiktokAuthorHandle?.(paste) || ""
         });
         render();
         const item = allItems[0];

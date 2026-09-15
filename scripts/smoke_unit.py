@@ -703,7 +703,7 @@ def main() -> int:
             lambda helper_src, handler_src: (
                 handler_src.index("downloads.show(msg.downloadId)")
                 < handler_src.index("downloads.search(")
-                < handler_src.index("YtDlp.revealPath(msg.path)")
+                < handler_src.index("YtDlp.revealPath(")
                 < handler_src.index("showDefaultFolder")
             )
             and 'self.path == "/reveal"' in helper_src
@@ -720,7 +720,7 @@ def main() -> int:
             lambda helper_src, handler_src: (
                 handler_src.index("downloads.show(msg.downloadId)")
                 < handler_src.index("downloads.search(")
-                < handler_src.index("YtDlp.revealPath(msg.path)")
+                < handler_src.index("YtDlp.revealPath(")
                 < handler_src.index("showDefaultFolder")
             )
             and 'self.path == "/reveal"' in helper_src

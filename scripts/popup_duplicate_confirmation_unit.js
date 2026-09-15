@@ -259,7 +259,8 @@ async function main() {
     ["sendMessage", {
       type: "SHOW_DOWNLOAD",
       downloadId: 37,
-      path: "/downloads/saved.mp4"
+      path: "/downloads/saved.mp4",
+      subfolder: ""
     }],
     "folder action sends the preserved payload"
   );

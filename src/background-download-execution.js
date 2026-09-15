@@ -211,15 +211,26 @@
       }
       const tab = await deps.chrome.tabs.create({ url: pageUrl, active: false });
       if (tab?.id == null) throw new Error("페이지 탭을 열 수 없습니다");
-      deps.emitDownloadProgress(
-        tab.id,
-        4,
-        "영상 페이지 여는 중…",
-        "start",
-        deps.getCurrentJobContext()
-      );
-      await waitTabComplete(tab.id, 50000);
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        deps.emitDownloadProgress(
+          tab.id,
+          4,
+          "영상 페이지 여는 중…",
+          "start",
+          deps.getCurrentJobContext()
+        );
+        await waitTabComplete(tab.id, 50000);
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      } catch (error) {
+        // The page never completed — do not leave a hidden tab behind on
+        // every retry.
+        try {
+          await deps.chrome.tabs.remove(tab.id);
+        } catch {
+          /* best effort */
+        }
+        throw error;
+      }
       return { tabId: tab.id, opened: true };
     }
 

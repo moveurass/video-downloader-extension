@@ -86,7 +86,8 @@
               await sendMessage({
                 type: "SHOW_DOWNLOAD",
                 downloadId: dup.downloadId,
-                path: dup.path || ""
+                path: dup.path || "",
+                subfolder: getUvdSettings?.()?.subfolder || ""
               });
             } catch {
               /* ignore */
