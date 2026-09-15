@@ -2391,6 +2391,10 @@
   if (isInstagramHost()) {
     scanPage();
     setTimeout(scanPage, 1500);
+    setTimeout(() => {
+      REPORTED.clear();
+      scanPage();
+    }, 4000);
     let notifySpa = () =>
       setTimeout(() => refreshAfterSpaNavigation(false), 0);
     for (const method of ["pushState", "replaceState"]) {
@@ -2406,20 +2410,25 @@
       setTimeout(() => refreshAfterSpaNavigation(true), 0);
     });
     // The new reel's caption/cover JSON can land well after the swipe —
-    // keep retrying past the standard 0/300/1000ms rounds.
-    const igLateRescan = () => {
-      for (const delay of [2500, 5000]) {
-        setTimeout(() => {
-          REPORTED.clear();
-          scanPage();
-        }, delay);
-      }
+    // keep rescanning every ~1.2s for ~10s until the fresh data is in.
+    const igRescan = () => {
+      let attempts = 0;
+      const timer = setInterval(() => {
+        attempts += 1;
+        if (attempts > 8) {
+          clearInterval(timer);
+          return;
+        }
+        REPORTED.clear();
+        scanPage();
+      }, 1200);
     };
     const origNotify = notifySpa;
     notifySpa = () => {
       origNotify();
-      igLateRescan();
+      igRescan();
     };
+    igRescan();
     return;
   }
 
