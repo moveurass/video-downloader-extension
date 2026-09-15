@@ -105,21 +105,29 @@
         }
 
         if (info.menuItemId === "uvd-download-link" && info.linkUrl) {
-          await deps.runTrackedDownloadAsync(
-            {
-              tabId,
-              title: "",
-              pageUrl: info.linkUrl,
-              filename: ""
-            },
-            (jobId, runGeneration) =>
-              downloadTrackedPage(
+          const startLinkDownload = async () => {
+            await deps.runTrackedDownloadAsync(
+              {
                 tabId,
-                info.linkUrl,
-                jobId,
-                runGeneration
-              )
-          );
+                title: "",
+                pageUrl: info.linkUrl,
+                filename: ""
+              },
+              (jobId, runGeneration) =>
+                downloadTrackedPage(
+                  tabId,
+                  info.linkUrl,
+                  jobId,
+                  runGeneration
+                )
+            );
+          };
+          const allowed = deps.duplicateGuard
+            ? await deps.duplicateGuard.allowOrAsk(info.linkUrl, {
+                starter: startLinkDownload
+              })
+            : true;
+          if (allowed) await startLinkDownload();
           return;
         }
 
@@ -130,76 +138,95 @@
           if (!/^https?:\/\//i.test(link)) {
             throw new Error("선택한 텍스트에 링크가 없습니다");
           }
-          await deps.runTrackedDownloadAsync(
-            { tabId, title: "", pageUrl: link, filename: "" },
-            (jobId, runGeneration) =>
-              downloadTrackedPage(tabId, link, jobId, runGeneration)
-          );
+          const startSelectionDownload = async () => {
+            await deps.runTrackedDownloadAsync(
+              { tabId, title: "", pageUrl: link, filename: "" },
+              (jobId, runGeneration) =>
+                downloadTrackedPage(tabId, link, jobId, runGeneration)
+            );
+          };
+          const allowed = deps.duplicateGuard
+            ? await deps.duplicateGuard.allowOrAsk(link, {
+                starter: startSelectionDownload
+              })
+            : true;
+          if (allowed) await startSelectionDownload();
           return;
         }
 
         if (info.menuItemId === "uvd-download-best") {
-          // Social page → dedicated download; else scan media list
-          if (tab?.url && deps.needsYtDlpHelper(tab.url, tab.url)) {
-            const filename = deps.lockSaveName({
-              title: tab.title || "",
-              pageTitle: tab.title || "",
-              pageUrl: tab.url
-            });
+          // Social page → dedicated download; else scan media list.
+          // Context menus have no popup, so the duplicate modal can't run —
+          // the guard asks via notification ("그래도 받기") instead.
+          const startPageDownload = async () => {
+            if (tab?.url && deps.needsYtDlpHelper(tab.url, tab.url)) {
+              const filename = deps.lockSaveName({
+                title: tab.title || "",
+                pageTitle: tab.title || "",
+                pageUrl: tab.url
+              });
+              await deps.runTrackedDownloadAsync(
+                {
+                  tabId,
+                  title: tab.title || tab.url,
+                  pageUrl: tab.url,
+                  filename
+                },
+                (jobId, runGeneration) =>
+                  downloadTrackedPage(
+                    tabId,
+                    tab.url,
+                    jobId,
+                    runGeneration
+                  )
+              );
+              return;
+            }
+            try {
+              await deps.chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" });
+            } catch {
+              /* ignore */
+            }
+            await new Promise((resolve) => deps.setTimeout(resolve, 800));
+            const best = (
+              await deps.getMediaForTabAsync(tabId, { pageUrl: tab?.url })
+            )[0];
+            if (!best) throw new Error("감지된 영상이 없습니다");
+            const filename =
+              deps.resolveFilename(tabId, best, best.url) ||
+              deps.lockSaveName({
+                filenameHint: best.filename || "",
+                title: best.title || best.pageTitle || tab.title || "",
+                pageTitle: best.pageTitle || tab.title || "",
+                pageUrl: tab.url,
+                mediaUrl: best.url
+              });
             await deps.runTrackedDownloadAsync(
               {
                 tabId,
-                title: tab.title || tab.url,
+                title: best.title || best.filename,
                 pageUrl: tab.url,
                 filename
               },
               (jobId, runGeneration) =>
-                downloadTrackedPage(
+                deps.downloadSmart(
                   tabId,
-                  tab.url,
-                  jobId,
-                  runGeneration
+                  best.url,
+                  filename,
+                  "best",
+                  best.type,
+                  best,
+                  trackedOptions({ pageUrl: tab.url }, jobId, runGeneration)
                 )
             );
-            return;
-          }
-          try {
-            await deps.chrome.tabs.sendMessage(tabId, { type: "SCAN_NOW" });
-          } catch {
-            /* ignore */
-          }
-          await new Promise((resolve) => deps.setTimeout(resolve, 800));
-          const best = (
-            await deps.getMediaForTabAsync(tabId, { pageUrl: tab?.url })
-          )[0];
-          if (!best) throw new Error("감지된 영상이 없습니다");
-          const filename =
-            deps.resolveFilename(tabId, best, best.url) ||
-            deps.lockSaveName({
-              filenameHint: best.filename || "",
-              title: best.title || best.pageTitle || tab.title || "",
-              pageTitle: best.pageTitle || tab.title || "",
-              pageUrl: tab.url,
-              mediaUrl: best.url
-            });
-          await deps.runTrackedDownloadAsync(
-            {
-              tabId,
-              title: best.title || best.filename,
-              pageUrl: tab.url,
-              filename
-            },
-            (jobId, runGeneration) =>
-              deps.downloadSmart(
-                tabId,
-                best.url,
-                filename,
-                "best",
-                best.type,
-                best,
-                trackedOptions({ pageUrl: tab.url }, jobId, runGeneration)
-              )
-          );
+          };
+          const allowed = deps.duplicateGuard
+            ? await deps.duplicateGuard.allowOrAsk(tab.url, {
+                title: tab.title || "",
+                starter: startPageDownload
+              })
+            : true;
+          if (allowed) await startPageDownload();
         }
       } catch (e) {
         deps.console.warn("[UVD] context menu", e);
