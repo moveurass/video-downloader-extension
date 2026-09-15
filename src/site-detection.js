@@ -1190,6 +1190,17 @@
         caption: instagramCaptionText(obj),
         username: instagramOwnerUsername(obj),
         fullName: instagramOwnerFullName(obj),
+        // Shortcode-matched cover: the DOM keeps previous reels' JSON after
+        // a Reels swipe, so covers must come from the matched identity —
+        // never from the first display_url found or the lagging og:image.
+        cover:
+          obj.display_url ||
+          obj.thumbnail_src ||
+          (obj.image_versions2 &&
+            obj.image_versions2.candidates &&
+            obj.image_versions2.candidates[0] &&
+            obj.image_versions2.candidates[0].url) ||
+          "",
         jsonLd: /VideoObject|ImageObject|SocialMediaPosting/i.test(type)
       });
     }

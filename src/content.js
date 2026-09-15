@@ -1424,6 +1424,15 @@
   function extractInstagramCoverUrl() {
     if (!isInstagramPostPage()) return "";
     const sites = typeof UVDSites !== "undefined" ? UVDSites : null;
+
+    // 1) Shortcode-matched cover straight from the current reel's page
+    //    JSON. The DOM keeps previous reels' data after a swipe and
+    //    og:image lags, so only this is identity-correct on first paint.
+    const identCover = String(
+      extractInstagramItemIdentity()?.cover || ""
+    ).trim();
+    if (/^https?:\/\//i.test(identCover)) return identCover;
+
     const found = [];
 
     document
@@ -1446,8 +1455,13 @@
         }
       });
 
-    const og = document.querySelector('meta[property="og:image"]')?.content;
-    if (og) found.push(og);
+    // 2) og:image only when og:url is THIS reel — otherwise it is the
+    //    previous reel's cover still stuck in the head.
+    if (instagramOgMatchesCurrentPage()) {
+      const og = document.querySelector('meta[property="og:image"]')?.content;
+      if (og) found.push(og);
+    }
+    // 3) The visible player's own poster is the current reel by definition.
     const poster = document.querySelector("video[poster]")?.getAttribute("poster");
     if (poster) found.push(poster);
     if (sites?.pickInstagramCoverFromCandidates) {
