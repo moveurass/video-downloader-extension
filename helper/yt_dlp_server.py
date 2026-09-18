@@ -175,12 +175,33 @@ def subfolder_segments(subfolder: str) -> list[str]:
     return out
 
 
-def publish_dir_for(subfolder: str) -> Path:
+def validated_download_dir(value: str) -> Path | None:
+    """
+    Absolute folder the user picked in the native folder picker. Returns None
+    (legacy Downloads base) for empty or invalid values — a relative or
+    parent-climbing path must never be resolved from the wire.
+    """
+    text = str(value or "").strip()
+    if not text or len(text) > 300 or not text.startswith("/"):
+        return None
+    parts = [part for part in text.split("/") if part]
+    if any(part == ".." for part in parts):
+        return None
+    return Path("/").joinpath(*parts) if parts else Path("/")
+
+
+def publish_dir_for(subfolder: str, download_dir: str = "") -> Path:
     """
     Mirror the browser path's "Downloads/<subfolder>" so helper and extension
     saves land in the same place. With a custom UVD_OUT the subfolder nests
     inside it; the default OUT_DIR already *is* Downloads/VideoDownloader.
+    A user-picked download_dir (native folder picker) replaces the base, and
+    an empty subfolder then means the picked folder itself.
     """
+    picked = validated_download_dir(download_dir)
+    if picked is not None:
+        segments = subfolder_segments(subfolder)
+        return picked.joinpath(*segments) if segments else picked
     segments = subfolder_segments(subfolder)
     if not segments:
         return OUT_DIR
@@ -1458,13 +1479,16 @@ def verify_media_integrity(path: str | Path) -> dict:
 
 
 def path_in_out_dir(
-    path: str, out_root: Path | None = None, subfolder: str = ""
+    path: str,
+    out_root: Path | None = None,
+    subfolder: str = "",
+    download_dir: str = "",
 ) -> Path | None:
     """Resolve a helper-owned file path, or None if it is outside the trees
     the helper publishes into (OUT_DIR plus the configured subfolder dir)."""
     roots = [Path(out_root or OUT_DIR).resolve()]
-    if subfolder:
-        extra = publish_dir_for(subfolder).resolve()
+    if subfolder or download_dir:
+        extra = publish_dir_for(subfolder, download_dir).resolve()
         if extra not in roots:
             roots.append(extra)
     try:
@@ -1482,7 +1506,10 @@ def path_in_out_dir(
 
 
 def reveal_in_file_manager(
-    path: str, out_root: Path | None = None, subfolder: str = ""
+    path: str,
+    out_root: Path | None = None,
+    subfolder: str = "",
+    download_dir: str = "",
 ) -> bool:
     """
     Reveal a helper-saved file in the OS file manager. Chrome's downloads
@@ -1491,8 +1518,8 @@ def reveal_in_file_manager(
     generic "open arbitrary path" primitive.
     """
     roots = [Path(out_root or OUT_DIR).resolve()]
-    if subfolder:
-        extra = publish_dir_for(subfolder).resolve()
+    if subfolder or download_dir:
+        extra = publish_dir_for(subfolder, download_dir).resolve()
         if extra not in roots:
             roots.append(extra)
     try:
@@ -1503,6 +1530,12 @@ def reveal_in_file_manager(
         resolved == root or root in resolved.parents for root in roots
     ):
         return False
+    if not resolved.exists():
+        # The file may already have been adopted into the picked folder —
+        # same basename, other root. Still helper-owned either way.
+        adopted = publish_dir_for(subfolder, download_dir) / resolved.name
+        if adopted.is_file():
+            resolved = adopted
     if not resolved.exists():
         return False
     target = resolved if resolved.is_file() else resolved.parent
@@ -1669,6 +1702,122 @@ def finder_delete(path: Path) -> bool:
             return True
         time.sleep(0.2)
     return not path.exists()
+
+
+FOLDER_PICKER_TIMEOUT = 300
+FOLDER_PICKER_PROMPT = "저장할 폴더를 선택하세요"
+
+
+def classify_folder_picker(output: str, return_code: int) -> dict:
+    """
+    Pure classifier for an osascript `choose folder` run (combined stdout +
+    stderr). Mirrors classify_update_result: {picked, cancelled, message}
+    with Korean guidance — message is empty on success and user cancel.
+    """
+    text = str(output or "").strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    last = lines[-1] if lines else ""
+    if return_code == 0:
+        if last:
+            return {"picked": True, "cancelled": False, "path": last, "message": ""}
+        return {"picked": False, "cancelled": True, "message": ""}
+    if "-128" in text:
+        return {"picked": False, "cancelled": True, "message": ""}
+    if "(-1743)" in text or "not authorized" in text.lower():
+        return {
+            "picked": False,
+            "cancelled": False,
+            "message": "폴더 선택 창을 띄울 권한이 없습니다 — 시스템 설정 > 개인정보 보호 및 보안 > 자동화에서 허용해 주세요",
+        }
+    return {
+        "picked": False,
+        "cancelled": False,
+        "message": last or "폴더 선택 창을 열지 못했습니다",
+    }
+
+
+def run_folder_picker() -> dict:
+    """
+    Open the native macOS folder chooser and return the picked absolute
+    path. Blocks the handler thread until the user answers — safe, because
+    the server is ThreadingHTTPServer and the endpoint is token-gated.
+    """
+    if sys.platform != "darwin":
+        return {
+            "picked": False,
+            "cancelled": False,
+            "message": "폴더 선택은 현재 macOS에서만 지원해요",
+        }
+    script = (
+        f'POSIX path of (choose folder with prompt "{FOLDER_PICKER_PROMPT}")'
+    )
+    try:
+        out = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=FOLDER_PICKER_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "picked": False,
+            "cancelled": True,
+            "message": "폴더 선택 시간이 초과되어 취소했어요",
+        }
+    except OSError:
+        return {
+            "picked": False,
+            "cancelled": False,
+            "message": "폴더 선택 창을 열지 못했습니다",
+        }
+    return classify_folder_picker(f"{out.stdout}\n{out.stderr}", out.returncode)
+
+
+def adopt_browser_download(
+    path: str, subfolder: str = "", download_dir: str = ""
+) -> dict:
+    """
+    Move a completed browser download from our Downloads tree into the
+    user-picked folder. chrome.downloads cannot write outside the browser's
+    Downloads dir, so browser-side saves (HLS merges, small-file fallbacks)
+    land there first and the extension asks us to adopt them afterwards.
+    Source is restricted to the same trees the helper publishes into.
+    """
+    picked = validated_download_dir(download_dir)
+    if picked is None:
+        return {"ok": False, "moved": False, "error": "선택한 저장 폴더가 없습니다"}
+    source = path_in_out_dir(path, subfolder=subfolder, download_dir=download_dir)
+    if source is None:
+        return {
+            "ok": False,
+            "moved": False,
+            "error": "이동할 파일이 저장 폴더 안에 없습니다",
+        }
+    dest_dir = publish_dir_for(subfolder, download_dir)
+    try:
+        dest_resolved = dest_dir.resolve()
+    except OSError:
+        dest_resolved = dest_dir
+    if source == dest_resolved or source.parent == dest_resolved:
+        return {"ok": True, "moved": False, "path": str(source)}
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "moved": False,
+            "error": f"선택한 폴더에 접근할 수 없습니다: {exc}",
+        }
+    dest = unique_output_path(dest_dir, source.name)
+    try:
+        shutil.move(str(source), str(dest))
+    except OSError as exc:
+        return {
+            "ok": False,
+            "moved": False,
+            "error": f"파일을 이동하지 못했습니다: {exc}",
+        }
+    return {"ok": True, "moved": True, "path": str(dest)}
 
 
 NEXT_TEXT_RE = re.compile(r"^\s*(?:다음|next|»|›)", re.I)
@@ -2426,10 +2575,25 @@ def run_download(job_id: str, payload: dict) -> None:
             return
         active_work_keys[work_key] = job_id
     work_dir.mkdir(parents=True, exist_ok=True)
-    publish_dir = publish_dir_for(payload.get("subfolder") or "")
+    publish_dir = publish_dir_for(
+        payload.get("subfolder") or "", payload.get("downloadDir") or ""
+    )
     try:
         publish_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
+        if validated_download_dir(payload.get("downloadDir") or "") is not None:
+            # The user explicitly picked this folder — failing loudly beats a
+            # silent download into the default tree.
+            with jobs_lock:
+                jobs[job_id].update(
+                    {
+                        "status": "error",
+                        "message": "선택한 폴더에 저장할 권한이 없습니다 — macOS 권한을 허용하거나 다른 폴더를 골라 주세요",
+                        "error": "publish mkdir denied",
+                        "finishedAt": time.time(),
+                    }
+                )
+            return
         publish_dir = OUT_DIR
     with jobs_lock:
         jobs[job_id]["workDir"] = str(work_dir)
@@ -3439,6 +3603,46 @@ class Handler(BaseHTTPRequestHandler):
             send_json(self, 403, {"ok": False, "error": reason})
             return
 
+        # Native folder picker for the popup's 폴더 선택 button. User cancel
+        # is a normal 200 {picked:false}; picker failures surface as errors.
+        if self.path == "/pick-folder" or self.path.startswith("/pick-folder?"):
+            result = run_folder_picker()
+            message = str(result.get("message") or "")
+            if not result.get("picked") and message:
+                send_json(
+                    self, 500, {"ok": False, "picked": False, "error": message}
+                )
+                return
+            send_json(
+                self,
+                200,
+                {
+                    "ok": True,
+                    "picked": bool(result.get("picked")),
+                    **(
+                        {"path": str(result.get("path") or "")}
+                        if result.get("picked")
+                        else {}
+                    ),
+                },
+            )
+            return
+
+        # Move a completed browser download into the picked folder (the
+        # extension's downloads watcher calls this after chrome.downloads
+        # finishes a file inside our Downloads tree)
+        if self.path == "/adopt-download" or self.path.startswith(
+            "/adopt-download?"
+        ):
+            payload = read_json(self)
+            result = adopt_browser_download(
+                str(payload.get("path") or ""),
+                subfolder=str(payload.get("subfolder") or ""),
+                download_dir=str(payload.get("downloadDir") or ""),
+            )
+            send_json(self, 200 if result.get("ok") else 400, result)
+            return
+
         # Cancel running yt-dlp job
         if self.path.startswith("/job/") and self.path.rstrip("/").endswith("/cancel"):
             rest = self.path.split("/job/", 1)[-1].split("?")[0]
@@ -3518,7 +3722,9 @@ class Handler(BaseHTTPRequestHandler):
             payload = read_json(self)
             target = str(payload.get("path") or "")
             revealed = reveal_in_file_manager(
-                target, subfolder=str(payload.get("subfolder") or "")
+                target,
+                subfolder=str(payload.get("subfolder") or ""),
+                download_dir=str(payload.get("downloadDir") or ""),
             )
             send_json(
                 self,
@@ -3537,10 +3743,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/files/list" or self.path.startswith("/files/list?"):
             payload = read_json(self)
             subfolder = str(payload.get("subfolder") or "")
+            download_dir = str(payload.get("downloadDir") or "")
             try:
                 files = list_out_files(
-                    extra_roots=[publish_dir_for(subfolder)]
-                    if subfolder
+                    extra_roots=[publish_dir_for(subfolder, download_dir)]
+                    if subfolder or download_dir
                     else None
                 )
                 send_json(self, 200, {"ok": True, "files": files})
@@ -3558,10 +3765,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/files/trash" or self.path.startswith("/files/trash?"):
             payload = read_json(self)
             subfolder = str(payload.get("subfolder") or "")
+            download_dir = str(payload.get("downloadDir") or "")
             outcome = trash_out_files(
                 payload.get("paths") or [],
-                extra_roots=[publish_dir_for(subfolder)]
-                if subfolder
+                extra_roots=[publish_dir_for(subfolder, download_dir)]
+                if subfolder or download_dir
                 else None,
             )
             send_json(

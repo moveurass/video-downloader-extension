@@ -11,6 +11,7 @@ importScripts(
   "background-media-utils.js",
   "background-companion-thumbnail.js",
   "background-housekeeping.js",
+  "background-adopt-download.js",
   "background-duplicate-guard.js",
   "background-keyboard-commands.js",
   "message-privileges.js",
@@ -400,7 +401,10 @@ const {
   helperHasFile: async (filename) => {
     try {
       const settings = await UVD.getSettings();
-      const listing = await YtDlp.listFiles(settings?.subfolder || "");
+      const listing = await YtDlp.listFiles(
+        settings?.subfolder || "",
+        settings?.downloadDir || ""
+      );
       const leaf = String(filename || "").toLowerCase();
       return (listing.files || []).some(
         (file) => String(file.name || "").toLowerCase() === leaf
@@ -410,6 +414,12 @@ const {
     }
   }
 });
+// Move completed browser saves into the user-picked folder (downloadDir)
+UVDBackgroundAdoptDownload.createManager({
+  chrome,
+  UVD,
+  YtDlp
+}).attach();
 UVDBackgroundHousekeeping.createController({
   chrome,
   IDBKeyRange,

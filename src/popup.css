@@ -3220,6 +3220,21 @@ body.width-wide .sq-row {
   flex: 1;
 }
 
+/* ── 저장 폴더 (folder picker row) ────────────────────────────────── */
+.folder-actions {
+  padding: 0;
+}
+
+.folder-actions .field-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.folder-actions .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 /* ── 글자 크기 (text scale) ───────────────────────────────────────── */
 body.font-large {
   zoom: 1.1;

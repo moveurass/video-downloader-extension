@@ -507,16 +507,61 @@ const YtDlp = (() => {
   }
 
   /**
+   * Open the helper's native macOS folder chooser. User cancel resolves
+   * {ok:true, picked:false}; picker failures throw with a Korean message.
+   * @returns {Promise<{ok:boolean, picked:boolean, path?:string}>}
+   */
+  async function pickFolder() {
+    const res = await fetch(`${BASE}/pick-folder`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(await authHeaders()) }
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      throw new Error(data.error || `pick-folder HTTP ${res.status}`);
+    }
+    return {
+      ok: true,
+      picked: !!data.picked,
+      ...(data.picked ? { path: String(data.path || "") } : {})
+    };
+  }
+
+  /**
+   * Move a completed browser download (our Downloads/<subfolder> tree) into
+   * the user-picked folder. Resolves {ok, moved, path?, error?} — never
+   * throws; the watcher just keeps the legacy location on failure.
+   */
+  async function adoptDownload(path, subfolder = "", downloadDir = "") {
+    try {
+      const res = await fetch(`${BASE}/adopt-download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ path, subfolder, downloadDir })
+      });
+      const data = await res.json().catch(() => ({}));
+      return {
+        ok: !!(res.ok && data.ok),
+        moved: !!data.moved,
+        path: String(data.path || ""),
+        error: String(data.error || "")
+      };
+    } catch (e) {
+      return { ok: false, moved: false, path: "", error: String(e?.message || e) };
+    }
+  }
+
+  /**
    * Ask the helper to reveal a saved file in the OS file manager. Chrome's
    * downloads API cannot show files it never downloaded, so helper-saved
    * outputs go through here. Resolves (never throws) with {ok, revealed}.
    */
-  async function revealPath(path, subfolder = "") {
+  async function revealPath(path, subfolder = "", downloadDir = "") {
     try {
       const res = await fetch(`${BASE}/reveal`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ path, subfolder })
+        body: JSON.stringify({ path, subfolder, downloadDir })
       });
       const data = await res.json().catch(() => ({}));
       return { ok: !!(res.ok && data.ok), revealed: !!data.revealed };
@@ -561,12 +606,12 @@ const YtDlp = (() => {
   }
 
   /** Storage manager: real files in the helper output tree (never throws). */
-  async function listFiles(subfolder = "") {
+  async function listFiles(subfolder = "", downloadDir = "") {
     try {
       const res = await fetch(`${BASE}/files/list`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
-        body: JSON.stringify({ subfolder })
+        body: JSON.stringify({ subfolder, downloadDir })
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.ok) return { ok: true, files: data.files || [] };
@@ -581,14 +626,15 @@ const YtDlp = (() => {
   }
 
   /** Move selected output-tree files to the OS trash (never throws). */
-  async function trashFiles(paths, subfolder = "") {
+  async function trashFiles(paths, subfolder = "", downloadDir = "") {
     try {
       const res = await fetch(`${BASE}/files/trash`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(await authHeaders()) },
         body: JSON.stringify({
           paths: Array.isArray(paths) ? paths : [],
-          subfolder
+          subfolder,
+          downloadDir
         })
       });
       const data = await res.json().catch(() => ({}));
@@ -614,6 +660,8 @@ const YtDlp = (() => {
     listFormats,
     listPlaylist,
     updateSelf,
+    pickFolder,
+    adoptDownload,
     revealPath,
     crawlList,
     listFiles,

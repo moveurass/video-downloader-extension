@@ -259,6 +259,14 @@
         userError,
         maxConcurrentStarts: MAX_CONCURRENT_STARTS,
         playCompletionSound: () => soundController.playCompletion(),
+        getSaveTargetLabel: () => {
+          const picked = String(uvdSettings?.downloadDir || "");
+          if (!picked) {
+            return `다운로드/${uvdSettings?.subfolder || "VideoDownloader"}`;
+          }
+          const sub = String(uvdSettings?.subfolder || "");
+          return sub ? `${picked}/${sub}` : picked;
+        },
         sendMessage: (message) => chrome.runtime.sendMessage(message),
         pageKey,
         fetchThumbDataUrl: (url, referer, extra) =>
@@ -416,9 +424,12 @@
         applyUiLayout,
         applyModeChips,
         updateFooterNote,
+        updatePickFolderUi,
         fillSettingsForm,
         updateSettingsPreview,
         saveSettingsFromForm,
+        pickDownloadFolder,
+        resetDownloadFolder,
         loadSitePacksUi
       } = UVDPopupSettingsUI.createController({
         $,
@@ -1074,6 +1085,8 @@
         toast,
         saveSettingsFromForm,
         updateSettingsPreview,
+        pickDownloadFolder,
+        resetDownloadFolder,
         previewCompletionSound: () => soundController.playChime(),
         renderHistory,
         updateRetryFailedButton,

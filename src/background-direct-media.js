@@ -150,6 +150,7 @@
           resumeKey: identity.resumeKey,
           outputStem: nameHint || undefined,
           subfolder: settings?.subfolder || undefined,
+          downloadDir: settings?.downloadDir || undefined,
           ...cookies,
           speedProfile: settings?.downloadSpeed || "fast"
         },
@@ -216,6 +217,7 @@
           resumeKey: identity.resumeKey,
           outputStem: nameHint || undefined,
           subfolder: settings?.subfolder || undefined,
+          downloadDir: settings?.downloadDir || undefined,
           quality: quality || "best",
           audioTrackId: trackOptions.audioTrackId || undefined,
           subtitleLanguages: Array.isArray(trackOptions.subtitleLanguages)

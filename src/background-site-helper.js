@@ -58,7 +58,8 @@
         yesPlaylist: deps.UVD.isPlaylistOnlyUrl
           ? deps.UVD.isPlaylistOnlyUrl(pageUrl)
           : deps.UVD.isPlaylistUrl(pageUrl),
-        subfolder: s.subfolder
+        subfolder: s.subfolder,
+        downloadDir: s.downloadDir || ""
       };
     }
 

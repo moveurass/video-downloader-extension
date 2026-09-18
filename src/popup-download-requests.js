@@ -567,7 +567,11 @@
             return;
           }
           if (res?.ok) {
-            toast(`저장 완료 · 다운로드/${uvdSettings.subfolder || "VideoDownloader"}`, "ok");
+            const picked = String(uvdSettings.downloadDir || "");
+            const target = picked
+              ? `${picked}${uvdSettings.subfolder ? `/${uvdSettings.subfolder}` : ""}`
+              : `다운로드/${uvdSettings.subfolder || "VideoDownloader"}`;
+            toast(`저장 완료 · ${target}`, "ok");
           }
         } catch (e) {
           const msg = String(e?.message || e || "");

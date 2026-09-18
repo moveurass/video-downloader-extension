@@ -878,6 +878,212 @@ def main() -> int:
             "Finder TSV listing parses into entries with epoch mtime",
             "macOS-only Finder AppleScript listing",
         )
+
+    # ── folder picker + picked download dir ─────────────────────────────
+    check(
+        "validated_download_dir accepts an absolute POSIX folder",
+        helper_server.validated_download_dir("/movies/dl/")
+        == Path("/movies/dl"),
+    )
+    check(
+        "validated_download_dir keeps a root pick",
+        helper_server.validated_download_dir("/") == Path("/"),
+    )
+    check(
+        "validated_download_dir rejects relative, climbing, and oversized",
+        helper_server.validated_download_dir("") is None
+        and helper_server.validated_download_dir("Downloads/X") is None
+        and helper_server.validated_download_dir("/a/../b") is None
+        and helper_server.validated_download_dir("/" + "x" * 400) is None,
+    )
+    check(
+        "publish_dir_for nests subfolder under the picked folder",
+        helper_server.publish_dir_for("YouTube", "/movies/dl")
+        == Path("/movies/dl/YouTube"),
+    )
+    check(
+        "publish_dir_for with an empty subfolder is the picked folder itself",
+        helper_server.publish_dir_for("", "/movies/dl") == Path("/movies/dl"),
+    )
+    check(
+        "publish_dir_for legacy calls are unchanged",
+        helper_server.publish_dir_for("VideoDownloader")
+        == helper_server.OUT_DIR
+        and helper_server.publish_dir_for("", "not/absolute")
+        == helper_server.OUT_DIR,
+    )
+    picked = helper_server.classify_folder_picker("/movies/dl\n", 0)
+    check(
+        "folder picker classifies success into the last stdout path",
+        picked == {"picked": True, "cancelled": False, "path": "/movies/dl", "message": ""},
+    )
+    cancelled = helper_server.classify_folder_picker(
+        "script error: user canceled (-128)", 1
+    )
+    check(
+        "folder picker treats -128 as a silent user cancel",
+        cancelled["picked"] is False
+        and cancelled["cancelled"] is True
+        and cancelled["message"] == "",
+    )
+    denied = helper_server.classify_folder_picker(
+        "osascript: not authorized to send Apple events (-1743)", 1
+    )
+    check(
+        "folder picker maps automation denial to grant guidance",
+        denied["picked"] is False and "자동화" in denied["message"],
+    )
+    broken = helper_server.classify_folder_picker("", 1)
+    check(
+        "folder picker falls back to a generic Korean error",
+        broken["picked"] is False and broken["message"] != "",
+    )
+    if sys.platform == "darwin":
+        original_osascript_run = helper_server.subprocess.run
+
+        def fake_picker_run(cmd, **_kwargs):
+            assert cmd[0] == "osascript" and cmd[1] == "-e"
+            assert "choose folder" in cmd[2]
+            return type(
+                "P",
+                (),
+                {"returncode": 0, "stdout": "/movies/dl\n", "stderr": ""},
+            )()
+
+        helper_server.subprocess.run = fake_picker_run
+        try:
+            run_result = helper_server.run_folder_picker()
+        finally:
+            helper_server.subprocess.run = original_osascript_run
+        check(
+            "run_folder_picker returns the chosen POSIX path",
+            run_result.get("picked") is True
+            and run_result.get("path") == "/movies/dl",
+        )
+
+        def fake_cancel_run(cmd, **_kwargs):
+            assert cmd[0] == "osascript" and cmd[1] == "-e"
+            return type(
+                "P",
+                (),
+                {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "script error: user canceled (-128)",
+                },
+            )()
+
+        helper_server.subprocess.run = fake_cancel_run
+        try:
+            cancel_result = helper_server.run_folder_picker()
+        finally:
+            helper_server.subprocess.run = original_osascript_run
+        check(
+            "run_folder_picker reports a dialog cancel as picked:false",
+            cancel_result.get("picked") is False
+            and cancel_result.get("cancelled") is True,
+        )
+    else:
+        skip(
+            "run_folder_picker returns the chosen POSIX path",
+            "macOS-only choose folder dialog",
+        )
+
+    # ── adopt browser downloads into the picked folder ─────────────────
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp)
+        browser_dir = base / "browserdl"
+        browser_dir.mkdir()
+        picked = base / "picked"
+        original_out_dir = helper_server.OUT_DIR
+        helper_server.OUT_DIR = browser_dir
+        src = browser_dir / "clip.mp4"
+        src.write_bytes(b"x" * 8)
+        result = helper_server.adopt_browser_download(
+            str(src), subfolder="browserdl", download_dir=str(picked)
+        )
+        check(
+            "adopt moves a browser download into the picked folder",
+            result.get("ok") is True
+            and result.get("moved") is True
+            and result.get("path") == str(picked / "browserdl" / "clip.mp4")
+            and not src.exists()
+            and (picked / "browserdl" / "clip.mp4").read_bytes() == b"x" * 8,
+        )
+        check(
+            "adopt is a no-op when the file is already in the picked folder",
+            helper_server.adopt_browser_download(
+                str(picked / "browserdl" / "clip.mp4"),
+                subfolder="browserdl",
+                download_dir=str(picked),
+            )
+            == {
+                "ok": True,
+                "moved": False,
+                "path": str((picked / "browserdl" / "clip.mp4").resolve()),
+            },
+        )
+        check(
+            "adopt rejects files outside the helper-owned trees",
+            helper_server.adopt_browser_download(
+                str(base / "evil.mp4"),
+                subfolder="browserdl",
+                download_dir=str(picked),
+            ).get("ok")
+            is False,
+        )
+        check(
+            "adopt refuses to run without a picked folder",
+            helper_server.adopt_browser_download(
+                str(src), subfolder="browserdl", download_dir=""
+            ).get("ok")
+            is False,
+        )
+        (picked / "browserdl" / "dup.mp4").write_bytes(b"old")
+        dup_src = browser_dir / "dup.mp4"
+        dup_src.write_bytes(b"new")
+        dup = helper_server.adopt_browser_download(
+            str(dup_src), subfolder="browserdl", download_dir=str(picked)
+        )
+        check(
+            "adopt uniquifies on a name collision",
+            dup.get("moved") is True
+            and dup.get("path") != str(picked / "browserdl" / "dup.mp4")
+            and (picked / "browserdl" / "dup.mp4").read_bytes() == b"old",
+        )
+        (picked / "browserdl" / "moved.mp4").write_bytes(b"m")
+        if sys.platform == "darwin":
+            original_popen = helper_server.subprocess.Popen
+
+            def fake_reveal_popen(cmd, **_kwargs):
+                reveal_calls.append(cmd)
+                return type("P", (), {"poll": lambda self: 0})()
+
+            reveal_calls: list = []
+            helper_server.subprocess.Popen = fake_reveal_popen
+            try:
+                revealed = helper_server.reveal_in_file_manager(
+                    str(browser_dir / "moved.mp4"),
+                    out_root=browser_dir,
+                    subfolder="browserdl",
+                    download_dir=str(picked),
+                )
+            finally:
+                helper_server.subprocess.Popen = original_popen
+            check(
+                "reveal falls back to the adopted file in the picked folder",
+                revealed is True
+                and reveal_calls
+                and reveal_calls[0][-1]
+                == str(picked / "browserdl" / "moved.mp4"),
+            )
+        else:
+            skip(
+                "reveal falls back to the adopted file in the picked folder",
+                "macOS-only open -R reveal",
+            )
+        helper_server.OUT_DIR = original_out_dir
+
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(
@@ -1623,6 +1829,7 @@ def main() -> int:
         ("background_media_utils_unit.js", "background media utilities"),
         ("background_companion_thumbnail_unit.js", "companion thumbnail saver"),
         ("background_housekeeping_unit.js", "background housekeeping"),
+        ("background_adopt_download_unit.js", "background adopt download"),
         ("background_keyboard_commands_unit.js", "background keyboard commands"),
         ("background_runtime_messages_unit.js", "background runtime dispatch"),
         ("dash_unit.js", "DASH helper routing"),
