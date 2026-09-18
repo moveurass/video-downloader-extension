@@ -11,6 +11,7 @@ importScripts(
   "background-media-utils.js",
   "background-companion-thumbnail.js",
   "background-housekeeping.js",
+  "background-adopt-download.js",
   "background-duplicate-guard.js",
   "background-keyboard-commands.js",
   "message-privileges.js",
@@ -413,6 +414,12 @@ const {
     }
   }
 });
+// Move completed browser saves into the user-picked folder (downloadDir)
+UVDBackgroundAdoptDownload.createManager({
+  chrome,
+  UVD,
+  YtDlp
+}).attach();
 UVDBackgroundHousekeeping.createController({
   chrome,
   IDBKeyRange,

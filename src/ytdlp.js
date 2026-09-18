@@ -528,6 +528,30 @@ const YtDlp = (() => {
   }
 
   /**
+   * Move a completed browser download (our Downloads/<subfolder> tree) into
+   * the user-picked folder. Resolves {ok, moved, path?, error?} — never
+   * throws; the watcher just keeps the legacy location on failure.
+   */
+  async function adoptDownload(path, subfolder = "", downloadDir = "") {
+    try {
+      const res = await fetch(`${BASE}/adopt-download`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+        body: JSON.stringify({ path, subfolder, downloadDir })
+      });
+      const data = await res.json().catch(() => ({}));
+      return {
+        ok: !!(res.ok && data.ok),
+        moved: !!data.moved,
+        path: String(data.path || ""),
+        error: String(data.error || "")
+      };
+    } catch (e) {
+      return { ok: false, moved: false, path: "", error: String(e?.message || e) };
+    }
+  }
+
+  /**
    * Ask the helper to reveal a saved file in the OS file manager. Chrome's
    * downloads API cannot show files it never downloaded, so helper-saved
    * outputs go through here. Resolves (never throws) with {ok, revealed}.
@@ -637,6 +661,7 @@ const YtDlp = (() => {
     listPlaylist,
     updateSelf,
     pickFolder,
+    adoptDownload,
     revealPath,
     crawlList,
     listFiles,

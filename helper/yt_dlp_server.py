@@ -1531,6 +1531,12 @@ def reveal_in_file_manager(
     ):
         return False
     if not resolved.exists():
+        # The file may already have been adopted into the picked folder —
+        # same basename, other root. Still helper-owned either way.
+        adopted = publish_dir_for(subfolder, download_dir) / resolved.name
+        if adopted.is_file():
+            resolved = adopted
+    if not resolved.exists():
         return False
     target = resolved if resolved.is_file() else resolved.parent
     try:
@@ -1765,6 +1771,53 @@ def run_folder_picker() -> dict:
             "message": "폴더 선택 창을 열지 못했습니다",
         }
     return classify_folder_picker(f"{out.stdout}\n{out.stderr}", out.returncode)
+
+
+def adopt_browser_download(
+    path: str, subfolder: str = "", download_dir: str = ""
+) -> dict:
+    """
+    Move a completed browser download from our Downloads tree into the
+    user-picked folder. chrome.downloads cannot write outside the browser's
+    Downloads dir, so browser-side saves (HLS merges, small-file fallbacks)
+    land there first and the extension asks us to adopt them afterwards.
+    Source is restricted to the same trees the helper publishes into.
+    """
+    picked = validated_download_dir(download_dir)
+    if picked is None:
+        return {"ok": False, "moved": False, "error": "선택한 저장 폴더가 없습니다"}
+    source = path_in_out_dir(path, subfolder=subfolder, download_dir=download_dir)
+    if source is None:
+        return {
+            "ok": False,
+            "moved": False,
+            "error": "이동할 파일이 저장 폴더 안에 없습니다",
+        }
+    dest_dir = publish_dir_for(subfolder, download_dir)
+    try:
+        dest_resolved = dest_dir.resolve()
+    except OSError:
+        dest_resolved = dest_dir
+    if source == dest_resolved or source.parent == dest_resolved:
+        return {"ok": True, "moved": False, "path": str(source)}
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return {
+            "ok": False,
+            "moved": False,
+            "error": f"선택한 폴더에 접근할 수 없습니다: {exc}",
+        }
+    dest = unique_output_path(dest_dir, source.name)
+    try:
+        shutil.move(str(source), str(dest))
+    except OSError as exc:
+        return {
+            "ok": False,
+            "moved": False,
+            "error": f"파일을 이동하지 못했습니다: {exc}",
+        }
+    return {"ok": True, "moved": True, "path": str(dest)}
 
 
 NEXT_TEXT_RE = re.compile(r"^\s*(?:다음|next|»|›)", re.I)
@@ -2528,6 +2581,19 @@ def run_download(job_id: str, payload: dict) -> None:
     try:
         publish_dir.mkdir(parents=True, exist_ok=True)
     except OSError:
+        if validated_download_dir(payload.get("downloadDir") or "") is not None:
+            # The user explicitly picked this folder — failing loudly beats a
+            # silent download into the default tree.
+            with jobs_lock:
+                jobs[job_id].update(
+                    {
+                        "status": "error",
+                        "message": "선택한 폴더에 저장할 권한이 없습니다 — macOS 권한을 허용하거나 다른 폴더를 골라 주세요",
+                        "error": "publish mkdir denied",
+                        "finishedAt": time.time(),
+                    }
+                )
+            return
         publish_dir = OUT_DIR
     with jobs_lock:
         jobs[job_id]["workDir"] = str(work_dir)
@@ -3560,6 +3626,21 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 },
             )
+            return
+
+        # Move a completed browser download into the picked folder (the
+        # extension's downloads watcher calls this after chrome.downloads
+        # finishes a file inside our Downloads tree)
+        if self.path == "/adopt-download" or self.path.startswith(
+            "/adopt-download?"
+        ):
+            payload = read_json(self)
+            result = adopt_browser_download(
+                str(payload.get("path") or ""),
+                subfolder=str(payload.get("subfolder") or ""),
+                download_dir=str(payload.get("downloadDir") or ""),
+            )
+            send_json(self, 200 if result.get("ok") else 400, result)
             return
 
         # Cancel running yt-dlp job
