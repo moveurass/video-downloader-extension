@@ -383,16 +383,26 @@
   function pageThumbnail() {
     const youtubeId = youtubeVideoId();
     const knownCode = !youtubeId && isKnownCodeHostName();
-    const candidates = [
+    const igPost = isInstagramPostPage();
+    // Instagram SPA: the head og:* metas keep the PREVIOUS reel's values
+    // for seconds after a swipe, so on IG they may only answer once og:url
+    // names this reel — and the identity-gated extractor outranks them.
+    const igOgOk = igPost && instagramOgMatchesCurrentPage();
+    const ogCandidates = [
       document.querySelector('meta[property="og:image"]')?.content,
       document.querySelector('meta[property="og:image:url"]')?.content,
       document.querySelector('meta[property="og:image:secure_url"]')?.content,
       document.querySelector('meta[name="twitter:image"]')?.content,
-      document.querySelector('meta[property="og:video:poster"]')?.content,
+      document.querySelector('meta[property="og:video:poster"]')?.content
+    ];
+    const candidates = [
+      ...(igPost ? [extractInstagramCoverUrl()] : []),
+      ...(igPost ? (igOgOk ? ogCandidates : []) : ogCandidates),
       document.querySelector('link[rel="image_src"]')?.href,
-      document.querySelector("video[poster]")?.getAttribute("poster"),
+      igPost
+        ? visibleInstagramPoster()
+        : document.querySelector("video[poster]")?.getAttribute("poster"),
       isTikTokVideoPage() ? extractTikTokCoverUrl() : "",
-      isInstagramPostPage() ? extractInstagramCoverUrl() : "",
       playerWrapCover(),
       // TikTok / Instagram video pages: skip generic large-img scrape.
       // Profile headshots are often the biggest <img> on those permalinks.
@@ -1417,6 +1427,27 @@
   }
 
   /**
+   * Poster of the biggest in-view video — the playing reel. Instagram keeps
+   * previous reels mounted after a swipe, so "first video[poster] in the
+   * DOM" is often the reel the user just swiped away from.
+   */
+  function visibleInstagramPoster() {
+    let best = "";
+    let bestArea = 0;
+    for (const video of document.querySelectorAll("video[poster]")) {
+      const rect = video.getBoundingClientRect();
+      if (rect.width < 80 || rect.height < 80) continue;
+      if (rect.bottom <= 0 || rect.top >= window.innerHeight) continue;
+      const area = rect.width * rect.height;
+      if (area > bestArea) {
+        bestArea = area;
+        best = video.getAttribute("poster") || "";
+      }
+    }
+    return best;
+  }
+
+  /**
    * Cover from og:image / poster / page JSON (display_url, thumbnail_src).
    * Instagram SPA reels often omit a usable og:image; formats/helper hydrate
    * the CDN URL this returns.
@@ -1435,34 +1466,16 @@
 
     const found = [];
 
-    document
-      .querySelectorAll(
-        'script[data-sjs], script[type="application/json"], script[type="application/ld+json"]'
-      )
-      .forEach((s) => {
-        const t = (s.textContent || "").trim();
-        if (t.length < 80 || t.length > 2_000_000) return;
-        if (!/display_url|thumbnail_src|image_versions2|cdninstagram|fbcdn/i.test(t)) {
-          return;
-        }
-        try {
-          if (t.startsWith("{") || t.startsWith("[")) {
-            const picked = sites?.pickInstagramCoverFromPageData?.(JSON.parse(t));
-            if (picked) found.push(picked);
-          }
-        } catch {
-          /* keyed JSON walk only */
-        }
-      });
-
     // 2) og:image only when og:url is THIS reel — otherwise it is the
-    //    previous reel's cover still stuck in the head.
+    //    previous reel's cover still stuck in the head. No ungated JSON
+    //    walk here: covers picked from unrelated reels' scripts were the
+    //    source of the old-cover-sticks bug.
     if (instagramOgMatchesCurrentPage()) {
       const og = document.querySelector('meta[property="og:image"]')?.content;
       if (og) found.push(og);
     }
-    // 3) The visible player's own poster is the current reel by definition.
-    const poster = document.querySelector("video[poster]")?.getAttribute("poster");
+    // 3) The playing player's own poster is the current reel by definition.
+    const poster = visibleInstagramPoster();
     if (poster) found.push(poster);
     if (sites?.pickInstagramCoverFromCandidates) {
       return sites.pickInstagramCoverFromCandidates(found);

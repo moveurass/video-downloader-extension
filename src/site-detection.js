@@ -1187,6 +1187,12 @@
       const type = String(obj["@type"] || obj.type || "");
       out.push({
         shortcode: instagramMediaShortcode(obj),
+        // ld+json VideoObject identities have no shortcode; their url is
+        // what lets the caller verify they describe the WANTED reel.
+        url:
+          (typeof obj.url === "string" && obj.url) ||
+          (typeof obj.embedUrl === "string" && obj.embedUrl) ||
+          "",
         caption: instagramCaptionText(obj),
         username: instagramOwnerUsername(obj),
         fullName: instagramOwnerFullName(obj),
@@ -1225,7 +1231,15 @@
       );
       if (keyed) return keyed;
       const unkeyed = found.filter((item) => !item.shortcode);
-      if (unkeyed.length === 1 && unkeyed[0].jsonLd) return unkeyed[0];
+      // A head VideoObject ld+json usually describes whichever reel loaded
+      // first — after a swipe that is the PREVIOUS reel — so accept the
+      // unkeyed identity only when its own url names the wanted shortcode.
+      if (unkeyed.length === 1 && unkeyed[0].jsonLd) {
+        const ldId =
+          instagramPostId(unkeyed[0].url || "") ||
+          instagramIdentityId(unkeyed[0].url || "");
+        if (ldId && sameInstagramIdentity(ldId, wantId)) return unkeyed[0];
+      }
       return null;
     }
     return found.length === 1 ? found[0] : null;

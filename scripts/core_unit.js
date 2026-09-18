@@ -684,6 +684,55 @@ assert.equal(
   "page JSON display_url is the reel cover"
 );
 assert.equal(Sites.instagramPostId("https://www.instagram.com/reel/DABC123xyz/"), "DABC123xyz");
+{
+  // A head VideoObject ld+json usually describes whichever reel loaded
+  // first — after a swipe that is the PREVIOUS reel — so the unkeyed
+  // identity may only answer when its own url names the wanted shortcode.
+  const want = "https://www.instagram.com/reel/CURRENT01/";
+  const keyed = Sites.pickInstagramItemIdentityFromPageData(
+    {
+      view: {
+        shortcode: "CURRENT01",
+        display_url: igCover,
+        owner: { username: "uploader" }
+      }
+    },
+    want
+  );
+  assert.equal(keyed?.shortcode, "CURRENT01");
+  assert.equal(keyed?.cover, igCover);
+  const currentLd = Sites.pickInstagramItemIdentityFromPageData(
+    {
+      "@type": "VideoObject",
+      url: "https://www.instagram.com/reel/CURRENT01/",
+      name: "Video by uploader",
+      author: "uploader"
+    },
+    want
+  );
+  assert.notEqual(currentLd, null, "ld+json matching the wanted url answers");
+  assert.equal(
+    Sites.pickInstagramItemIdentityFromPageData(
+      {
+        "@type": "VideoObject",
+        url: "https://www.instagram.com/reel/OLDREEL99/",
+        name: "Video by uploader",
+        author: "uploader"
+      },
+      want
+    ),
+    null,
+    "previous reel's ld+json must not answer for the new reel"
+  );
+  assert.equal(
+    Sites.pickInstagramItemIdentityFromPageData(
+      { "@type": "VideoObject", name: "Video by uploader", author: "uploader" },
+      want
+    ),
+    null,
+    "ld+json without any url must not answer for the new reel"
+  );
+}
 assert.equal(
   Sites.sameInstagramPost(
     "https://www.instagram.com/reel/DABC123xyz/?igsh=1",
