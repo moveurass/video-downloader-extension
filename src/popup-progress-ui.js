@@ -12,6 +12,8 @@
       escapeAttr, toast, userError
     } = deps;
     const playCompletionSound = deps.playCompletionSound || (() => {});
+    const getSaveTargetLabel =
+      deps.getSaveTargetLabel || (() => "다운로드/VideoDownloader");
     const setTimeoutFn = deps.setTimeout || setTimeout;
     const setIntervalFn = deps.setInterval || setInterval;
     const clearIntervalFn = deps.clearInterval || clearInterval;
@@ -538,7 +540,7 @@
           dlQueueSub.textContent = info.title;
           dlQueueSub.title = info.fileLabel || info.title;
         } else if (done.length) {
-          dlQueueSub.textContent = "저장 위치: 다운로드/VideoDownloader";
+          dlQueueSub.textContent = `저장 위치: ${getSaveTargetLabel()}`;
           dlQueueSub.title = "";
         } else {
           dlQueueSub.textContent = "다시 시도해 주세요";

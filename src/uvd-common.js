@@ -8,6 +8,11 @@ const UVD = (() => {
     (typeof require === "function" ? require("./history-model.js") : null);
   const DEFAULT_SETTINGS = {
     subfolder: "VideoDownloader",
+    /**
+     * Absolute POSIX folder picked in the native folder picker (helper
+     * saves only). "" = legacy base (~/Downloads or UVD_OUT).
+     */
+    downloadDir: "",
     // "legacy" = human title + optional _quality (readable old style)
     filenameTemplate: "legacy",
     mediaMode: "video", // video | audio | video_subs
@@ -208,11 +213,25 @@ const UVD = (() => {
     const cur = await getSettings();
     const next = mergeSettings({ ...cur, ...patch });
     // sanitize
-    next.subfolder = String(next.subfolder || "VideoDownloader")
+    // Picked folder replaces the base; while set, an empty subfolder means
+    // "the picked folder itself" instead of falling back to VideoDownloader.
+    next.downloadDir = String(next.downloadDir || "")
+      .trim()
+      .replace(/\/+$/, "");
+    if (
+      !next.downloadDir.startsWith("/") ||
+      next.downloadDir.split("/").includes("..") ||
+      next.downloadDir.length > 300
+    ) {
+      next.downloadDir = "";
+    }
+    next.subfolder = String(
+      next.subfolder || (next.downloadDir ? "" : "VideoDownloader")
+    )
       .replace(/\\/g, "/")
       .replace(/^\/+|\/+$/g, "")
       .replace(/\.\./g, "")
-      .slice(0, 80) || "VideoDownloader";
+      .slice(0, 80) || (next.downloadDir ? "" : "VideoDownloader");
     next.filenameTemplate = String(
       next.filenameTemplate != null && next.filenameTemplate !== ""
         ? next.filenameTemplate

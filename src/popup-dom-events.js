@@ -25,6 +25,8 @@
         toast,
         saveSettingsFromForm,
         updateSettingsPreview,
+        pickDownloadFolder,
+        resetDownloadFolder,
         renderHistory,
         updateRetryFailedButton,
         retryFailedDownloads,
@@ -130,6 +132,13 @@
       });
       $("#btnSaveSettings")?.addEventListener("click", () =>
         saveSettingsFromForm()
+      );
+      // ── 저장 폴더 (native picker / 기본 폴더 복원) ──
+      $("#btnPickFolder")?.addEventListener("click", (event) =>
+        pickDownloadFolder?.(event.currentTarget)
+      );
+      $("#btnResetFolder")?.addEventListener("click", (event) =>
+        resetDownloadFolder?.(event.currentTarget)
       );
       // ── 백업 (export / import JSON) ──
       $("#btnBackupExport")?.addEventListener("click", async () => {

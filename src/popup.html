@@ -333,11 +333,15 @@
             <p>파일을 저장할 위치와 이름을 정해요</p>
           </div>
         </div>
-      <label class="field">
+      <div class="field">
         <span class="field-label">저장 폴더</span>
-        <input id="setSubfolder" class="field-input" type="text" placeholder="VideoDownloader" />
-        <span class="field-hint">다운로드 폴더 아래 경로예요. 예: VideoDownloader/YouTube</span>
-      </label>
+        <div class="backup-actions folder-actions">
+          <input id="setSubfolder" class="field-input" type="text" aria-label="저장 하위 폴더" placeholder="VideoDownloader" />
+          <button type="button" id="btnPickFolder" class="btn tiny" title="macOS 폴더 선택 창으로 저장 폴더를 고릅니다">폴더 선택</button>
+          <button type="button" id="btnResetFolder" class="btn tiny secondary hidden" title="기본 폴더(다운로드/VideoDownloader)로 되돌립니다">기본 폴더</button>
+        </div>
+        <span class="field-hint" id="setFolderHint">다운로드 폴더 아래 경로예요. 예: VideoDownloader/YouTube</span>
+      </div>
       <div class="field">
         <span class="field-label">도우미 저장 위치 (yt-dlp)</span>
         <code id="setHelperOutDir" class="field-preview">확인 중…</code>

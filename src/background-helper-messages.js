@@ -24,6 +24,14 @@
             );
           return { handled: true, keepChannel: true };
         }
+        case "PICK_FOLDER": {
+          deps.YtDlp.pickFolder()
+            .then((r) => sendResponse({ ok: true, ...r }))
+            .catch((e) =>
+              sendResponse({ ok: false, error: String(e?.message || e) })
+            );
+          return { handled: true, keepChannel: true };
+        }
         case "DOWNLOAD_HELPER_STARTER": {
           // Drop a double-clickable .command into Downloads for macOS users
           (async () => {
@@ -137,9 +145,15 @@ exit 1
               }
               if (msg.path && typeof msg.path === "string") {
                 try {
+                  // Settings travel with the reveal so a picked downloadDir
+                  // tree stays revealable after the popup reopens.
+                  const settings = await deps.UVD?.getSettings?.().catch(
+                    () => ({})
+                  );
                   const revealed = await deps.YtDlp.revealPath(
                     msg.path,
-                    String(msg.subfolder || "")
+                    String(msg.subfolder || ""),
+                    String(settings?.downloadDir || "")
                   );
                   if (revealed?.revealed) {
                     done({ via: "helper" });
@@ -171,22 +185,34 @@ exit 1
           return { handled: true, keepChannel: true };
         }
         case "FILES_LIST": {
-          deps.YtDlp.listFiles(String(msg.subfolder || ""))
-            .then((r) => sendResponse(r))
-            .catch((e) =>
-              sendResponse({ ok: false, files: [], error: String(e?.message || e) })
-            );
+          (async () => {
+            try {
+              const settings = await deps.UVD?.getSettings?.().catch(() => ({}));
+              const r = await deps.YtDlp.listFiles(
+                String(msg.subfolder || ""),
+                String(settings?.downloadDir || "")
+              );
+              sendResponse(r);
+            } catch (e) {
+              sendResponse({ ok: false, files: [], error: String(e?.message || e) });
+            }
+          })();
           return { handled: true, keepChannel: true };
         }
         case "FILES_TRASH": {
-          deps.YtDlp.trashFiles(
-            Array.isArray(msg.paths) ? msg.paths : [],
-            String(msg.subfolder || "")
-          )
-            .then((r) => sendResponse(r))
-            .catch((e) =>
-              sendResponse({ ok: false, trashed: 0, error: String(e?.message || e) })
-            );
+          (async () => {
+            try {
+              const settings = await deps.UVD?.getSettings?.().catch(() => ({}));
+              const r = await deps.YtDlp.trashFiles(
+                Array.isArray(msg.paths) ? msg.paths : [],
+                String(msg.subfolder || ""),
+                String(settings?.downloadDir || "")
+              );
+              sendResponse(r);
+            } catch (e) {
+              sendResponse({ ok: false, trashed: 0, error: String(e?.message || e) });
+            }
+          })();
           return { handled: true, keepChannel: true };
         }
         case "DOWNLOAD_BATCH": {

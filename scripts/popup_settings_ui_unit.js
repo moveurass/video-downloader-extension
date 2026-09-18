@@ -78,12 +78,21 @@ function makeHarness(overrides = {}) {
     },
     helperOutDir: "/old",
     packs: [],
+    pickFolderResponse: { ok: true, picked: false },
     currentTabUrl: "https://example.com/video",
     allItems: [{ id: "video" }]
   };
   const elements = {
     "#footerNote": {},
+    "#setHelperOutDir": {},
+    "#setFolderHint": {},
     "#setSubfolder": { value: "" },
+    "#btnPickFolder": { textContent: "폴더 선택", disabled: false },
+    "#btnResetFolder": {
+      textContent: "기본 폴더",
+      disabled: false,
+      classList: classList()
+    },
     "#setTemplate": { value: "" },
     "#setMediaMode": select(["video", "audio", "video_subs"]),
     "#setMaxHistory": select(["10", "25", "50", "100"]),
@@ -134,6 +143,9 @@ function makeHarness(overrides = {}) {
     }
     if (message.type === "YTDLP_HEALTH") {
       return { outDir: "/new" };
+    }
+    if (message.type === "PICK_FOLDER") {
+      return state.pickFolderResponse;
     }
     if (message.type === "GET_SITE_PACKS") {
       return { packs: state.packs };
@@ -197,9 +209,12 @@ async function main() {
       "applyUiLayout",
       "applyModeChips",
       "updateFooterNote",
+      "updatePickFolderUi",
       "fillSettingsForm",
       "updateSettingsPreview",
       "saveSettingsFromForm",
+      "pickDownloadFolder",
+      "resetDownloadFolder",
       "loadSitePacksUi"
     ]);
     await harness.controller.loadSettings();
@@ -411,6 +426,118 @@ async function main() {
         bilibili: "best"
       }
     });
+  }
+
+  {
+    const harness = makeHarness();
+    harness.state.pickFolderResponse = {
+      ok: true,
+      picked: true,
+      path: "/movies/dl"
+    };
+    await harness.controller.pickDownloadFolder();
+    const saved = harness.calls.find(
+      (call) => call[0] === "sendMessage" && call[1].type === "SET_SETTINGS"
+    )[1].settings;
+    check(saved, { downloadDir: "/movies/dl", subfolder: "" });
+    check(harness.elements["#setSubfolder"].value, "");
+    check(
+      harness.elements["#btnResetFolder"].classList.values.has("hidden"),
+      false
+    );
+    check(
+      harness.elements["#setFolderHint"].textContent,
+      "선택한 폴더 아래 경로 (선택사항)"
+    );
+    check(
+      harness.elements["#setPreview"].textContent,
+      "/movies/dl/SSIS-001 예제 영상 제목_1080p.mp4"
+    );
+    check(
+      harness.calls.some(
+        (call) =>
+          call[0] === "toast" &&
+          call[1] === "저장 폴더를 변경했습니다" &&
+          call[2] === "ok"
+      ),
+      true
+    );
+    check(harness.elements["#btnPickFolder"], {
+      textContent: "폴더 선택",
+      disabled: false
+    });
+  }
+
+  {
+    const harness = makeHarness();
+    await harness.controller.pickDownloadFolder();
+    check(
+      harness.calls.some(
+        (call) =>
+          call[0] === "sendMessage" && call[1].type === "SET_SETTINGS"
+      ),
+      false
+    );
+    check(harness.calls.some((call) => call[0] === "toast"), false);
+    check(harness.elements["#btnPickFolder"].disabled, false);
+  }
+
+  {
+    const harness = makeHarness();
+    harness.state.pickFolderResponse = { ok: false, error: "도우미 꺼짐" };
+    await harness.controller.pickDownloadFolder();
+    check(
+      harness.calls.some(
+        (call) =>
+          call[0] === "toast" &&
+          call[1] === "friendly:도우미 꺼짐" &&
+          call[2] === "error"
+      ),
+      true
+    );
+  }
+
+  {
+    const harness = makeHarness();
+    harness.state.settings = {
+      ...harness.state.settings,
+      downloadDir: "/movies/dl",
+      subfolder: ""
+    };
+    await harness.controller.resetDownloadFolder();
+    const saved = harness.calls.find(
+      (call) => call[0] === "sendMessage" && call[1].type === "SET_SETTINGS"
+    )[1].settings;
+    check(saved, { downloadDir: "", subfolder: "VideoDownloader" });
+    check(harness.elements["#setSubfolder"].value, "VideoDownloader");
+    check(
+      harness.elements["#btnResetFolder"].classList.values.has("hidden"),
+      true
+    );
+    check(
+      harness.calls.some(
+        (call) =>
+          call[0] === "toast" &&
+          call[1] === "기본 저장 폴더로 되돌렸습니다" &&
+          call[2] === "ok"
+      ),
+      true
+    );
+  }
+
+  {
+    // While a picked folder is set, an empty sub-path input must save as ""
+    // (files land in the picked folder itself), not fall back to the default.
+    const harness = makeHarness();
+    harness.state.settings = {
+      ...harness.state.settings,
+      downloadDir: "/movies/dl"
+    };
+    await harness.controller.saveSettingsFromForm();
+    const saved = harness.calls.find(
+      (call) => call[0] === "sendMessage" && call[1].type === "SET_SETTINGS"
+    )[1].settings;
+    check(saved.subfolder, "");
   }
 
   {

@@ -82,6 +82,7 @@ async function main() {
     // files, and the user's folder setting reaches helper saves too.
     resumeKey: "job-1",
     subfolder: "Chosen/Folder",
+    downloadDir: undefined,
     quality: "1080p",
     audioTrackId: undefined,
     subtitleLanguages: [],

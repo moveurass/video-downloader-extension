@@ -400,7 +400,10 @@ const {
   helperHasFile: async (filename) => {
     try {
       const settings = await UVD.getSettings();
-      const listing = await YtDlp.listFiles(settings?.subfolder || "");
+      const listing = await YtDlp.listFiles(
+        settings?.subfolder || "",
+        settings?.downloadDir || ""
+      );
       const leaf = String(filename || "").toLowerCase();
       return (listing.files || []).some(
         (file) => String(file.name || "").toLowerCase() === leaf

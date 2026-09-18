@@ -878,6 +878,116 @@ def main() -> int:
             "Finder TSV listing parses into entries with epoch mtime",
             "macOS-only Finder AppleScript listing",
         )
+
+    # ── folder picker + picked download dir ─────────────────────────────
+    check(
+        "validated_download_dir accepts an absolute POSIX folder",
+        helper_server.validated_download_dir("/movies/dl/")
+        == Path("/movies/dl"),
+    )
+    check(
+        "validated_download_dir keeps a root pick",
+        helper_server.validated_download_dir("/") == Path("/"),
+    )
+    check(
+        "validated_download_dir rejects relative, climbing, and oversized",
+        helper_server.validated_download_dir("") is None
+        and helper_server.validated_download_dir("Downloads/X") is None
+        and helper_server.validated_download_dir("/a/../b") is None
+        and helper_server.validated_download_dir("/" + "x" * 400) is None,
+    )
+    check(
+        "publish_dir_for nests subfolder under the picked folder",
+        helper_server.publish_dir_for("YouTube", "/movies/dl")
+        == Path("/movies/dl/YouTube"),
+    )
+    check(
+        "publish_dir_for with an empty subfolder is the picked folder itself",
+        helper_server.publish_dir_for("", "/movies/dl") == Path("/movies/dl"),
+    )
+    check(
+        "publish_dir_for legacy calls are unchanged",
+        helper_server.publish_dir_for("VideoDownloader")
+        == helper_server.OUT_DIR
+        and helper_server.publish_dir_for("", "not/absolute")
+        == helper_server.OUT_DIR,
+    )
+    picked = helper_server.classify_folder_picker("/movies/dl\n", 0)
+    check(
+        "folder picker classifies success into the last stdout path",
+        picked == {"picked": True, "cancelled": False, "path": "/movies/dl", "message": ""},
+    )
+    cancelled = helper_server.classify_folder_picker(
+        "script error: user canceled (-128)", 1
+    )
+    check(
+        "folder picker treats -128 as a silent user cancel",
+        cancelled["picked"] is False
+        and cancelled["cancelled"] is True
+        and cancelled["message"] == "",
+    )
+    denied = helper_server.classify_folder_picker(
+        "osascript: not authorized to send Apple events (-1743)", 1
+    )
+    check(
+        "folder picker maps automation denial to grant guidance",
+        denied["picked"] is False and "자동화" in denied["message"],
+    )
+    broken = helper_server.classify_folder_picker("", 1)
+    check(
+        "folder picker falls back to a generic Korean error",
+        broken["picked"] is False and broken["message"] != "",
+    )
+    if sys.platform == "darwin":
+        original_osascript_run = helper_server.subprocess.run
+
+        def fake_picker_run(cmd, **_kwargs):
+            assert cmd[0] == "osascript" and cmd[1] == "-e"
+            assert "choose folder" in cmd[2]
+            return type(
+                "P",
+                (),
+                {"returncode": 0, "stdout": "/movies/dl\n", "stderr": ""},
+            )()
+
+        helper_server.subprocess.run = fake_picker_run
+        try:
+            run_result = helper_server.run_folder_picker()
+        finally:
+            helper_server.subprocess.run = original_osascript_run
+        check(
+            "run_folder_picker returns the chosen POSIX path",
+            run_result.get("picked") is True
+            and run_result.get("path") == "/movies/dl",
+        )
+
+        def fake_cancel_run(cmd, **_kwargs):
+            assert cmd[0] == "osascript" and cmd[1] == "-e"
+            return type(
+                "P",
+                (),
+                {
+                    "returncode": 1,
+                    "stdout": "",
+                    "stderr": "script error: user canceled (-128)",
+                },
+            )()
+
+        helper_server.subprocess.run = fake_cancel_run
+        try:
+            cancel_result = helper_server.run_folder_picker()
+        finally:
+            helper_server.subprocess.run = original_osascript_run
+        check(
+            "run_folder_picker reports a dialog cancel as picked:false",
+            cancel_result.get("picked") is False
+            and cancel_result.get("cancelled") is True,
+        )
+    else:
+        skip(
+            "run_folder_picker returns the chosen POSIX path",
+            "macOS-only choose folder dialog",
+        )
     check(
         "aria2 is limited to fast-profile non-YouTube jobs",
         helper_server.should_use_aria2(

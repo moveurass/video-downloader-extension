@@ -120,13 +120,46 @@
         });
       }
 
+      function effectiveSaveTarget(settings) {
+        const picked = String(settings?.downloadDir || "");
+        if (!picked) {
+          return `다운로드/${settings?.subfolder || "VideoDownloader"}`;
+        }
+        const sub = String(settings?.subfolder || "");
+        return sub ? `${picked}/${sub}` : picked;
+      }
+
       function updateFooterNote() {
         const el = $("#footerNote");
         if (!el) return;
         const uvdSettings = getUvdSettings();
-        const folder = uvdSettings.subfolder || "VideoDownloader";
         const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-        el.textContent = `저장: 다운로드/${folder} · ${mode} · v1.26.0`;
+        el.textContent = `저장: ${effectiveSaveTarget(uvdSettings)} · ${mode} · v1.26.0`;
+      }
+
+      function updatePickFolderUi() {
+        const uvdSettings = getUvdSettings();
+        const hint = $("#setFolderHint");
+        if (hint) {
+          hint.textContent = uvdSettings.downloadDir
+            ? "선택한 폴더 아래 경로 (선택사항)"
+            : "다운로드 폴더 아래 경로예요. 예: VideoDownloader/YouTube";
+        }
+        const reset = $("#btnResetFolder");
+        if (reset) {
+          reset.classList.toggle("hidden", !uvdSettings.downloadDir);
+        }
+      }
+
+      /** 도우미 저장 위치 line — the picked folder wins while one is set. */
+      function refreshSaveLocationDisplay() {
+        const picked = getUvdSettings().downloadDir;
+        if (picked) {
+          const el = $("#setHelperOutDir");
+          if (el) el.textContent = `${picked} (직접 선택)`;
+          return;
+        }
+        updateHelperOutDirUi(getHelperOutDirCache());
       }
 
       function fillSettingsForm() {
@@ -139,7 +172,11 @@
         const clip = $("#setClipboard");
         const warnDup = $("#setWarnDup");
         const qbs = uvdSettings.qualityBySite || {};
-        if (sub) sub.value = uvdSettings.subfolder || "VideoDownloader";
+        if (sub) {
+          sub.value =
+            uvdSettings.subfolder || (uvdSettings.downloadDir ? "" : "VideoDownloader");
+        }
+        updatePickFolderUi();
         if (tpl) {
           const stored = String(uvdSettings.filenameTemplate || "legacy");
           tpl.value = /^legacy$/i.test(stored) ? "" : stored;
@@ -151,14 +188,14 @@
         if (notify) notify.checked = uvdSettings.notifyOnComplete !== false;
         if (clip) clip.checked = !!uvdSettings.clipboardWatch;
         if (warnDup) warnDup.checked = uvdSettings.warnDuplicates !== false;
-        updateHelperOutDirUi(getHelperOutDirCache());
+        refreshSaveLocationDisplay();
         // Refresh helper path when opening settings
         sendMessage({ type: "YTDLP_HEALTH", force: false })
           .then((health) => {
             if (health?.outDir) setHelperOutDirCache(String(health.outDir));
-            updateHelperOutDirUi(getHelperOutDirCache());
+            refreshSaveLocationDisplay();
           })
-          .catch(() => updateHelperOutDirUi(""));
+          .catch(() => refreshSaveLocationDisplay());
         const saveThumb = $("#setSaveThumb");
         if (saveThumb) {
           saveThumb.checked = uvdSettings.saveThumbnail !== false;
@@ -256,20 +293,26 @@
         const extension = mode === "audio" ? ".mp3" : ".mp4";
         const preview = $("#setPreview");
         if (preview) {
-          preview.textContent = `${
-            uvdSettings.subfolder ||
-            $("#setSubfolder")?.value ||
-            "VideoDownloader"
-          }/${base}${base.endsWith(extension) ? "" : extension}`;
+          const typedSub =
+            $("#setSubfolder")?.value?.trim() ??
+            uvdSettings.subfolder ??
+            "";
+          const target =
+            uvdSettings.downloadDir
+              ? `${uvdSettings.downloadDir}${typedSub ? `/${typedSub}` : ""}`
+              : `${typedSub || "VideoDownloader"}`;
+          preview.textContent = `${target}/${base}${base.endsWith(extension) ? "" : extension}`;
         }
       }
 
       async function saveSettingsFromForm() {
         const template = $("#setTemplate")?.value?.trim() || "legacy";
         const uiDensity = $("#setUiDensity")?.value || "compact";
+        const pickedDir = getUvdSettings().downloadDir || "";
         const patch = {
           subfolder:
-            $("#setSubfolder")?.value?.trim() || "VideoDownloader",
+            $("#setSubfolder")?.value?.trim() ||
+            (pickedDir ? "" : "VideoDownloader"),
           filenameTemplate: template,
           mediaMode: $("#setMediaMode")?.value || "video",
           maxHistory:
@@ -365,6 +408,69 @@
         });
       }
 
+      /**
+       * 폴더 선택 button: open the helper's native macOS chooser, then save
+       * the picked folder immediately (clearing the sub-path so files land
+       * exactly there). Cancel is silent; failures surface via toast.
+       */
+      async function pickDownloadFolder(button) {
+        const btn = button || $("#btnPickFolder");
+        const original = btn?.textContent;
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = "선택 중…";
+        }
+        try {
+          const res = await sendMessage({ type: "PICK_FOLDER" });
+          if (res?.ok === false) {
+            throw new Error(res.error || "폴더를 선택하지 못했습니다");
+          }
+          if (!res?.picked) return; // user closed the dialog
+          const path = String(res.path || "");
+          const saved = await sendMessage({
+            type: "SET_SETTINGS",
+            settings: { downloadDir: path, subfolder: "" }
+          });
+          setUvdSettings(saved?.settings || { ...getUvdSettings(), downloadDir: path, subfolder: "" });
+          const sub = $("#setSubfolder");
+          if (sub) sub.value = "";
+          updatePickFolderUi();
+          updateSettingsPreview();
+          updateFooterNote();
+          toast("저장 폴더를 변경했습니다", "ok");
+        } catch (error) {
+          toast(userError(error?.message) || "폴더를 선택하지 못했습니다", "error");
+        } finally {
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = original || "폴더 선택";
+          }
+        }
+      }
+
+      /** 기본 폴더 button: drop the picked folder, back to Downloads/VideoDownloader. */
+      async function resetDownloadFolder(button) {
+        const btn = button || $("#btnResetFolder");
+        if (btn) btn.disabled = true;
+        try {
+          const saved = await sendMessage({
+            type: "SET_SETTINGS",
+            settings: { downloadDir: "", subfolder: "VideoDownloader" }
+          });
+          setUvdSettings(saved?.settings || { ...getUvdSettings(), downloadDir: "", subfolder: "VideoDownloader" });
+          const sub = $("#setSubfolder");
+          if (sub) sub.value = "VideoDownloader";
+          updatePickFolderUi();
+          updateSettingsPreview();
+          updateFooterNote();
+          toast("기본 저장 폴더로 되돌렸습니다", "ok");
+        } catch (error) {
+          toast(userError(error?.message) || "되돌리지 못했습니다", "error");
+        } finally {
+          if (btn) btn.disabled = false;
+        }
+      }
+
       return {
         loadSettings,
         applyCompactUi,
@@ -372,9 +478,12 @@
         applyUiLayout,
         applyModeChips,
         updateFooterNote,
+        updatePickFolderUi,
         fillSettingsForm,
         updateSettingsPreview,
         saveSettingsFromForm,
+        pickDownloadFolder,
+        resetDownloadFolder,
         loadSitePacksUi
       };
     }
