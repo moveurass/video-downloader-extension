@@ -533,7 +533,7 @@
           youtubeId ||
           isTiktokUrl(currentTabUrl) ||
           isInstagramUrl(currentTabUrl) ||
-          (knownCodePage && suppressProvisionalTitle)
+          knownCodePage
             ? { ...tab, title: "" }
             : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));
@@ -566,10 +566,16 @@
             (!youtubeId ||
               (meta?.identityConfirmed === true &&
                 (!meta?.videoId || meta.videoId === youtubeId)));
+          // Known-code browser tab titles lag numeric-id navigation (the
+          // background blocks them until a live PAGE_META confirms) — the
+          // popup may only fall back to tab.title when the page itself
+          // answered for this URL.
+          const tabTitleFallback =
+            !youtubeId && (!knownCodePage || metaSamePage);
           const freshTitle = identityConfirmed
             ? usablePageTitle(meta?.title) ||
-              (!youtubeId ? usablePageTitle(tab.title) : "")
-            : !youtubeId
+              (tabTitleFallback ? usablePageTitle(tab.title) : "")
+            : tabTitleFallback
               ? usablePageTitle(tab.title)
               : "";
           const freshThumbnail = youtubeId
@@ -598,8 +604,10 @@
                         sitesApi()?.sameInstagramIdentity?.(itemKey, curKey))
                     )
                   : !itemKey || !curKey || itemKey === curKey;
-              const keepExisting =
-                samePage && !youtubeId && !knownCodePage;
+          // Known-code cards keep their code-derived title and the cover
+          // GET_MEDIA delivered while the page meta is still on its way —
+          // wiping them re-opened the previous-video slot.
+          const keepExisting = samePage && !youtubeId;
               const nextThumb = preferPageThumbnail(
                 keepExisting ? item.thumbnail : undefined,
                 freshThumbnail,

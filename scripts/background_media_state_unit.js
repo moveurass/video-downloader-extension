@@ -534,6 +534,51 @@ async function main() {
     "blocked meta after a YouTube soft navigation drops the lagged tab title"
   );
 
+  // 123av-style known-code race: the popup's GET_MEDIA can beat the
+  // tabs.onUpdated(url) delivery, so meta still tracks the PREVIOUS video
+  // page. Neither its title nor its cover may cross onto the new code page.
+  store.setTabMeta(59, {
+    lastUrl: "https://123av.com/ko/v/cawb-035-uncensore",
+    pageKey: "123av.com:code:CAWB-035",
+    title: "이전 품번 영상 제목",
+    titlePageKey: "123av.com:code:CAWB-035",
+    thumbnail: "https://img.123av.example/prev-cover.jpg",
+    identityConfirmed: true
+  });
+  const codeRacePlaceholder = store.makeSitePlaceholder({
+    id: 59,
+    url: "https://123av.com/ko/v/ssis-777-uncensore",
+    title: "이전 품번 영상 제목 - 123AV"
+  });
+  equal(
+    codeRacePlaceholder.title,
+    "SSIS-777",
+    "known-code race falls back to the code, not the previous page's title"
+  );
+  equal(
+    codeRacePlaceholder.thumbnail,
+    undefined,
+    "known-code race must not reuse the previous page's cover"
+  );
+
+  // Cold worker on a known-code watch page: the browser tab title lags the
+  // numeric-id navigation, so the placeholder must use the code.
+  const coldCodePlaceholder = store.makeSitePlaceholder({
+    id: 60,
+    url: "https://123av.com/ko/v/ssis-888-uncensore",
+    title: "이전 영상 제목 - 123AV"
+  });
+  equal(
+    coldCodePlaceholder.title,
+    "SSIS-888",
+    "cold known-code placeholder uses the code, not the lagged tab title"
+  );
+  equal(
+    coldCodePlaceholder.thumbnail,
+    undefined,
+    "cold known-code placeholder carries no cover until page meta lands"
+  );
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({

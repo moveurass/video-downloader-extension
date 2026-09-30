@@ -405,12 +405,14 @@
       // YouTube soft navigations). With no tracking meta (cold worker) there
       // is nothing better than the tab title, but once meta exists it must
       // positively track THIS page and not be blocked — otherwise the
-      // previous video's caption leaks onto the new page's card.
+      // previous video's caption leaks onto the new page's card. Known-code
+      // pages never trust the tab title (their titles lag numeric-id
+      // navigation); the URL code is always the safer provisional name.
       const metaTracksPage =
         !!meta && (meta.pageKey || pageIdentityKey(meta.lastUrl || "")) === currentPageKey;
       let provisionalTabTitle = "";
       if (
-        !meta ||
+        (!meta && !knownVideo) ||
         (metaTracksPage && meta.provisionalTitleBlocked !== true)
       ) {
         provisionalTabTitle = usableProvisionalTitle(tab?.title);
@@ -423,7 +425,8 @@
         (kind === "instagram" ? instagramAuthorHandle(pageUrl) : "") ||
         siteDefaultTitle(kind);
       const thumbnail =
-        (meta?.thumbnail &&
+        (metaTracksPage &&
+        meta?.thumbnail &&
         thumbnailMatchesPageKey(meta.thumbnail, currentPageKey)
           ? meta.thumbnail
           : "") ||

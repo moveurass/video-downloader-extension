@@ -539,6 +539,114 @@ async function main() {
     "fresh YouTube card ends on the current video's title"
   );
 
+  // 123av cold open: the content script is not answering yet and the browser
+  // tab title still names the PREVIOUS video. The card must keep the code
+  // title and the fresh cover GET_MEDIA delivered — never the lagged title.
+  const codeWatchUrl = "https://123av.com/ko/v/ssis-777-uncensore";
+  const codeTab = { id: 71, url: codeWatchUrl, title: "이전 영상 제목 - 123AV" };
+  let codeItems = [];
+  let codeCurrentTabUrl = null;
+  const codeEnsureTitles = [];
+  const codeLoader = MediaLoader.createLoader({
+    chrome: {
+      tabs: {
+        query: async () => [codeTab],
+        get: async () => codeTab,
+        sendMessage: async (_tabId, message) => {
+          if (message.type === "GET_PAGE_META") {
+            throw new Error("content script not answering");
+          }
+          return { ok: true };
+        }
+      },
+      runtime: {
+        sendMessage: async (message) => {
+          if (message.type === "GET_MEDIA") {
+            return {
+              items: [{
+                url: codeWatchUrl,
+                pageUrl: codeWatchUrl,
+                isSiteDownload: true,
+                isPagePlaceholder: true,
+                title: "SSIS-777",
+                pageTitle: "SSIS-777",
+                thumbnail: "https://img.123av.example/ssis-777-cover.jpg"
+              }]
+            };
+          }
+          return { ok: true };
+        }
+      }
+    },
+    listEl: { innerHTML: "" },
+    pageHost: { textContent: "", title: "" },
+    $: (selector) => elements[selector.slice(1)] || null,
+    UVD: {
+      isPlaylistOnlyUrl: () => false,
+      isWatchInPlaylistUrl: () => false
+    },
+    ensureSiteItems: (items, tabLike) => {
+      codeEnsureTitles.push(String(tabLike?.title ?? ""));
+      return (items || []).map((item) => ({ ...item }));
+    },
+    pageKey: (url) => {
+      try {
+        const parsed = new URL(url);
+        const host = parsed.hostname.replace(/^www\./, "");
+        const code = Naming.extractProductCode(parsed.href);
+        return code ? `${host}:code:${code}` : `${host}${parsed.pathname}`;
+      } catch {
+        return "";
+      }
+    },
+    isInstagramUrl: () => false,
+    isTiktokUrl: () => false,
+    isYoutubeUrl: () => false,
+    isXUrl: () => false,
+    isFacebookUrl: () => false,
+    isBilibiliUrl: () => false,
+    isSitePage: () => false,
+    isHlsItem: () => false,
+    cleanTitleText: (value) => String(value || "").trim(),
+    isUglyName: () => false,
+    refreshHelperStatus: async () => {},
+    render: () => {},
+    loadAvailableQualities: async () => {},
+    loadPlaylistInfo: async () => {},
+    hidePlaylistBox: () => {},
+    getAllItems: () => codeItems,
+    setAllItems: (items) => {
+      codeItems = items;
+    },
+    getCurrentTabId: () => 71,
+    setCurrentTabId: () => {},
+    getCurrentTabUrl: () => codeCurrentTabUrl,
+    setCurrentTabUrl: (value) => {
+      codeCurrentTabUrl = value;
+    },
+    getAvailableQualities: () => [],
+    setAvailableQualities: () => {},
+    getQualitiesLoading: () => false,
+    setQualitiesLoading: () => {},
+    setTimeout: (callback) => callback()
+  });
+  await codeLoader.loadMedia();
+  check(
+    codeItems[0]?.title,
+    "SSIS-777",
+    "123av cold open keeps the code title, not the lagged tab title"
+  );
+  check(
+    codeItems[0]?.thumbnail,
+    "https://img.123av.example/ssis-777-cover.jpg",
+    "123av cold open keeps the cover GET_MEDIA delivered"
+  );
+  check(
+    codeEnsureTitles.every((title) => title === ""),
+    true,
+    "123av cold open never feeds the lagged tab title to the local fallback"
+  );
+
   const firstSupjav = "https://supjav.com/111111.html";
   const nextSupjav = "https://supjav.com/455636.html";
   const supjavTab = {
