@@ -194,6 +194,36 @@
     return "";
   }
 
+  /** Product code of the current known-code watch page ("" elsewhere). */
+  function knownCodePageIdentity() {
+    if (!isKnownCodeHostName()) return "";
+    const fromUrl =
+      (typeof Naming !== "undefined" &&
+        Naming.extractProductCode?.(location.href)) ||
+      "";
+    return String(fromUrl || titleFromLocation() || "").toUpperCase();
+  }
+
+  /**
+   * Known-code SPA switches keep the previous video's DOM (h1, og metas,
+   * poster) for a while, and those values would be stamped with the new
+   * URL's identity downstream. A DOM-sourced title/cover may only answer
+   * for the page when it names THIS code — otherwise it must wait out the
+   * post-navigation transition window.
+   */
+  function knownCodeSourceIsCurrent(raw) {
+    const code = knownCodePageIdentity();
+    if (!code) return true;
+    const rawCode =
+      (typeof Naming !== "undefined" &&
+        String(
+          Naming.extractProductCode?.(String(raw || "")) || ""
+        ).toUpperCase()) ||
+      "";
+    if (rawCode) return rawCode === code;
+    return Date.now() - lastNavigationChangeAt >= KNOWN_CODE_DOM_SETTLE_MS;
+  }
+
   function isPlayerFrame() {
     try {
       if (window !== window.top) {
@@ -301,10 +331,14 @@
       document.querySelector("h1")?.textContent?.trim() ||
       document.querySelector(".title, [class*='video-title'], [class*='detail-title']")?.textContent?.trim();
     const code = titleFromLocation();
+    const pageCode = knownCodePageIdentity();
 
     const raw = [h1, og, document.title]
       .map((t) => cleanPageTitle(t || ""))
-      .filter((t) => t && t.length >= 2 && !/^(home|index|video|watch)$/i.test(t));
+      .filter((t) => t && t.length >= 2 && !/^(home|index|video|watch)$/i.test(t))
+      // Known-code SPA transition: h1/og/document.title still name the
+      // previous video — they must not become this page's title.
+      .filter((t) => !pageCode || knownCodeSourceIsCurrent(t));
 
     if (!raw.length && code) return code;
     if (!raw.length) return "";
@@ -434,6 +468,9 @@
       if (/sprite|icon|logo|avatar|badge|1x1|pixel|imprint|user-avatar/i.test(u)) {
         continue;
       }
+      // Known-code SPA transition: og:image / poster / player backgrounds
+      // still point at the previous video until the DOM swaps.
+      if (knownCodePageIdentity() && !knownCodeSourceIsCurrent(u)) continue;
       if (
         typeof UVDSites !== "undefined" &&
         (UVDSites.isTiktokAvatarThumbUrl?.(u) ||
@@ -488,7 +525,7 @@
 
     if (video.poster) {
       const p = absUrl(video.poster);
-      if (p) return p;
+      if (p && knownCodeSourceIsCurrent(p)) return p;
     }
     const wrap = video.closest("[class*='player'], [class*='video'], figure, .video");
     const img = wrap?.querySelector("img[src]");
@@ -1648,6 +1685,8 @@
   function currentNavigationIdentity() {
     const videoId = youtubeVideoId();
     if (videoId) return `yt:${videoId}`;
+    const knownCode = knownCodePageIdentity();
+    if (knownCode) return `code:${knownCode}`;
     if (isInstagramHost() && typeof UVDSites !== "undefined") {
       const hrefKey = UVDSites.instagramPreviewPageKey?.(location.href) || "";
       if (hrefKey) return hrefKey;
@@ -1658,7 +1697,10 @@
     return `${location.origin}${location.pathname}${location.search}`;
   }
 
+  const KNOWN_CODE_DOM_SETTLE_MS = 1200;
   let lastNavigationIdentity = currentNavigationIdentity();
+  /** When the page identity last changed — gates the stale-DOM window. */
+  let lastNavigationChangeAt = Date.now();
 
   function refreshAfterSpaNavigation(forceRefresh = false) {
     const nextIdentity = currentNavigationIdentity();
@@ -1668,6 +1710,7 @@
       nextIdentity !== lastNavigationIdentity;
     if (changed) {
       lastNavigationIdentity = nextIdentity;
+      lastNavigationChangeAt = Date.now();
       REPORTED.clear();
       // Instagram keeps the previous reel's card visible until the rescan
       // delivers the new identity-stamped caption/cover — blanking here
@@ -1716,6 +1759,19 @@
     window.addEventListener("popstate", () => {
       setTimeout(() => refreshAfterSpaNavigation(true), 0);
     });
+  }
+  // Known-code sites soft-navigate between videos (numeric-id pushState);
+  // without this hook the previous video's DOM would report as the new page.
+  if (isKnownCodeHostName()) {
+    for (const method of ["pushState", "replaceState"]) {
+      const orig = history[method];
+      if (typeof orig !== "function") continue;
+      history[method] = function patchedHistory(...args) {
+        const ret = orig.apply(this, args);
+        setTimeout(() => refreshAfterSpaNavigation(false), 0);
+        return ret;
+      };
+    }
   }
 
   // Skip MutationObserver on TikTok/Instagram — DOM churn lags players

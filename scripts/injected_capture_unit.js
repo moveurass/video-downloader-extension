@@ -163,6 +163,37 @@ async function main() {
   assert.match(content, /captureAlways === true\) armPageCapture\(\)/);
   assert.match(content, /data\.nonce !== BRIDGE_NONCE/, "content ignores page messages without the nonce");
   assert.match(content, /\.player-wrap/, "known-code cover reads player-wrap background");
+  // Known-code SPA navigation must be detected and its stale DOM gated.
+  assert.match(
+    content,
+    /for \(const method of \["pushState", "replaceState"\]\)/,
+    "known-code hosts hook history pushState/replaceState"
+  );
+  assert.match(
+    content,
+    /const knownCode = knownCodePageIdentity\(\);\s*\n\s*if \(knownCode\) return `code:\$\{knownCode\}`;/,
+    "navigation identity is code-based on known-code pages"
+  );
+  assert.match(
+    content,
+    /knownCodeSourceIsCurrent\(t\)/,
+    "page titles pass the code-identity gate"
+  );
+  assert.match(
+    content,
+    /knownCodePageIdentity\(\) && !knownCodeSourceIsCurrent\(u\)/,
+    "page cover candidates pass the code-identity gate"
+  );
+  assert.match(
+    content,
+    /if \(p && knownCodeSourceIsCurrent\(p\)\) return p;/,
+    "video posters pass the code-identity gate"
+  );
+  assert.match(
+    content,
+    /lastNavigationChangeAt = Date\.now\(\)/,
+    "identity changes start the stale-DOM settle window"
+  );
 
   console.log("injected capture: opt-in retention, budget, export handshake passed");
 }
