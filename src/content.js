@@ -208,9 +208,33 @@
    * Known-code SPA switches keep the previous video's DOM (h1, og metas,
    * poster) for a while, and those values would be stamped with the new
    * URL's identity downstream. A DOM-sourced title/cover may only answer
-   * for the page when it names THIS code — otherwise it must wait out the
-   * post-navigation transition window.
+   * for the page when it names THIS code — otherwise the page must first
+   * prove the transition ended: head link/h1 naming the new code, a media
+   * element load since the navigation, or the settle window elapsing.
    */
+  function knownCodeTransitionSettled(code) {
+    if (Date.now() - lastNavigationChangeAt >= KNOWN_CODE_DOM_SETTLE_MS) {
+      return true;
+    }
+    for (const probe of [
+      document.querySelector('meta[property="og:url"]')?.content,
+      document.querySelector('link[rel="canonical"]')?.href,
+      document.querySelector("h1")?.textContent,
+      document.title
+    ]) {
+      const probeCode =
+        (typeof Naming !== "undefined" &&
+          String(
+            Naming.extractProductCode?.(String(probe || "")) || ""
+          ).toUpperCase()) ||
+        "";
+      if (probeCode) return probeCode === code;
+    }
+    // The player loading a new source is the strongest body-level signal
+    // that the page moved on (covers/poster follow the media element).
+    return lastMediaSwapAt >= lastNavigationChangeAt;
+  }
+
   function knownCodeSourceIsCurrent(raw) {
     const code = knownCodePageIdentity();
     if (!code) return true;
@@ -221,7 +245,7 @@
         ).toUpperCase()) ||
       "";
     if (rawCode) return rawCode === code;
-    return Date.now() - lastNavigationChangeAt >= KNOWN_CODE_DOM_SETTLE_MS;
+    return knownCodeTransitionSettled(code);
   }
 
   function isPlayerFrame() {
@@ -1701,6 +1725,17 @@
   let lastNavigationIdentity = currentNavigationIdentity();
   /** When the page identity last changed — gates the stale-DOM window. */
   let lastNavigationChangeAt = Date.now();
+  /** When a media element last started a new load — the player moved on. */
+  let lastMediaSwapAt = 0;
+  document.addEventListener(
+    "loadstart",
+    (event) => {
+      if (event.target instanceof HTMLMediaElement) {
+        lastMediaSwapAt = Date.now();
+      }
+    },
+    true
+  );
 
   function refreshAfterSpaNavigation(forceRefresh = false) {
     const nextIdentity = currentNavigationIdentity();
@@ -1740,6 +1775,14 @@
         REPORTED.clear();
         scanPage();
       }, delay);
+    }
+    // Quiet pages: one more pass just past the settle window so covers that
+    // carry no code (gated until the window closes) still land promptly.
+    if (isKnownCodeHostName()) {
+      setTimeout(() => {
+        REPORTED.clear();
+        scanPage();
+      }, KNOWN_CODE_DOM_SETTLE_MS + 200);
     }
   }
 

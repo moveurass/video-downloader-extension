@@ -194,6 +194,21 @@ async function main() {
     /lastNavigationChangeAt = Date\.now\(\)/,
     "identity changes start the stale-DOM settle window"
   );
+  assert.match(
+    content,
+    /knownCodeTransitionSettled/,
+    "codeless sources wait on a settlement check, not just a timer"
+  );
+  assert.match(
+    content,
+    /"loadstart"/,
+    "media loadstart latches the transition as settled"
+  );
+  assert.match(
+    content,
+    /KNOWN_CODE_DOM_SETTLE_MS \+ 200/,
+    "a rescan lands just past the settle window for codeless covers"
+  );
 
   console.log("injected capture: opt-in retention, budget, export handshake passed");
 }
