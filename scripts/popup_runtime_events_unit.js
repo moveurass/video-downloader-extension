@@ -525,6 +525,65 @@ check(typeof PopupRuntimeEvents.bind, "function");
   check(calls, [], "media updates from another tab are ignored");
 }
 
+// Known-code page switch: the broadcast placeholder is built from the NEW
+// page's URL code, so its identity fields must survive the popup strip —
+// only unverified media payloads get blanked. Stripping the placeholder
+// flashed the generic site name until GET_MEDIA re-delivered the same code.
+{
+  const { handler, state, calls } = makeHarness();
+  state.currentTabUrl = "https://123av.com/ko/v/snos-342-uncensore";
+  state.allItems = [
+    { url: "https://cdn.test/snos-342/master.m3u8", title: "SNOS-342 이전 영상" }
+  ];
+  const newPageUrl = "https://123av.com/ko/v/abc-123-new";
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl: newPageUrl,
+    items: [
+      {
+        url: newPageUrl,
+        pageUrl: newPageUrl,
+        isPagePlaceholder: true,
+        title: "ABC-123",
+        pageTitle: "ABC-123",
+        displayName: "ABC-123",
+        filename: "ABC-123.mp4",
+        thumbnail: "https://img.test/abc-123.jpg"
+      },
+      {
+        url: "https://cdn.test/abc-123/master.m3u8",
+        pageUrl: newPageUrl,
+        title: "이전 영상 제목",
+        displayName: "이전 영상 제목",
+        filename: "이전 영상 제목.mp4",
+        thumbnail: "https://img.test/old-cover.jpg"
+      }
+    ]
+  });
+  const ensureCall = [...calls]
+    .reverse()
+    .find((call) => Array.isArray(call) && call[0] === "ensureSiteItems");
+  check(Array.isArray(ensureCall), true, "page switch repaints through ensureSiteItems");
+  const [placeholder, media] = ensureCall[1];
+  check(
+    [placeholder.title, placeholder.displayName, placeholder.filename],
+    ["ABC-123", "ABC-123", "ABC-123.mp4"],
+    "the new page's code placeholder keeps its identity through the switch"
+  );
+  check(
+    placeholder.thumbnail,
+    "https://img.test/abc-123.jpg",
+    "the background-gated placeholder cover is not blanked on switch"
+  );
+  check(
+    [media.title, media.displayName, media.filename, media.thumbnail],
+    [undefined, undefined, undefined, undefined],
+    "non-placeholder media payloads still lose unverified identity fields"
+  );
+}
+
+
 {
   const { handler, state, buttons, calls } = makeHarness();
   const job = { id: "job-1", status: "done" };

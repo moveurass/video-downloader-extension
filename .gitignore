@@ -13,3 +13,4 @@ __pycache__/
 youtube/
 paseo.json
 **/.paseo/
+.zcode/

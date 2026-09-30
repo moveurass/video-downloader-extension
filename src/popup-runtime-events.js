@@ -332,16 +332,26 @@
               return /:code:/.test(curKey);
             }
           })();
-          const painted = pageChanged && knownCodeHost
-            ? items.map((item) => ({
-                ...item,
-                thumbnail: undefined,
-                title: undefined,
-                pageTitle: undefined,
-                displayName: undefined,
-                filename: undefined
-              }))
-            : items;
+          // Known-code page switch: media payloads keep the identity strip
+          // (popup-side defense), but the background's placeholder is built
+          // from the NEW page's URL code with meta wiped — stripping its
+          // title only flashed the generic site name until GET_MEDIA
+          // re-delivered the same code.
+          const painted =
+            pageChanged && knownCodeHost
+              ? items.map((item) =>
+                  item?.isPagePlaceholder === true
+                    ? item
+                    : {
+                        ...item,
+                        thumbnail: undefined,
+                        title: undefined,
+                        pageTitle: undefined,
+                        displayName: undefined,
+                        filename: undefined
+                      }
+                )
+              : items;
           const previousPrimaryUrl = getAllItems?.()?.[0]?.url || "";
           setAllItems(ensureSiteItems(painted, {
             url: currentTabUrl,
