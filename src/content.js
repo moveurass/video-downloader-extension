@@ -212,13 +212,29 @@
    * prove the transition ended: head link/h1 naming the new code, a media
    * element load since the navigation, or the settle window elapsing.
    */
+  /** og:url / canonical naming this page's code — head metas tracking SPA. */
+  function knownCodeHeadNamesPage(code) {
+    for (const probe of [
+      document.querySelector('meta[property="og:url"]')?.content,
+      document.querySelector('link[rel="canonical"]')?.href
+    ]) {
+      const probeCode =
+        (typeof Naming !== "undefined" &&
+          String(
+            Naming.extractProductCode?.(String(probe || "")) || ""
+          ).toUpperCase()) ||
+        "";
+      if (probeCode) return probeCode === code;
+    }
+    return false;
+  }
+
   function knownCodeTransitionSettled(code) {
     if (Date.now() - lastNavigationChangeAt >= KNOWN_CODE_DOM_SETTLE_MS) {
       return true;
     }
+    if (knownCodeHeadNamesPage(code)) return true;
     for (const probe of [
-      document.querySelector('meta[property="og:url"]')?.content,
-      document.querySelector('link[rel="canonical"]')?.href,
       document.querySelector("h1")?.textContent,
       document.title
     ]) {
@@ -453,15 +469,34 @@
       document.querySelector('meta[name="twitter:image"]')?.content,
       document.querySelector('meta[property="og:video:poster"]')?.content
     ];
-    const candidates = [
-      ...(igPost ? [extractInstagramCoverUrl()] : []),
+    const headCoverCandidates = [
       ...(igPost ? (igOgOk ? ogCandidates : []) : ogCandidates),
-      document.querySelector('link[rel="image_src"]')?.href,
+      document.querySelector('link[rel="image_src"]')?.href
+    ];
+    const bodyCoverCandidates = [
       igPost
         ? visibleInstagramPoster()
         : document.querySelector("video[poster]")?.getAttribute("poster"),
       isTikTokVideoPage() ? extractTikTokCoverUrl() : "",
-      playerWrapCover(),
+      playerWrapCover()
+    ];
+    // Known-code SPA: head metas may not track soft navigation at all —
+    // after the first navigation the player-area covers answer first, and
+    // og:* only answers when og:url / canonical names this video (the
+    // Instagram pattern; a static head keeps serving the FIRST video).
+    const knownCodePageCode = knownCodePageIdentity();
+    const knownCodeHeadOk =
+      !knownCodePageCode ||
+      !hasNavigatedSinceLoad ||
+      knownCodeHeadNamesPage(knownCodePageCode);
+    const candidates = [
+      ...(igPost ? [extractInstagramCoverUrl()] : []),
+      ...(knownCodePageCode && hasNavigatedSinceLoad
+        ? [
+            ...bodyCoverCandidates,
+            ...(knownCodeHeadOk ? headCoverCandidates : [])
+          ]
+        : [...headCoverCandidates, ...bodyCoverCandidates]),
       // TikTok / Instagram video pages: skip generic large-img scrape.
       // Profile headshots are often the biggest <img> on those permalinks.
       ...(knownCode || isTikTokVideoPage() || isInstagramPostPage()
@@ -1725,6 +1760,8 @@
   let lastNavigationIdentity = currentNavigationIdentity();
   /** When the page identity last changed — gates the stale-DOM window. */
   let lastNavigationChangeAt = Date.now();
+  /** True once any in-page navigation happened (head metas become suspect). */
+  let hasNavigatedSinceLoad = false;
   /** When a media element last started a new load — the player moved on. */
   let lastMediaSwapAt = 0;
   document.addEventListener(
@@ -1746,6 +1783,7 @@
     if (changed) {
       lastNavigationIdentity = nextIdentity;
       lastNavigationChangeAt = Date.now();
+      hasNavigatedSinceLoad = true;
       REPORTED.clear();
       // Instagram keeps the previous reel's card visible until the rescan
       // delivers the new identity-stamped caption/cover — blanking here

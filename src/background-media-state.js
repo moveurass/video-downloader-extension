@@ -10,10 +10,12 @@
     const tabMeta = new Map();
     const probedUrls = new Set();
     const broadcastTimers = new Map();
+    const broadcastPendingSince = new Map();
     let bound = false;
     const schedule = deps.setTimeout || setTimeout;
     const unschedule = deps.clearTimeout || clearTimeout;
     const BROADCAST_DELAY_MS = 200;
+    const BROADCAST_MAX_WAIT_MS = 600;
 
     // Real segment sizes seen in webRequest, attributed to the playlist that
     // was fetched just before them. Feeds measured-average capacity estimates.
@@ -1458,11 +1460,22 @@
         }
       }
 
+      // Trailing debounce, but never hold a pending broadcast longer than
+      // BROADCAST_MAX_WAIT_MS — a rapid switching stream (nav → PAGE_META →
+      // rescans) would otherwise keep resetting the timer and starve the
+      // popup of live updates.
+      const pendingSince = broadcastPendingSince.get(tabId) || 0;
+      const waited = pendingSince ? Date.now() - pendingSince : 0;
+      const delay = pendingSince
+        ? Math.max(0, Math.min(BROADCAST_DELAY_MS, BROADCAST_MAX_WAIT_MS - waited))
+        : BROADCAST_DELAY_MS;
       const timer = schedule(() => {
         broadcastTimers.delete(tabId);
+        broadcastPendingSince.delete(tabId);
         sendBroadcastUpdate(tabId);
-      }, BROADCAST_DELAY_MS);
+      }, delay);
       broadcastTimers.set(tabId, timer);
+      if (!pendingSince) broadcastPendingSince.set(tabId, Date.now());
     }
 
     function clearMedia(tabId) {
@@ -1474,6 +1487,7 @@
       const timer = broadcastTimers.get(tabId);
       if (timer) unschedule(timer);
       broadcastTimers.delete(tabId);
+      broadcastPendingSince.delete(tabId);
       tabMedia.delete(tabId);
       tabMeta.delete(tabId);
       deleteSegmentStats(tabId);

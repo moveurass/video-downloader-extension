@@ -98,9 +98,9 @@ function makeHarness(overrides = {}) {
     },
     withTabReferer: async (_tabId, operation) => operation(),
     detachJobsFromTab: (tabId) => detached.push(tabId),
-    setTimeout: (callback) => {
+    setTimeout: (callback, delay) => {
       const id = ++timerId;
-      timers.set(id, callback);
+      timers.set(id, { callback, due: Date.now() + (delay || 0) });
       return id;
     },
     clearTimeout: (id) => timers.delete(id),
@@ -116,10 +116,11 @@ function makeHarness(overrides = {}) {
     tabMessages,
     detached,
     tabs,
-    runTimers() {
-      const pending = [...timers.entries()];
-      timers.clear();
-      for (const [, callback] of pending) callback();
+    runTimers(until = Infinity) {
+      const now = until === Infinity ? Infinity : until;
+      const pending = [...timers.entries()].filter(([, entry]) => entry.due <= now);
+      for (const [id] of pending) timers.delete(id);
+      for (const [, entry] of pending) entry.callback();
     },
     pendingTimerCount: () => timers.size
   };
@@ -779,6 +780,35 @@ async function main() {
       .length,
     1,
     "a rapid update burst emits one MEDIA_UPDATED message"
+  );
+
+  // A sustained stream (navigation → PAGE_META → rescans) must not starve
+  // the popup: once a broadcast has been pending for the max wait it fires
+  // even while more updates keep arriving.
+  const realDateNow = Date.now;
+  let clock = 2_000_000;
+  Date.now = () => clock;
+  const beforeStarve = harness.messages.length;
+  for (const offset of [0, 150, 300, 450, 560, 590]) {
+    clock = 2_000_000 + offset;
+    store.addMedia(11, {
+      url: "https://cdn.example.com/starve.mp4",
+      type: "video",
+      duration: 60,
+      size: 2_000_000 + offset
+    });
+  }
+  clock = 2_000_600; // first pending + BROADCAST_MAX_WAIT_MS
+  harness.runTimers(clock);
+  Date.now = realDateNow;
+  await flush();
+  equal(
+    harness.messages
+      .slice(beforeStarve)
+      .filter((m) => m.type === "MEDIA_UPDATED" && m.tabId === 11)
+      .length >= 1,
+    true,
+    "a sustained update stream still delivers MEDIA_UPDATED within the max wait"
   );
 
   tabs.set(12, {
