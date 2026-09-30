@@ -163,6 +163,82 @@ async function main() {
   assert.match(content, /captureAlways === true\) armPageCapture\(\)/);
   assert.match(content, /data\.nonce !== BRIDGE_NONCE/, "content ignores page messages without the nonce");
   assert.match(content, /\.player-wrap/, "known-code cover reads player-wrap background");
+  // Known-code SPA navigation must be detected and its stale DOM gated.
+  // Content scripts run in an isolated world: patching history.pushState
+  // there never sees the page's own calls, so navigation must come from the
+  // Navigation API and from each scan re-checking identity.
+  assert.doesNotMatch(
+    content,
+    /history\[method\] = function/,
+    "no isolated-world history patches (they never fire)"
+  );
+  assert.match(
+    content,
+    /navigation\?\.addEventListener\?\.\("currententrychange"/,
+    "SPA navigation is heard through the Navigation API"
+  );
+  assert.match(
+    content,
+    /function scanPage\(\) \{[\s\S]{0,300}refreshAfterSpaNavigation\(false\);/,
+    "every scan re-checks page identity before reading the DOM"
+  );
+  assert.match(
+    content,
+    /if \(probeCode\) return probeCode === code;\s*\}[\s\S]{0,300}KNOWN_CODE_DOM_SETTLE_MS;\s*\}/,
+    "an h1/title naming another code outranks the settle window"
+  );
+  assert.match(
+    content,
+    /const knownCode = knownCodePageIdentity\(\);\s*\n\s*if \(knownCode\) return `code:\$\{knownCode\}`;/,
+    "navigation identity is code-based on known-code pages"
+  );
+  assert.match(
+    content,
+    /knownCodeSourceIsCurrent\(t\)/,
+    "page titles pass the code-identity gate"
+  );
+  assert.match(
+    content,
+    /knownCodePageCode && !knownCodeCoverIsCurrent\(u\)/,
+    "page cover candidates pass the code-identity gate"
+  );
+  assert.match(
+    content,
+    /if \(p && knownCodeCoverIsCurrent\(p\)\) return p;/,
+    "video posters pass the code-identity gate"
+  );
+  // A cover once seen as code A's is never code B's, whatever the settle
+  // heuristics say (a head updated before the player area passed them all).
+  assert.match(
+    content,
+    /const owner = knownCodeCoverOwners\.get\(absUrl\(url\) \|\| ""\);\s*if \(owner && owner !== code\) return false;/,
+    "covers owned by another code are refused before any heuristic"
+  );
+  assert.match(
+    content,
+    /claimKnownCodeCovers\(u\);\s*return u;/,
+    "the chosen known-code cover claims its page's cover sources"
+  );
+  assert.match(
+    content,
+    /lastNavigationChangeAt = Date\.now\(\)/,
+    "identity changes start the stale-DOM settle window"
+  );
+  assert.match(
+    content,
+    /knownCodeTransitionSettled/,
+    "codeless sources wait on a settlement check, not just a timer"
+  );
+  assert.match(
+    content,
+    /"loadstart"/,
+    "media loadstart latches the transition as settled"
+  );
+  assert.match(
+    content,
+    /KNOWN_CODE_DOM_SETTLE_MS \+ 200/,
+    "a rescan lands just past the settle window for codeless covers"
+  );
 
   console.log("injected capture: opt-in retention, budget, export handshake passed");
 }

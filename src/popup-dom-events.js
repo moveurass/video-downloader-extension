@@ -70,9 +70,14 @@
         setCurrentTabId
       } = deps;
       const previewCompletionSound = deps.previewCompletionSound || (() => {});
+      const { pageKey, setDismissedPageKey } = deps;
 
       $("#btnScan").addEventListener("click", async () => {
         $("#btnScan").textContent = "…";
+        // An explicit rescan re-arms card display for this page.
+        if (typeof setDismissedPageKey === "function") {
+          setDismissedPageKey("");
+        }
         await loadMedia();
         $("#btnScan").textContent = "↻";
       });
@@ -80,6 +85,14 @@
       $("#btnClear").addEventListener("click", async () => {
         const currentTabId = getCurrentTabId();
         if (currentTabId == null) return;
+        // Remember the dismissal for this page: live scans keep
+        // broadcasting placeholders that would resurrect the card.
+        const clearUrl = getCurrentTabUrl();
+        if (clearUrl && typeof setDismissedPageKey === "function") {
+          setDismissedPageKey(
+            (typeof pageKey === "function" ? pageKey(clearUrl) : clearUrl) || ""
+          );
+        }
         await sendMessage({ type: "CLEAR_MEDIA", tabId: currentTabId });
         setAllItems([]);
         render();

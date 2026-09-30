@@ -98,9 +98,9 @@ function makeHarness(overrides = {}) {
     },
     withTabReferer: async (_tabId, operation) => operation(),
     detachJobsFromTab: (tabId) => detached.push(tabId),
-    setTimeout: (callback) => {
+    setTimeout: (callback, delay) => {
       const id = ++timerId;
-      timers.set(id, callback);
+      timers.set(id, { callback, due: Date.now() + (delay || 0) });
       return id;
     },
     clearTimeout: (id) => timers.delete(id),
@@ -116,10 +116,11 @@ function makeHarness(overrides = {}) {
     tabMessages,
     detached,
     tabs,
-    runTimers() {
-      const pending = [...timers.entries()];
-      timers.clear();
-      for (const [, callback] of pending) callback();
+    runTimers(until = Infinity) {
+      const now = until === Infinity ? Infinity : until;
+      const pending = [...timers.entries()].filter(([, entry]) => entry.due <= now);
+      for (const [id] of pending) timers.delete(id);
+      for (const [, entry] of pending) entry.callback();
     },
     pendingTimerCount: () => timers.size
   };
@@ -459,6 +460,342 @@ async function main() {
     "lifted caption becomes the download filename"
   );
 
+  // Reels swipe with document.title still carrying the previous reel's
+  // caption: navigation clears tabMeta with provisionalTitleBlocked, so the
+  // lagged tab title must not come back as the new reel's card title.
+  const igSwipedUrl = "https://www.instagram.com/reel/NEXTREEL88/";
+  store.clearTabMediaState(55, { keepLastUrl: igSwipedUrl });
+  tabs.set(55, { id: 55, url: igSwipedUrl, title: "이전 릴스 캡션" });
+  const igSwipedPlaceholder = store.makeSitePlaceholder({
+    id: 55,
+    url: igSwipedUrl,
+    title: "이전 릴스 캡션"
+  });
+  equal(
+    igSwipedPlaceholder.title,
+    "Instagram 영상",
+    "blocked meta after a Reels swipe drops the lagged tab title"
+  );
+  const igSwipedItems = await store.getMediaForTabAsync(55, {
+    pageUrl: igSwipedUrl
+  });
+  equal(
+    igSwipedItems[0]?.title,
+    "Instagram 영상",
+    "getMediaForTabAsync re-reads chrome.tabs and must drop it too"
+  );
+
+  // Meta still bound to the previous reel while the placeholder targets the
+  // next one: the tab title cannot bridge that identity gap either.
+  store.setTabMeta(56, {
+    lastUrl: "https://www.instagram.com/reel/PREVREEL77/",
+    pageKey: "ig:reel:PREVREEL77",
+    title: "이전 릴스 캡션",
+    titlePageKey: "ig:reel:PREVREEL77",
+    identityConfirmed: true
+  });
+  const igMismatchPlaceholder = store.makeSitePlaceholder({
+    id: 56,
+    url: igSwipedUrl,
+    title: "이전 릴스 캡션"
+  });
+  equal(
+    igMismatchPlaceholder.title,
+    "Instagram 영상",
+    "tab title is dropped when meta tracks a different page"
+  );
+
+  // TikTok soft navigation: same blocked-meta shape.
+  const ttSwipedUrl =
+    "https://www.tiktok.com/@creator/video/7300000000000000001";
+  store.clearTabMediaState(57, { keepLastUrl: ttSwipedUrl });
+  tabs.set(57, { id: 57, url: ttSwipedUrl, title: "이전 틱톡 캡션" });
+  const ttSwipedItems = await store.getMediaForTabAsync(57, {
+    pageUrl: ttSwipedUrl
+  });
+  equal(
+    ttSwipedItems[0]?.title,
+    "@creator",
+    "TikTok swipe falls back to the handle, not the lagged caption"
+  );
+
+  // YouTube soft navigation: blocked meta already dropped the tab title —
+  // lock that behavior in.
+  const ytSwipedUrl = "https://www.youtube.com/watch?v=nextVideo99";
+  store.clearTabMediaState(58, { keepLastUrl: ytSwipedUrl });
+  tabs.set(58, { id: 58, url: ytSwipedUrl, title: "이전 영상 제목 - YouTube" });
+  const ytSwipedPlaceholder = store.makeSitePlaceholder({
+    id: 58,
+    url: ytSwipedUrl,
+    title: "이전 영상 제목 - YouTube"
+  });
+  equal(
+    ytSwipedPlaceholder.title,
+    "YouTube 영상",
+    "blocked meta after a YouTube soft navigation drops the lagged tab title"
+  );
+
+  // 123av-style known-code race: the popup's GET_MEDIA can beat the
+  // tabs.onUpdated(url) delivery, so meta still tracks the PREVIOUS video
+  // page. Neither its title nor its cover may cross onto the new code page.
+  store.setTabMeta(59, {
+    lastUrl: "https://123av.com/ko/v/cawb-035-uncensore",
+    pageKey: "123av.com:code:CAWB-035",
+    title: "이전 품번 영상 제목",
+    titlePageKey: "123av.com:code:CAWB-035",
+    thumbnail: "https://img.123av.example/prev-cover.jpg",
+    identityConfirmed: true
+  });
+  const codeRacePlaceholder = store.makeSitePlaceholder({
+    id: 59,
+    url: "https://123av.com/ko/v/ssis-777-uncensore",
+    title: "이전 품번 영상 제목 - 123AV"
+  });
+  equal(
+    codeRacePlaceholder.title,
+    "SSIS-777",
+    "known-code race falls back to the code, not the previous page's title"
+  );
+  equal(
+    codeRacePlaceholder.thumbnail,
+    undefined,
+    "known-code race must not reuse the previous page's cover"
+  );
+
+  // Cold worker on a known-code watch page: the browser tab title lags the
+  // numeric-id navigation, so the placeholder must use the code.
+  const coldCodePlaceholder = store.makeSitePlaceholder({
+    id: 60,
+    url: "https://123av.com/ko/v/ssis-888-uncensore",
+    title: "이전 영상 제목 - 123AV"
+  });
+  equal(
+    coldCodePlaceholder.title,
+    "SSIS-888",
+    "cold known-code placeholder uses the code, not the lagged tab title"
+  );
+  equal(
+    coldCodePlaceholder.thumbnail,
+    undefined,
+    "cold known-code placeholder carries no cover until page meta lands"
+  );
+
+  // Item-less known-code page (123av runs its player in an iframe, so the
+  // top scan finds no media): the card lives entirely on tab meta. The
+  // PAGE_META that names the new video's title/cover must still reach the
+  // open popup — broadcasting only the nav wipe starved it of the cover.
+  {
+    const prevCover = "https://icdn.123av.example/img2/s500/33/mngs-072/cover.jpg";
+    const nextCover = "https://icdn.123av.example/img2/s500/6b/snos-309/cover.jpg";
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/mngs-072",
+      title: "MNGS-072 이전 영상",
+      thumbnail: prevCover,
+      identityConfirmed: true
+    });
+    harness.messages.length = 0;
+    // The pushState switch: blank PAGE_META wipes identity (pageChanged).
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/snos-309",
+      title: "",
+      thumbnail: "",
+      fromPageMeta: true
+    });
+    const afterNav = harness.messages.filter(
+      (m) => m.type === "MEDIA_UPDATED" && m.tabId === 61
+    );
+    equal(afterNav.length, 1, "the navigation wipe broadcasts the empty placeholder");
+    // ~1s later the rescan names this video: player-area cover + title.
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/snos-309",
+      title: "SNOS-309 실사판 제목",
+      thumbnail: nextCover,
+      fromPageMeta: true
+    });
+    harness.runTimers();
+    await flush();
+    const afterMeta = harness.messages.filter(
+      (m) => m.type === "MEDIA_UPDATED" && m.tabId === 61
+    );
+    equal(
+      afterMeta.length,
+      2,
+      "same-page PAGE_META still broadcasts on item-less pages"
+    );
+    equal(
+      afterMeta[1]?.items?.[0]?.thumbnail,
+      nextCover,
+      "the follow-up broadcast placeholder carries the new video's cover"
+    );
+    equal(
+      afterMeta[1]?.items?.[0]?.title,
+      "SNOS-309 실사판 제목",
+      "the follow-up broadcast placeholder carries the new video's title"
+    );
+    // Unchanged meta must not keep broadcasting (no resurrection spam).
+    harness.messages.length = 0;
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/snos-309",
+      title: "SNOS-309 실사판 제목",
+      thumbnail: nextCover,
+      fromPageMeta: true
+    });
+    harness.runTimers();
+    await flush();
+    equal(
+      harness.messages.filter((m) => m.type === "MEDIA_UPDATED" && m.tabId === 61)
+        .length,
+      0,
+      "unchanged meta does not re-broadcast the placeholder"
+    );
+  }
+
+  // The previous video's cover must not follow onto the next known-code
+  // page through ANY path: the top frame's lagging player area, a nested
+  // player frame still reporting, or a popup echo. Code-less cover URLs are
+  // refused by the left-page memory, coded ones by their code.
+  {
+    const tabId = 62;
+    const pageA = "https://123av.com/ko/v/mngs-072";
+    const pageB = "https://123av.com/ko/v/snos-309";
+    const coverA = "https://cdn.123av.example/covers/9f31c2.jpg";
+    const coverB = "https://cdn.123av.example/covers/47ad0e.jpg";
+    const codedA = "https://icdn.123av.example/img2/s500/33/mngs-072/cover.jpg";
+    store.setTabMeta(tabId, {
+      lastUrl: pageA,
+      title: "MNGS-072 이전 영상",
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    store.addMedia(tabId, {
+      url: "https://player.example/a/video.mp4",
+      pageUrl: pageA,
+      thumbnail: coverA,
+      type: "video"
+    });
+    equal(store.getTabMeta(tabId).thumbnail, coverA, "A's cover is A's");
+
+    // tabs.onUpdated moves the tab to B (the path every navigation takes).
+    store.clearTabMediaState(tabId, { keepLastUrl: pageB });
+    store.setTabMeta(tabId, { lastUrl: pageB, thumbnail: undefined });
+
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      title: "",
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "a lagging top-frame PAGE_META cannot put A's cover on B"
+    );
+    // The previous player frame re-reports its video (rebound to B's URL
+    // like every nested frame): it used to outrank B's own media, so the
+    // card showed A's poster and downloaded A's video.
+    store.addMedia(tabId, {
+      url: "https://player.example/a/video.mp4",
+      pageUrl: pageB,
+      thumbnail: coverA,
+      type: "video"
+    });
+    equal(
+      store.getTabItems(tabId).length,
+      0,
+      "the previous video's media never becomes an item of the next page"
+    );
+    store.addMedia(tabId, {
+      url: "https://player.example/b/video.mp4",
+      pageUrl: pageB,
+      thumbnail: coverA,
+      type: "video"
+    });
+    equal(
+      store.getTabItems(tabId)[0]?.url,
+      "https://player.example/b/video.mp4",
+      "the next page's own media is accepted"
+    );
+    equal(
+      store.getTabItems(tabId)[0]?.thumbnail,
+      undefined,
+      "a nested player frame still showing A cannot put A's cover on B"
+    );
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      thumbnail: codedA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "a cover URL naming another code is never this page's"
+    );
+    ok(
+      !store.thumbnailMatchesPageKey(
+        codedA,
+        store.pageIdentityKey(pageB)
+      ),
+      "coded covers must name the page's own code"
+    );
+    ok(
+      store.thumbnailMatchesPageKey(
+        "data:image/jpeg;base64,abc123/def456",
+        store.pageIdentityKey(pageB)
+      ),
+      "data-URL covers are not scanned for codes"
+    );
+
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      title: "SNOS-309 새 영상",
+      thumbnail: coverB,
+      fromPageMeta: true
+    });
+    equal(store.getTabMeta(tabId).thumbnail, coverB, "B's own cover lands");
+
+    // Going back, A's cover is A's again — the memory is per page, not a ban.
+    store.clearTabMediaState(tabId, { keepLastUrl: pageA });
+    store.setTabMeta(tabId, { lastUrl: pageA, thumbnail: undefined });
+    store.setTabMeta(tabId, {
+      lastUrl: pageA,
+      thumbnail: coverB,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "B's cover cannot follow back onto A either"
+    );
+    store.setTabMeta(tabId, {
+      lastUrl: pageA,
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      coverA,
+      "returning to A accepts A's own cover"
+    );
+
+    // The blank PAGE_META wipe (pageChanged inside setTabMeta) remembers too.
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      title: "",
+      thumbnail: "",
+      fromPageMeta: true
+    });
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "the pageChanged wipe path refuses the previous cover as well"
+    );
+  }
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({
@@ -659,6 +996,35 @@ async function main() {
       .length,
     1,
     "a rapid update burst emits one MEDIA_UPDATED message"
+  );
+
+  // A sustained stream (navigation → PAGE_META → rescans) must not starve
+  // the popup: once a broadcast has been pending for the max wait it fires
+  // even while more updates keep arriving.
+  const realDateNow = Date.now;
+  let clock = 2_000_000;
+  Date.now = () => clock;
+  const beforeStarve = harness.messages.length;
+  for (const offset of [0, 150, 300, 450, 560, 590]) {
+    clock = 2_000_000 + offset;
+    store.addMedia(11, {
+      url: "https://cdn.example.com/starve.mp4",
+      type: "video",
+      duration: 60,
+      size: 2_000_000 + offset
+    });
+  }
+  clock = 2_000_600; // first pending + BROADCAST_MAX_WAIT_MS
+  harness.runTimers(clock);
+  Date.now = realDateNow;
+  await flush();
+  equal(
+    harness.messages
+      .slice(beforeStarve)
+      .filter((m) => m.type === "MEDIA_UPDATED" && m.tabId === 11)
+      .length >= 1,
+    true,
+    "a sustained update stream still delivers MEDIA_UPDATED within the max wait"
   );
 
   tabs.set(12, {

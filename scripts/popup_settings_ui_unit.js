@@ -3,6 +3,11 @@
 const assert = require("node:assert/strict");
 const PopupSettingsUI = require("../src/popup-settings-ui.js");
 
+// The footer version comes from the runtime manifest in the real popup.
+globalThis.chrome = {
+  runtime: { getManifest: () => ({ version: "1.27.3" }) }
+};
+
 let assertions = 0;
 function check(actual, expected, message) {
   assert.deepEqual(actual, expected, message);
@@ -236,7 +241,7 @@ async function main() {
     );
     check(
       harness.elements["#footerNote"].textContent,
-      "저장: 다운로드/Saved · mode:audio · v1.26.0"
+      "저장: 다운로드/Saved · mode:audio · v1.27.3"
     );
   }
 

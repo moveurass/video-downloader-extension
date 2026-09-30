@@ -59,6 +59,16 @@
       let currentTabId = null;
       let currentTabUrl = null;
       let allItems = [];
+      /**
+       * Page the user cleared with 목록 비우기(✕) in this popup session —
+       * live page scans keep broadcasting placeholders, which would
+       * instantly resurrect the card the user just dismissed.
+       */
+      let dismissedPageKey = "";
+      const getDismissedPageKey = () => dismissedPageKey;
+      const setDismissedPageKey = (value) => {
+        dismissedPageKey = String(value || "");
+      };
       /** Background job ids tracked by this popup session */
       let trackedJobIds = new Set();
       /** Avoid double toast for the same completed job */
@@ -972,6 +982,8 @@
         setCurrentTabUrl: (value) => {
           currentTabUrl = value;
         },
+        getDismissedPageKey,
+        setDismissedPageKey,
         getAvailableQualities,
         setAvailableQualities,
         getQualitiesLoading,
@@ -1076,6 +1088,9 @@
         sendMessage: (message) => chrome.runtime.sendMessage(message),
         loadMedia,
         render,
+        pageKey,
+        getDismissedPageKey,
+        setDismissedPageKey,
         downloadByPastedLink,
         downloadThisPage,
         updateLinkCount: updateLinkCountWithPreview,
@@ -1154,6 +1169,8 @@
         chrome,
         $,
         pageKey,
+        getDismissedPageKey,
+        setDismissedPageKey,
         isKnownCodeSite: Naming.isKnownCodeSite,
         ensureSiteItems,
         render,

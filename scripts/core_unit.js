@@ -39,6 +39,28 @@ assert.deepEqual(
 assert.equal(UVD.extractSeriesInfo("Hello world"), null);
 assert.equal(UVD.classifyError("Segment HTTP 403").code, "forbidden");
 assert.equal(Naming.extractProductCode("https://example.com/ssis-001"), "SSIS-001");
+// Known-code SPA gate inputs: a DOM title/cover may only answer for the page
+// when its embedded code matches the URL's code — the previous video's DOM
+// lingers after a soft navigation.
+assert.equal(Naming.extractProductCode("CAWB-035 어떤 제목"), "CAWB-035");
+assert.equal(
+  Naming.extractProductCode("이전 영상의 제목 SSIS-777 - 123AV"),
+  "SSIS-777"
+);
+assert.equal(
+  Naming.extractProductCode("https://img.123av.example/dm5/ssis-777/cover.jpg"),
+  "SSIS-777"
+);
+assert.equal(
+  Naming.extractProductCode("https://cdn.example.com/hls/playlist.m3u8"),
+  "",
+  "cover URLs without a code segment stay ungated"
+);
+assert.equal(
+  Naming.extractProductCode("https://123av.com/ko/dm5/cawb-035/xa85698"),
+  "CAWB-035",
+  "URL code extraction skips non-code trailing segments"
+);
 
 const heights = [
   ["https://cdn.example/uuid/720p/video.m3u8", 720],

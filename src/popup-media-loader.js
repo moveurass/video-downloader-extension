@@ -168,6 +168,17 @@
       let loadSequence = 0;
 
       function restoreStablePage(tabLike = {}) {
+        // Respect the user's 목록 비우기(✕) for this page — restoring the
+        // last-good card would resurrect what was just dismissed.
+        const dismissedUrl = getCurrentTabUrl() || tabLike.url || "";
+        const dismissed =
+          typeof deps.getDismissedPageKey === "function"
+            ? deps.getDismissedPageKey() || ""
+            : "";
+        if (dismissed && dismissedUrl && dismissed === pageKey(dismissedUrl)) {
+          setAllItems([]);
+          return [];
+        }
         const current = getAllItems();
         const stable = ensureSiteItems(current, {
           ...tabLike,
@@ -380,6 +391,9 @@
         setCurrentTabUrl(nextTabUrl);
         let currentTabUrl = getCurrentTabUrl();
         if (navigationChanged) {
+          if (typeof deps.setDismissedPageKey === "function") {
+            deps.setDismissedPageKey("");
+          }
           const navigationTab =
             isSitePage(nextTabUrl)
               ? { ...tab, url: nextTabUrl, title: "" }
@@ -398,6 +412,14 @@
           setQualitiesLoading(false);
           render();
         }
+
+        const pageDismissed = (() => {
+          const dismissed =
+            typeof deps.getDismissedPageKey === "function"
+              ? deps.getDismissedPageKey() || ""
+              : "";
+          return !!(dismissed && dismissed === pageKey(currentTabUrl));
+        })();
 
         try {
           pageHost.textContent = currentTabUrl
@@ -418,6 +440,23 @@
           } catch {
             /* ignore */
           }
+        }
+
+        // Fresh popup session on a helper page: paint the neutral card now
+        // instead of after the SCAN/GET_MEDIA round trips. Title/cover land
+        // with the identity-bound payload right after; the previous video's
+        // data must never be what fills the gap.
+        if (
+          !navigationChanged &&
+          !pageDismissed &&
+          !getAllItems().length &&
+          typeof isSitePage === "function" &&
+          isSitePage(currentTabUrl)
+        ) {
+          setAllItems(
+            ensureSiteItems([], { ...tab, url: currentTabUrl, title: "" })
+          );
+          render();
         }
 
         // YouTube often blocks content scripts — never rely only on SCAN
@@ -514,10 +553,15 @@
             };
           });
         const siteTab =
-          (youtubeId || knownCodePage || isTiktokUrl(currentTabUrl) || isInstagramUrl(currentTabUrl)) && suppressProvisionalTitle
+          youtubeId ||
+          isTiktokUrl(currentTabUrl) ||
+          isInstagramUrl(currentTabUrl) ||
+          knownCodePage
             ? { ...tab, title: "" }
             : tab;
-        setAllItems(ensureSiteItems(rawItems, siteTab));
+        setAllItems(
+          pageDismissed ? [] : ensureSiteItems(rawItems, siteTab)
+        );
         // First paint now: the card shows with "확인 중" chips while the
         // meta patch and the quality pass refine it. Title/cover polish and
         // chip resolution must not delay the card itself.
@@ -547,10 +591,16 @@
             (!youtubeId ||
               (meta?.identityConfirmed === true &&
                 (!meta?.videoId || meta.videoId === youtubeId)));
+          // Known-code browser tab titles lag numeric-id navigation (the
+          // background blocks them until a live PAGE_META confirms) — the
+          // popup may only fall back to tab.title when the page itself
+          // answered for this URL.
+          const tabTitleFallback =
+            !youtubeId && (!knownCodePage || metaSamePage);
           const freshTitle = identityConfirmed
             ? usablePageTitle(meta?.title) ||
-              (!youtubeId ? usablePageTitle(tab.title) : "")
-            : !youtubeId
+              (tabTitleFallback ? usablePageTitle(tab.title) : "")
+            : tabTitleFallback
               ? usablePageTitle(tab.title)
               : "";
           const freshThumbnail = youtubeId
@@ -579,8 +629,10 @@
                         sitesApi()?.sameInstagramIdentity?.(itemKey, curKey))
                     )
                   : !itemKey || !curKey || itemKey === curKey;
-              const keepExisting =
-                samePage && !youtubeId && !knownCodePage;
+          // Known-code cards keep their code-derived title and the cover
+          // GET_MEDIA delivered while the page meta is still on its way —
+          // wiping them re-opened the previous-video slot.
+          const keepExisting = samePage && !youtubeId;
               const nextThumb = preferPageThumbnail(
                 keepExisting ? item.thumbnail : undefined,
                 freshThumbnail,

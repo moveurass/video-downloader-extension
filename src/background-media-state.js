@@ -10,10 +10,12 @@
     const tabMeta = new Map();
     const probedUrls = new Set();
     const broadcastTimers = new Map();
+    const broadcastPendingSince = new Map();
     let bound = false;
     const schedule = deps.setTimeout || setTimeout;
     const unschedule = deps.clearTimeout || clearTimeout;
     const BROADCAST_DELAY_MS = 200;
+    const BROADCAST_MAX_WAIT_MS = 600;
 
     // Real segment sizes seen in webRequest, attributed to the playlist that
     // was fetched just before them. Feeds measured-average capacity estimates.
@@ -198,6 +200,48 @@
       }
     }
 
+    function knownCodeOfPageKey(pageKey) {
+      return String(pageKey || "").match(/:code:([^:/?#]+)$/i)?.[1] || "";
+    }
+
+    // Covers and media URLs a tab had on known-code pages it has since left:
+    // tabId -> Map<url, pageKey>. On the next video such a URL can only be
+    // the previous page lagging behind — the previous player iframe still
+    // reporting (rebound to the new URL like every nested frame), the top
+    // frame's stale player area, a popup echo — so it is refused whichever
+    // path carries it. Before this, the stale iframe item even outranked
+    // the new video's own and the card downloaded the previous video.
+    const leftPageAssets = new Map();
+    const LEFT_PAGE_ASSET_LIMIT = 80;
+
+    function rememberLeftPage(tabId) {
+      const meta = tabMeta.get(tabId);
+      const key =
+        meta?.pageKey || (meta?.lastUrl ? pageIdentityKey(meta.lastUrl) : "");
+      if (!knownCodeOfPageKey(key)) return;
+      const assets = [meta?.thumbnail];
+      for (const item of tabMedia.get(tabId)?.values() || []) {
+        assets.push(item.thumbnail, item.url);
+      }
+      for (const raw of assets) {
+        const url = String(raw || "");
+        if (!/^https?:/i.test(url)) continue;
+        if (!leftPageAssets.has(tabId)) leftPageAssets.set(tabId, new Map());
+        const owners = leftPageAssets.get(tabId);
+        if (owners.has(url)) continue;
+        owners.set(url, key);
+        if (owners.size > LEFT_PAGE_ASSET_LIMIT) {
+          owners.delete(owners.keys().next().value);
+        }
+      }
+    }
+
+    function isLeftPageAsset(tabId, url, pageKey) {
+      if (!knownCodeOfPageKey(pageKey)) return false;
+      const owner = leftPageAssets.get(tabId)?.get(String(url || ""));
+      return !!owner && owner !== pageKey;
+    }
+
     function thumbnailMatchesPageKey(thumbnail, pageKey, boundKey) {
       const key = String(pageKey || "");
       const expected = key.match(
@@ -207,6 +251,16 @@
         /(?:i\d*\.ytimg\.com|img\.youtube\.com)\/(?:vi|vi_webp)\/([^/?#]+)/i
       )?.[1];
       if (expected) return !actual || expected === actual;
+      // Known-code covers whose URL names a product code must name THIS one
+      // (the content script already holds the top frame to that; nested
+      // player frames report here without it).
+      const pageCode = knownCodeOfPageKey(key);
+      if (pageCode) {
+        const coverCode = /^https?:/i.test(String(thumbnail || ""))
+          ? String(Naming.extractProductCode?.(String(thumbnail)) || "")
+          : "";
+        return !coverCode || coverCode.toUpperCase() === pageCode.toUpperCase();
+      }
       if (/^tt:(?:\d+|t:.+)$/i.test(key)) {
         const bound = String(boundKey || "").trim();
         if (bound) return bound === key;
@@ -393,18 +447,29 @@
       const titleBelongsToPage =
         !!(meta?.titlePageKey && meta.titlePageKey === currentPageKey);
       let trustedMetaTitle = "";
-      if (titleBelongsToPage || (identityReady && !knownVideo)) {
+      const titleBoundElsewhere =
+        !!meta?.titlePageKey && meta.titlePageKey !== currentPageKey;
+      if (
+        !titleBoundElsewhere &&
+        (titleBelongsToPage || (identityReady && !knownVideo))
+      ) {
         trustedMetaTitle = usableProvisionalTitle(meta?.title);
       }
+      // The browser tab title lags SPA navigation (Reels swipes, TikTok and
+      // YouTube soft navigations). With no tracking meta (cold worker) there
+      // is nothing better than the tab title, but once meta exists it must
+      // positively track THIS page and not be blocked — otherwise the
+      // previous video's caption leaks onto the new page's card. Known-code
+      // pages never trust the tab title (their titles lag numeric-id
+      // navigation); the URL code is always the safer provisional name.
+      const metaTracksPage =
+        !!meta && (meta.pageKey || pageIdentityKey(meta.lastUrl || "")) === currentPageKey;
       let provisionalTabTitle = "";
-      if (!(knownVideo && meta?.provisionalTitleBlocked)) {
-        if (
-          kind !== "youtube" ||
-          identityReady ||
-          meta?.provisionalTitleBlocked !== true
-        ) {
-          provisionalTabTitle = usableProvisionalTitle(tab?.title);
-        }
+      if (
+        (!meta && !knownVideo) ||
+        (metaTracksPage && meta.provisionalTitleBlocked !== true)
+      ) {
+        provisionalTabTitle = usableProvisionalTitle(tab?.title);
       }
       const title =
         trustedMetaTitle ||
@@ -414,7 +479,8 @@
         (kind === "instagram" ? instagramAuthorHandle(pageUrl) : "") ||
         siteDefaultTitle(kind);
       const thumbnail =
-        (meta?.thumbnail &&
+        (metaTracksPage &&
+        meta?.thumbnail &&
         thumbnailMatchesPageKey(meta.thumbnail, currentPageKey)
           ? meta.thumbnail
           : "") ||
@@ -456,6 +522,7 @@
 
     function clearTabMediaState(tabId, { keepLastUrl } = {}) {
       if (tabId == null) return;
+      rememberLeftPage(tabId);
       tabMedia.delete(tabId);
       const prevUrl = keepLastUrl || tabMeta.get(tabId)?.lastUrl || "";
       tabMeta.delete(tabId);
@@ -634,13 +701,14 @@
       }
 
       const host = meta?.host || item.host || "";
-      const itemThumbnail = thumbnailMatchesPageKey(
-        item.thumbnail,
-        meta?.pageKey,
-        item.thumbnailPageKey
-      )
-        ? item.thumbnail
-        : undefined;
+      const itemThumbnail =
+        thumbnailMatchesPageKey(
+          item.thumbnail,
+          meta?.pageKey,
+          item.thumbnailPageKey
+        ) && !isLeftPageAsset(tabId, item.thumbnail, meta?.pageKey)
+          ? item.thumbnail
+          : undefined;
       const thumbnail =
         itemThumbnail ||
         (samePage && meta?.thumbnail ? meta.thumbnail : undefined) ||
@@ -752,6 +820,9 @@
           return;
         }
       }
+      // The previous video's media, re-reported by its lingering player
+      // frame (or refetched by it), is never the new page's video.
+      if (isLeftPageAsset(tabId, item.url, tabMeta.get(tabId)?.pageKey)) return;
       if (Naming.isJunkMedia(item)) return;
 
       const enriched = enrichItem(tabId, item);
@@ -847,13 +918,14 @@
         title = prev.title;
       }
 
-      const incomingThumbnail = thumbnailMatchesPageKey(
-        meta.thumbnail,
-        nextKey,
-        meta.thumbnailPageKey
-      )
-        ? meta.thumbnail
-        : undefined;
+      const incomingThumbnail =
+        thumbnailMatchesPageKey(
+          meta.thumbnail,
+          nextKey,
+          meta.thumbnailPageKey
+        ) && !isLeftPageAsset(tabId, meta.thumbnail, nextKey)
+          ? meta.thumbnail
+          : undefined;
       let thumbnail;
       if (pageChanged) {
         // Known-code last-good is same-pageKey only. Never keep a cover
@@ -896,6 +968,7 @@
       };
 
       if (pageChanged) {
+        rememberLeftPage(tabId);
         tabMedia.delete(tabId);
         deleteSegmentStats(tabId);
       }
@@ -903,9 +976,17 @@
 
       const map = tabMedia.get(tabId);
       if (!map) {
-        if (pageChanged) {
+        // Placeholder-only pages (players in nested iframes leave the top
+        // scan with no media items) live entirely on this meta: when the
+        // new video's title/cover arrive the open popup must hear it, not
+        // just on the navigation wipe.
+        if (
+          pageChanged ||
+          (prev.title || undefined) !== (next.title || undefined) ||
+          (prev.thumbnail || undefined) !== (next.thumbnail || undefined)
+        ) {
           updateBadge(tabId);
-          broadcastUpdate(tabId, { immediate: true });
+          broadcastUpdate(tabId, { immediate: pageChanged });
         }
         return;
       }
@@ -1446,11 +1527,22 @@
         }
       }
 
+      // Trailing debounce, but never hold a pending broadcast longer than
+      // BROADCAST_MAX_WAIT_MS — a rapid switching stream (nav → PAGE_META →
+      // rescans) would otherwise keep resetting the timer and starve the
+      // popup of live updates.
+      const pendingSince = broadcastPendingSince.get(tabId) || 0;
+      const waited = pendingSince ? Date.now() - pendingSince : 0;
+      const delay = pendingSince
+        ? Math.max(0, Math.min(BROADCAST_DELAY_MS, BROADCAST_MAX_WAIT_MS - waited))
+        : BROADCAST_DELAY_MS;
       const timer = schedule(() => {
         broadcastTimers.delete(tabId);
+        broadcastPendingSince.delete(tabId);
         sendBroadcastUpdate(tabId);
-      }, BROADCAST_DELAY_MS);
+      }, delay);
       broadcastTimers.set(tabId, timer);
+      if (!pendingSince) broadcastPendingSince.set(tabId, Date.now());
     }
 
     function clearMedia(tabId) {
@@ -1462,8 +1554,10 @@
       const timer = broadcastTimers.get(tabId);
       if (timer) unschedule(timer);
       broadcastTimers.delete(tabId);
+      broadcastPendingSince.delete(tabId);
       tabMedia.delete(tabId);
       tabMeta.delete(tabId);
+      leftPageAssets.delete(tabId);
       deleteSegmentStats(tabId);
     }
 
@@ -1495,12 +1589,19 @@
     function requestTabRescan(tabId, pageUrl) {
       if (tabId == null || tabId < 0 || !chrome.tabs?.sendMessage) return;
       try {
+        // Top frame only: the new video's player frames are new documents
+        // that scan on load, so an all-frames rescan could only wake the
+        // previous video's lingering player into reporting its media again.
         Promise.resolve(
-          chrome.tabs.sendMessage(tabId, {
-            type: "SCAN_NOW",
-            reason: "navigation",
-            pageUrl: pageUrl || ""
-          })
+          chrome.tabs.sendMessage(
+            tabId,
+            {
+              type: "SCAN_NOW",
+              reason: "navigation",
+              pageUrl: pageUrl || ""
+            },
+            { frameId: 0 }
+          )
         ).catch(() => {});
       } catch {
         // The content script may not be attached yet; popup load retries too.
