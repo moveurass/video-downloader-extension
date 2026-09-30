@@ -237,7 +237,16 @@
 
   // --- fetch hook ---
   const origFetch = window.fetch;
-  if (typeof origFetch === "function") {
+  // Some sandboxed pages expose a read-only window.fetch — assigning would
+  // throw and kill every hook below it, so probe with a real assignment.
+  let fetchHooked = false;
+  try {
+    window.fetch = origFetch;
+    fetchHooked = true;
+  } catch {
+    fetchHooked = false;
+  }
+  if (typeof origFetch === "function" && fetchHooked) {
     window.fetch = function (...args) {
       let reqUrl = "";
       try {
