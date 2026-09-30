@@ -580,6 +580,76 @@ async function main() {
     "cold known-code placeholder carries no cover until page meta lands"
   );
 
+  // Item-less known-code page (123av runs its player in an iframe, so the
+  // top scan finds no media): the card lives entirely on tab meta. The
+  // PAGE_META that names the new video's title/cover must still reach the
+  // open popup — broadcasting only the nav wipe starved it of the cover.
+  {
+    const prevCover = "https://icdn.123av.example/img2/s500/33/mngs-072/cover.jpg";
+    const nextCover = "https://icdn.123av.example/img2/s500/6b/snos-309/cover.jpg";
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/mngs-072",
+      title: "MNGS-072 이전 영상",
+      thumbnail: prevCover,
+      identityConfirmed: true
+    });
+    harness.messages.length = 0;
+    // The pushState switch: blank PAGE_META wipes identity (pageChanged).
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/snos-309",
+      title: "",
+      thumbnail: "",
+      fromPageMeta: true
+    });
+    const afterNav = harness.messages.filter(
+      (m) => m.type === "MEDIA_UPDATED" && m.tabId === 61
+    );
+    equal(afterNav.length, 1, "the navigation wipe broadcasts the empty placeholder");
+    // ~1s later the rescan names this video: player-area cover + title.
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/snos-309",
+      title: "SNOS-309 실사판 제목",
+      thumbnail: nextCover,
+      fromPageMeta: true
+    });
+    harness.runTimers();
+    await flush();
+    const afterMeta = harness.messages.filter(
+      (m) => m.type === "MEDIA_UPDATED" && m.tabId === 61
+    );
+    equal(
+      afterMeta.length,
+      2,
+      "same-page PAGE_META still broadcasts on item-less pages"
+    );
+    equal(
+      afterMeta[1]?.items?.[0]?.thumbnail,
+      nextCover,
+      "the follow-up broadcast placeholder carries the new video's cover"
+    );
+    equal(
+      afterMeta[1]?.items?.[0]?.title,
+      "SNOS-309 실사판 제목",
+      "the follow-up broadcast placeholder carries the new video's title"
+    );
+    // Unchanged meta must not keep broadcasting (no resurrection spam).
+    harness.messages.length = 0;
+    store.setTabMeta(61, {
+      lastUrl: "https://123av.com/ko/v/snos-309",
+      title: "SNOS-309 실사판 제목",
+      thumbnail: nextCover,
+      fromPageMeta: true
+    });
+    harness.runTimers();
+    await flush();
+    equal(
+      harness.messages.filter((m) => m.type === "MEDIA_UPDATED" && m.tabId === 61)
+        .length,
+      0,
+      "unchanged meta does not re-broadcast the placeholder"
+    );
+  }
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({

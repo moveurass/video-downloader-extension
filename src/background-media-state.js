@@ -917,9 +917,17 @@
 
       const map = tabMedia.get(tabId);
       if (!map) {
-        if (pageChanged) {
+        // Placeholder-only pages (players in nested iframes leave the top
+        // scan with no media items) live entirely on this meta: when the
+        // new video's title/cover arrive the open popup must hear it, not
+        // just on the navigation wipe.
+        if (
+          pageChanged ||
+          (prev.title || undefined) !== (next.title || undefined) ||
+          (prev.thumbnail || undefined) !== (next.thumbnail || undefined)
+        ) {
           updateBadge(tabId);
-          broadcastUpdate(tabId, { immediate: true });
+          broadcastUpdate(tabId, { immediate: pageChanged });
         }
         return;
       }
