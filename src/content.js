@@ -230,10 +230,10 @@
   }
 
   function knownCodeTransitionSettled(code) {
-    if (Date.now() - lastNavigationChangeAt >= KNOWN_CODE_DOM_SETTLE_MS) {
-      return true;
-    }
     if (knownCodeHeadNamesPage(code)) return true;
+    // An h1/title still naming another code is proof the DOM has not
+    // swapped yet — it outranks the settle window, so a slow XHR render
+    // cannot let the previous cover through once the window elapses.
     for (const probe of [
       document.querySelector("h1")?.textContent,
       document.title
@@ -248,7 +248,8 @@
     }
     // The player loading a new source is the strongest body-level signal
     // that the page moved on (covers/poster follow the media element).
-    return lastMediaSwapAt >= lastNavigationChangeAt;
+    if (lastMediaSwapAt >= lastNavigationChangeAt) return true;
+    return Date.now() - lastNavigationChangeAt >= KNOWN_CODE_DOM_SETTLE_MS;
   }
 
   function knownCodeSourceIsCurrent(raw) {
@@ -262,6 +263,39 @@
       "";
     if (rawCode) return rawCode === code;
     return knownCodeTransitionSettled(code);
+  }
+
+  /**
+   * Cover URL → product code of the page it first answered for. A cover is
+   * one video's picture: once it was code A's it can never be code B's,
+   * whatever head/h1/timer signal claims B's DOM has settled (a site that
+   * updates its head before the player area passed every one of those).
+   * Lives as long as this document, i.e. across SPA switches.
+   */
+  const knownCodeCoverOwners = new Map();
+  const KNOWN_CODE_COVER_OWNER_LIMIT = 120;
+
+  function rememberKnownCodeCovers(code, urls) {
+    if (!code) return;
+    for (const raw of urls) {
+      const url = absUrl(raw);
+      if (!url || !/^https?:/i.test(url) || knownCodeCoverOwners.has(url)) {
+        continue;
+      }
+      knownCodeCoverOwners.set(url, code);
+      if (knownCodeCoverOwners.size > KNOWN_CODE_COVER_OWNER_LIMIT) {
+        knownCodeCoverOwners.delete(knownCodeCoverOwners.keys().next().value);
+      }
+    }
+  }
+
+  /** Known-code cover gate: current for this page and nobody else's. */
+  function knownCodeCoverIsCurrent(url) {
+    const code = knownCodePageIdentity();
+    if (!code) return true;
+    const owner = knownCodeCoverOwners.get(absUrl(url) || "");
+    if (owner && owner !== code) return false;
+    return knownCodeSourceIsCurrent(url);
   }
 
   function isPlayerFrame() {
@@ -441,10 +475,11 @@
     }
   }
 
-  function playerWrapCover() {
-    const nodes = document.querySelectorAll(
-      ".player-wrap, #dz_video, [style*='background-image']"
-    );
+  /** The player area itself (not any inline-styled node) on known-code pages. */
+  const PLAYER_AREA_SELECTOR = ".player-wrap, #dz_video";
+
+  function playerWrapCover(selector = `${PLAYER_AREA_SELECTOR}, [style*='background-image']`) {
+    const nodes = document.querySelectorAll(selector);
     for (const el of nodes) {
       const url = cssBackgroundImageUrl(el);
       if (url && !/sprite|icon|logo|avatar|avt-|imprint|badge|1x1|pixel/i.test(url)) {
@@ -520,6 +555,23 @@
               .map((img) => img.currentSrc || img.src)
           ])
     ];
+    // The chosen cover passed the gate, so it is this code's. Once the page
+    // has settled, its other own cover sources are too — recorded now, the
+    // next switch's lingering player area can never pass as that video's.
+    const claimKnownCodeCovers = (chosen) => {
+      if (!knownCodePageCode) return;
+      const own = [chosen];
+      if (knownCodeTransitionSettled(knownCodePageCode)) {
+        own.push(
+          ...[
+            ...(knownCodeHeadOk ? headCoverCandidates : []),
+            document.querySelector("video[poster]")?.getAttribute("poster"),
+            playerWrapCover(PLAYER_AREA_SELECTOR)
+          ].filter((c) => c && knownCodeSourceIsCurrent(c))
+        );
+      }
+      rememberKnownCodeCovers(knownCodePageCode, own);
+    };
     for (const c of candidates) {
       const u = absUrl(c);
       if (!u || u.startsWith("data:")) continue;
@@ -529,7 +581,7 @@
       }
       // Known-code SPA transition: og:image / poster / player backgrounds
       // still point at the previous video until the DOM swaps.
-      if (knownCodePageIdentity() && !knownCodeSourceIsCurrent(u)) continue;
+      if (knownCodePageCode && !knownCodeCoverIsCurrent(u)) continue;
       if (
         typeof UVDSites !== "undefined" &&
         (UVDSites.isTiktokAvatarThumbUrl?.(u) ||
@@ -538,6 +590,7 @@
         continue;
       }
       if (youtubeId && youtubeImageVideoId(u) !== youtubeId) continue;
+      claimKnownCodeCovers(u);
       return u;
     }
     if (youtubeId) {
@@ -584,17 +637,23 @@
 
     if (video.poster) {
       const p = absUrl(video.poster);
-      if (p && knownCodeSourceIsCurrent(p)) return p;
+      if (p && knownCodeCoverIsCurrent(p)) return p;
     }
     const wrap = video.closest("[class*='player'], [class*='video'], figure, .video");
     const img = wrap?.querySelector("img[src]");
     if (img?.src && (!img.naturalWidth || img.naturalWidth > 40)) {
       const u = absUrl(img.src);
-      if (u) return u;
+      if (u && knownCodeCoverIsCurrent(u)) return u;
     }
 
+    // A frame grab of a player that has not loaded since a known-code
+    // switch is still the previous video's picture.
+    const staleKnownCodePlayer =
+      !!knownCodePageIdentity() &&
+      hasNavigatedSinceLoad &&
+      lastMediaSwapAt < lastNavigationChangeAt;
     try {
-      if (video.videoWidth && video.readyState >= 2) {
+      if (!staleKnownCodePlayer && video.videoWidth && video.readyState >= 2) {
         const maxW = 240;
         const scale = Math.min(1, maxW / video.videoWidth);
         const w = Math.max(1, Math.round(video.videoWidth * scale));
@@ -821,6 +880,10 @@
   }
 
   function scanPage() {
+    // Every scan path (mutations, SCAN_NOW after tabs.onUpdated, timers)
+    // re-checks identity first, so the stale-DOM gate is armed even when
+    // no navigation event reached this isolated world.
+    refreshAfterSpaNavigation(false);
     const items = [];
     const title = pageTitle();
     const thumb = pageThumbnail();
@@ -1843,22 +1906,24 @@
   }
   // Known-code sites soft-navigate between videos (numeric-id pushState);
   // without this hook the previous video's DOM would report as the new page.
+  // Patching history.pushState here would only wrap this isolated world's
+  // copy — the page's own calls never reach it. The Navigation API event is
+  // dispatched to every world, pushState included.
   if (isKnownCodeHostName()) {
-    for (const method of ["pushState", "replaceState"]) {
-      const orig = history[method];
-      if (typeof orig !== "function") continue;
-      history[method] = function patchedHistory(...args) {
-        const ret = orig.apply(this, args);
-        setTimeout(() => refreshAfterSpaNavigation(false), 0);
-        return ret;
-      };
-    }
+    globalThis.navigation?.addEventListener?.("currententrychange", () => {
+      setTimeout(() => refreshAfterSpaNavigation(false), 0);
+    });
   }
 
   // Skip MutationObserver on TikTok/Instagram — DOM churn lags players
   if (!isTikTokHost() && !isInstagramHost()) {
     const mo = new MutationObserver((records) => {
       const relevant = records.some((record) => {
+        // Known-code player covers swap as an inline background-image; any
+        // other style churn (player UI, animations) must not trigger scans.
+        if (record.attributeName === "style") {
+          return !!record.target?.matches?.(PLAYER_AREA_SELECTOR);
+        }
         if (record.type !== "characterData") return true;
         return !!record.target?.parentElement?.closest?.(
           "title, h1, h2, [itemprop='name'], [class*='title' i]"
@@ -1870,7 +1935,13 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["src", "href", "poster", "content"],
+      attributeFilter: [
+        "src",
+        "href",
+        "poster",
+        "content",
+        ...(isKnownCodeHostName() ? ["style"] : [])
+      ],
       characterData: true
     });
   }
@@ -2547,15 +2618,10 @@
     }, 4000);
     let notifySpa = () =>
       setTimeout(() => refreshAfterSpaNavigation(false), 0);
-    for (const method of ["pushState", "replaceState"]) {
-      const orig = history[method];
-      if (typeof orig !== "function") continue;
-      history[method] = function (...args) {
-        const ret = orig.apply(this, args);
-        notifySpa();
-        return ret;
-      };
-    }
+    // Isolated world: see the known-code hook — history patches never fire.
+    globalThis.navigation?.addEventListener?.("currententrychange", () =>
+      notifySpa()
+    );
     window.addEventListener("popstate", () => {
       setTimeout(() => refreshAfterSpaNavigation(true), 0);
     });

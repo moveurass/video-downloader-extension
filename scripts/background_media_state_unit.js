@@ -650,6 +650,152 @@ async function main() {
     );
   }
 
+  // The previous video's cover must not follow onto the next known-code
+  // page through ANY path: the top frame's lagging player area, a nested
+  // player frame still reporting, or a popup echo. Code-less cover URLs are
+  // refused by the left-page memory, coded ones by their code.
+  {
+    const tabId = 62;
+    const pageA = "https://123av.com/ko/v/mngs-072";
+    const pageB = "https://123av.com/ko/v/snos-309";
+    const coverA = "https://cdn.123av.example/covers/9f31c2.jpg";
+    const coverB = "https://cdn.123av.example/covers/47ad0e.jpg";
+    const codedA = "https://icdn.123av.example/img2/s500/33/mngs-072/cover.jpg";
+    store.setTabMeta(tabId, {
+      lastUrl: pageA,
+      title: "MNGS-072 이전 영상",
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    store.addMedia(tabId, {
+      url: "https://player.example/a/video.mp4",
+      pageUrl: pageA,
+      thumbnail: coverA,
+      type: "video"
+    });
+    equal(store.getTabMeta(tabId).thumbnail, coverA, "A's cover is A's");
+
+    // tabs.onUpdated moves the tab to B (the path every navigation takes).
+    store.clearTabMediaState(tabId, { keepLastUrl: pageB });
+    store.setTabMeta(tabId, { lastUrl: pageB, thumbnail: undefined });
+
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      title: "",
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "a lagging top-frame PAGE_META cannot put A's cover on B"
+    );
+    // The previous player frame re-reports its video (rebound to B's URL
+    // like every nested frame): it used to outrank B's own media, so the
+    // card showed A's poster and downloaded A's video.
+    store.addMedia(tabId, {
+      url: "https://player.example/a/video.mp4",
+      pageUrl: pageB,
+      thumbnail: coverA,
+      type: "video"
+    });
+    equal(
+      store.getTabItems(tabId).length,
+      0,
+      "the previous video's media never becomes an item of the next page"
+    );
+    store.addMedia(tabId, {
+      url: "https://player.example/b/video.mp4",
+      pageUrl: pageB,
+      thumbnail: coverA,
+      type: "video"
+    });
+    equal(
+      store.getTabItems(tabId)[0]?.url,
+      "https://player.example/b/video.mp4",
+      "the next page's own media is accepted"
+    );
+    equal(
+      store.getTabItems(tabId)[0]?.thumbnail,
+      undefined,
+      "a nested player frame still showing A cannot put A's cover on B"
+    );
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      thumbnail: codedA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "a cover URL naming another code is never this page's"
+    );
+    ok(
+      !store.thumbnailMatchesPageKey(
+        codedA,
+        store.pageIdentityKey(pageB)
+      ),
+      "coded covers must name the page's own code"
+    );
+    ok(
+      store.thumbnailMatchesPageKey(
+        "data:image/jpeg;base64,abc123/def456",
+        store.pageIdentityKey(pageB)
+      ),
+      "data-URL covers are not scanned for codes"
+    );
+
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      title: "SNOS-309 새 영상",
+      thumbnail: coverB,
+      fromPageMeta: true
+    });
+    equal(store.getTabMeta(tabId).thumbnail, coverB, "B's own cover lands");
+
+    // Going back, A's cover is A's again — the memory is per page, not a ban.
+    store.clearTabMediaState(tabId, { keepLastUrl: pageA });
+    store.setTabMeta(tabId, { lastUrl: pageA, thumbnail: undefined });
+    store.setTabMeta(tabId, {
+      lastUrl: pageA,
+      thumbnail: coverB,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "B's cover cannot follow back onto A either"
+    );
+    store.setTabMeta(tabId, {
+      lastUrl: pageA,
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      coverA,
+      "returning to A accepts A's own cover"
+    );
+
+    // The blank PAGE_META wipe (pageChanged inside setTabMeta) remembers too.
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      title: "",
+      thumbnail: "",
+      fromPageMeta: true
+    });
+    store.setTabMeta(tabId, {
+      lastUrl: pageB,
+      thumbnail: coverA,
+      fromPageMeta: true
+    });
+    equal(
+      store.getTabMeta(tabId).thumbnail,
+      undefined,
+      "the pageChanged wipe path refuses the previous cover as well"
+    );
+  }
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({
