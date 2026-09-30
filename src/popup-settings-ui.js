@@ -134,7 +134,11 @@
         if (!el) return;
         const uvdSettings = getUvdSettings();
         const mode = UVD.mediaModeLabel(uvdSettings.mediaMode);
-        el.textContent = `저장: ${effectiveSaveTarget(uvdSettings)} · ${mode} · v1.26.0`;
+        el.textContent = `저장: ${effectiveSaveTarget(uvdSettings)} · ${mode} · v${
+          (typeof chrome !== "undefined" &&
+            chrome.runtime?.getManifest?.()?.version) ||
+          "?"
+        }`;
       }
 
       function updatePickFolderUi() {

@@ -649,7 +649,10 @@ UVDBackgroundScheduledJobs.createScheduler({
   console
 }).bind();
 
-console.log("[VideoDownloader] ready v1.26.0");
+console.log(
+  "[VideoDownloader] ready v" +
+    (chrome.runtime.getManifest?.()?.version || "?")
+);
 
 // UI polling can race a closed tab, leaving "No tab with id" rejections that
 // no single call site owns (popup quality probes, rescans, page fallbacks).
