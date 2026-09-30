@@ -168,6 +168,17 @@
       let loadSequence = 0;
 
       function restoreStablePage(tabLike = {}) {
+        // Respect the user's 목록 비우기(✕) for this page — restoring the
+        // last-good card would resurrect what was just dismissed.
+        const dismissedUrl = getCurrentTabUrl() || tabLike.url || "";
+        const dismissed =
+          typeof deps.getDismissedPageKey === "function"
+            ? deps.getDismissedPageKey() || ""
+            : "";
+        if (dismissed && dismissedUrl && dismissed === pageKey(dismissedUrl)) {
+          setAllItems([]);
+          return [];
+        }
         const current = getAllItems();
         const stable = ensureSiteItems(current, {
           ...tabLike,
@@ -380,6 +391,9 @@
         setCurrentTabUrl(nextTabUrl);
         let currentTabUrl = getCurrentTabUrl();
         if (navigationChanged) {
+          if (typeof deps.setDismissedPageKey === "function") {
+            deps.setDismissedPageKey("");
+          }
           const navigationTab =
             isSitePage(nextTabUrl)
               ? { ...tab, url: nextTabUrl, title: "" }
@@ -398,6 +412,14 @@
           setQualitiesLoading(false);
           render();
         }
+
+        const pageDismissed = (() => {
+          const dismissed =
+            typeof deps.getDismissedPageKey === "function"
+              ? deps.getDismissedPageKey() || ""
+              : "";
+          return !!(dismissed && dismissed === pageKey(currentTabUrl));
+        })();
 
         try {
           pageHost.textContent = currentTabUrl
@@ -426,6 +448,7 @@
         // data must never be what fills the gap.
         if (
           !navigationChanged &&
+          !pageDismissed &&
           !getAllItems().length &&
           typeof isSitePage === "function" &&
           isSitePage(currentTabUrl)
@@ -536,7 +559,9 @@
           knownCodePage
             ? { ...tab, title: "" }
             : tab;
-        setAllItems(ensureSiteItems(rawItems, siteTab));
+        setAllItems(
+          pageDismissed ? [] : ensureSiteItems(rawItems, siteTab)
+        );
         // First paint now: the card shows with "확인 중" chips while the
         // meta patch and the quality pass refine it. Title/cover polish and
         // chip resolution must not delay the card itself.

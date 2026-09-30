@@ -647,6 +647,107 @@ async function main() {
     "123av cold open never feeds the lagged tab title to the local fallback"
   );
 
+  // 목록 비우기(✕) on the current page: loadMedia must not resurrect the
+  // card through the neutral paint, the raw GET_MEDIA items, or the stable
+  // restore — until the user scans again or moves to another video.
+  {
+    const dismissedTab = { id: 81, url: codeWatchUrl, title: "SSIS-777" };
+    let dismissedItems = [];
+    let dismissedUrl = codeWatchUrl;
+    let dismissedKey = "123av.com:code:SSIS-777";
+    const dismissedEnsureCalls = [];
+    const dismissedLoader = MediaLoader.createLoader({
+      chrome: {
+        tabs: {
+          query: async () => [dismissedTab],
+          get: async () => dismissedTab,
+          sendMessage: async () => ({ ok: true })
+        },
+        runtime: {
+          sendMessage: async (message) => {
+            if (message.type === "GET_MEDIA") {
+              return {
+                items: [{
+                  url: codeWatchUrl,
+                  pageUrl: codeWatchUrl,
+                  isSiteDownload: true,
+                  title: "SSIS-777"
+                }]
+              };
+            }
+            return { ok: true };
+          }
+        }
+      },
+      listEl: { innerHTML: "" },
+      pageHost: { textContent: "", title: "" },
+      $: (selector) => elements[selector.slice(1)] || null,
+      UVD: {
+        isPlaylistOnlyUrl: () => false,
+        isWatchInPlaylistUrl: () => false
+      },
+      ensureSiteItems: (items, tabLike) => {
+        dismissedEnsureCalls.push(String(tabLike?.title ?? ""));
+        if ((items || []).length) return items.map((item) => ({ ...item }));
+        return [{ url: tabLike.url, pageUrl: tabLike.url, title: "SSIS-778" }];
+      },
+      pageKey: (url) => {
+        const code = Naming.extractProductCode(String(url || ""));
+        return code ? `123av.com:code:${code}` : String(url || "");
+      },
+      isInstagramUrl: () => false,
+      isTiktokUrl: () => false,
+      isYoutubeUrl: () => false,
+      isXUrl: () => false,
+      isFacebookUrl: () => false,
+      isBilibiliUrl: () => false,
+      isSitePage: () => true,
+      isHlsItem: () => false,
+      cleanTitleText: (value) => String(value || "").trim(),
+      isUglyName: () => false,
+      refreshHelperStatus: async () => {},
+      render: () => {},
+      loadAvailableQualities: async () => {},
+      loadPlaylistInfo: async () => {},
+      hidePlaylistBox: () => {},
+      getAllItems: () => dismissedItems,
+      setAllItems: (items) => {
+        dismissedItems = items;
+      },
+      getCurrentTabId: () => 81,
+      setCurrentTabId: () => {},
+      getCurrentTabUrl: () => dismissedUrl,
+      setCurrentTabUrl: (value) => {
+        dismissedUrl = value;
+      },
+      getAvailableQualities: () => [],
+      setAvailableQualities: () => {},
+      getQualitiesLoading: () => false,
+      setQualitiesLoading: () => {},
+      getDismissedPageKey: () => dismissedKey,
+      setDismissedPageKey: (value) => {
+        dismissedKey = value;
+      },
+      setTimeout: (callback) => callback()
+    });
+    await dismissedLoader.loadMedia();
+    check(
+      dismissedItems,
+      [],
+      "a dismissed page stays empty through a full loadMedia pass"
+    );
+    // Moving to another video re-arms card display.
+    dismissedTab.url = "https://123av.com/ko/v/ssis-778-uncensore";
+    dismissedUrl = "https://123av.com/ko/v/ssis-777-uncensore";
+    await dismissedLoader.loadMedia();
+    check(dismissedKey, "", "navigation clears the dismissal");
+    check(
+      dismissedItems.length > 0,
+      true,
+      "the next video's card renders again"
+    );
+  }
+
   const firstSupjav = "https://supjav.com/111111.html";
   const nextSupjav = "https://supjav.com/455636.html";
   const supjavTab = {

@@ -87,6 +87,7 @@ function makeHarness(options = {}) {
     libFilter: { q: "", status: "done", site: "", series: "" },
     dismissedClip: "",
     lastClipSeen: "",
+    dismissedPageKey: "",
     currentTabId: null
   };
   const fn = (name, implementation) => (...args) => {
@@ -152,6 +153,9 @@ function makeHarness(options = {}) {
     }),
     getUvdSettings: () => state.settings,
     setUvdSettings: setters("settings"),
+    pageKey: (url) => `pk:${url}`,
+    getDismissedPageKey: () => state.dismissedPageKey,
+    setDismissedPageKey: setters("dismissedPageKey"),
     getAllItems: () => state.allItems,
     setAllItems: setters("allItems"),
     getHistoryItems: () => state.historyItems,
@@ -217,11 +221,16 @@ async function main() {
     harness.state.currentTabId = 42;
     await harness.elements.btnClear.emit("click");
     check(harness.state.allItems, []);
-    check(harness.calls.slice(-3), [
+    check(harness.calls.slice(-4), [
+      ["set:dismissedPageKey", "pk:https://tab.example/video"],
       ["sendMessage", { type: "CLEAR_MEDIA", tabId: 42 }],
       ["set:allItems", []],
       ["render"]
     ]);
+    // An explicit rescan re-arms card display for the page.
+    harness.state.dismissedPageKey = "pk:https://tab.example/video";
+    await harness.elements.btnScan.emit("click");
+    check(harness.state.dismissedPageKey, "");
   }
 
   {

@@ -138,7 +138,9 @@
         getAvailableQualities,
         loadMedia,
         patchMedia,
-        loadAvailableQualities
+        loadAvailableQualities,
+        getDismissedPageKey,
+        setDismissedPageKey
       } = deps;
       const setTimeoutFn = deps.setTimeout || setTimeout;
       const clearTimeoutFn = deps.clearTimeout || clearTimeout;
@@ -213,6 +215,18 @@
           const previousKey = pageKey(previousTabUrl);
           const reportedUrl = msg.pageUrl || "";
           const reportedKey = reportedUrl ? pageKey(reportedUrl) : "";
+          // The user dismissed this page's card with 목록 비우기(✕) — a live
+          // scan broadcast must not resurrect it. Another video re-arms.
+          const dismissedKey =
+            typeof getDismissedPageKey === "function"
+              ? getDismissedPageKey() || ""
+              : "";
+          if (dismissedKey) {
+            if (!reportedKey || reportedKey === dismissedKey) return;
+            if (typeof setDismissedPageKey === "function") {
+              setDismissedPageKey("");
+            }
+          }
           if (
             reportedUrl &&
             reportedUrl !== previousTabUrl &&

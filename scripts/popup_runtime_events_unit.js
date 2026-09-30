@@ -18,7 +18,8 @@ function makeHarness(overrides = {}) {
     historyItems: [],
     watchlistItems: [],
     activeTabName: "main",
-    trackedJobIds: new Set()
+    trackedJobIds: new Set(),
+    dismissedPageKey: ""
   };
   const buttons = {
     "#btnLinkDl": { disabled: true, textContent: "준비 중" },
@@ -65,6 +66,11 @@ function makeHarness(overrides = {}) {
     },
     getActiveTabName: () => state.activeTabName,
     getTrackedJobIds: () => state.trackedJobIds,
+    getDismissedPageKey: () => state.dismissedPageKey,
+    setDismissedPageKey: (value) => {
+      calls.push(["setDismissedPageKey", value]);
+      state.dismissedPageKey = value;
+    },
     loadMedia: () => calls.push("loadMedia"),
     setTimeout: (callback) => {
       callback();
@@ -84,6 +90,38 @@ function makeHarness(overrides = {}) {
 
 check(typeof PopupRuntimeEvents.createHandler, "function");
 check(typeof PopupRuntimeEvents.bind, "function");
+
+// The user cleared this page's card (목록 비우기): same-page scan broadcasts
+// must not resurrect it, and a different video re-arms card display.
+{
+  const { handler, state, calls } = makeHarness();
+  state.dismissedPageKey = "current";
+  state.allItems = [];
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl: "https://example.com/watch?v=current",
+    items: [{ url: "https://example.com/watch?v=current", isSiteDownload: true }]
+  });
+  check(state.allItems, [], "a dismissed page's broadcast never refills the card");
+  check(
+    calls.some((call) => call === "setAllItems"),
+    false,
+    "dismissed broadcasts do not touch item state"
+  );
+  handler({
+    type: "MEDIA_UPDATED",
+    tabId: 7,
+    pageUrl: "https://example.com/watch?v=next",
+    items: [{ url: "https://example.com/watch?v=next", isSiteDownload: true }]
+  });
+  check(
+    state.dismissedPageKey,
+    "",
+    "a different video clears the dismissal"
+  );
+  check(state.allItems.length > 0, true, "the next video's card shows again");
+}
 
 {
   let registered;
