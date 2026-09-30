@@ -420,6 +420,22 @@
           }
         }
 
+        // Fresh popup session on a helper page: paint the neutral card now
+        // instead of after the SCAN/GET_MEDIA round trips. Title/cover land
+        // with the identity-bound payload right after; the previous video's
+        // data must never be what fills the gap.
+        if (
+          !navigationChanged &&
+          !getAllItems().length &&
+          typeof isSitePage === "function" &&
+          isSitePage(currentTabUrl)
+        ) {
+          setAllItems(
+            ensureSiteItems([], { ...tab, url: currentTabUrl, title: "" })
+          );
+          render();
+        }
+
         // YouTube often blocks content scripts — never rely only on SCAN
         try {
           await chrome.tabs.sendMessage(tab.id, { type: "SCAN_NOW" });
@@ -514,7 +530,10 @@
             };
           });
         const siteTab =
-          (youtubeId || knownCodePage || isTiktokUrl(currentTabUrl) || isInstagramUrl(currentTabUrl)) && suppressProvisionalTitle
+          youtubeId ||
+          isTiktokUrl(currentTabUrl) ||
+          isInstagramUrl(currentTabUrl) ||
+          (knownCodePage && suppressProvisionalTitle)
             ? { ...tab, title: "" }
             : tab;
         setAllItems(ensureSiteItems(rawItems, siteTab));

@@ -459,6 +459,81 @@ async function main() {
     "lifted caption becomes the download filename"
   );
 
+  // Reels swipe with document.title still carrying the previous reel's
+  // caption: navigation clears tabMeta with provisionalTitleBlocked, so the
+  // lagged tab title must not come back as the new reel's card title.
+  const igSwipedUrl = "https://www.instagram.com/reel/NEXTREEL88/";
+  store.clearTabMediaState(55, { keepLastUrl: igSwipedUrl });
+  tabs.set(55, { id: 55, url: igSwipedUrl, title: "이전 릴스 캡션" });
+  const igSwipedPlaceholder = store.makeSitePlaceholder({
+    id: 55,
+    url: igSwipedUrl,
+    title: "이전 릴스 캡션"
+  });
+  equal(
+    igSwipedPlaceholder.title,
+    "Instagram 영상",
+    "blocked meta after a Reels swipe drops the lagged tab title"
+  );
+  const igSwipedItems = await store.getMediaForTabAsync(55, {
+    pageUrl: igSwipedUrl
+  });
+  equal(
+    igSwipedItems[0]?.title,
+    "Instagram 영상",
+    "getMediaForTabAsync re-reads chrome.tabs and must drop it too"
+  );
+
+  // Meta still bound to the previous reel while the placeholder targets the
+  // next one: the tab title cannot bridge that identity gap either.
+  store.setTabMeta(56, {
+    lastUrl: "https://www.instagram.com/reel/PREVREEL77/",
+    pageKey: "ig:reel:PREVREEL77",
+    title: "이전 릴스 캡션",
+    titlePageKey: "ig:reel:PREVREEL77",
+    identityConfirmed: true
+  });
+  const igMismatchPlaceholder = store.makeSitePlaceholder({
+    id: 56,
+    url: igSwipedUrl,
+    title: "이전 릴스 캡션"
+  });
+  equal(
+    igMismatchPlaceholder.title,
+    "Instagram 영상",
+    "tab title is dropped when meta tracks a different page"
+  );
+
+  // TikTok soft navigation: same blocked-meta shape.
+  const ttSwipedUrl =
+    "https://www.tiktok.com/@creator/video/7300000000000000001";
+  store.clearTabMediaState(57, { keepLastUrl: ttSwipedUrl });
+  tabs.set(57, { id: 57, url: ttSwipedUrl, title: "이전 틱톡 캡션" });
+  const ttSwipedItems = await store.getMediaForTabAsync(57, {
+    pageUrl: ttSwipedUrl
+  });
+  equal(
+    ttSwipedItems[0]?.title,
+    "@creator",
+    "TikTok swipe falls back to the handle, not the lagged caption"
+  );
+
+  // YouTube soft navigation: blocked meta already dropped the tab title —
+  // lock that behavior in.
+  const ytSwipedUrl = "https://www.youtube.com/watch?v=nextVideo99";
+  store.clearTabMediaState(58, { keepLastUrl: ytSwipedUrl });
+  tabs.set(58, { id: 58, url: ytSwipedUrl, title: "이전 영상 제목 - YouTube" });
+  const ytSwipedPlaceholder = store.makeSitePlaceholder({
+    id: 58,
+    url: ytSwipedUrl,
+    title: "이전 영상 제목 - YouTube"
+  });
+  equal(
+    ytSwipedPlaceholder.title,
+    "YouTube 영상",
+    "blocked meta after a YouTube soft navigation drops the lagged tab title"
+  );
+
   const provisionalYoutubeUrl =
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
   const provisionalYoutube = store.makeSitePlaceholder({

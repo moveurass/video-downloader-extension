@@ -393,18 +393,27 @@
       const titleBelongsToPage =
         !!(meta?.titlePageKey && meta.titlePageKey === currentPageKey);
       let trustedMetaTitle = "";
-      if (titleBelongsToPage || (identityReady && !knownVideo)) {
+      const titleBoundElsewhere =
+        !!meta?.titlePageKey && meta.titlePageKey !== currentPageKey;
+      if (
+        !titleBoundElsewhere &&
+        (titleBelongsToPage || (identityReady && !knownVideo))
+      ) {
         trustedMetaTitle = usableProvisionalTitle(meta?.title);
       }
+      // The browser tab title lags SPA navigation (Reels swipes, TikTok and
+      // YouTube soft navigations). With no tracking meta (cold worker) there
+      // is nothing better than the tab title, but once meta exists it must
+      // positively track THIS page and not be blocked — otherwise the
+      // previous video's caption leaks onto the new page's card.
+      const metaTracksPage =
+        !!meta && (meta.pageKey || pageIdentityKey(meta.lastUrl || "")) === currentPageKey;
       let provisionalTabTitle = "";
-      if (!(knownVideo && meta?.provisionalTitleBlocked)) {
-        if (
-          kind !== "youtube" ||
-          identityReady ||
-          meta?.provisionalTitleBlocked !== true
-        ) {
-          provisionalTabTitle = usableProvisionalTitle(tab?.title);
-        }
+      if (
+        !meta ||
+        (metaTracksPage && meta.provisionalTitleBlocked !== true)
+      ) {
+        provisionalTabTitle = usableProvisionalTitle(tab?.title);
       }
       const title =
         trustedMetaTitle ||
